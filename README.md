@@ -1,3 +1,5 @@
+![build workflow](https://github.com/loxilb-io/kube-loxilb/actions/workflows/docker-publish.yml/badge.svg)
+
 ## What is kube-loxilb ?
 
 kube-loxilb is loxilb's implementation of kubernetes service load-balancer spec which includes support for load-balancer class, IPAM (shared or exclusive) etc.
