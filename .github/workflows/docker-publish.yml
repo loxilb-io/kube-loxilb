@@ -1,0 +1,54 @@
+name: Docker
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      tagName:
+        description: 'Tag Name'
+        required: true
+        default: 'latest'
+
+jobs:
+
+  build:
+    name: docker-ci
+
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+          submodules: recursive
+
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v1
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build the kube-loxilb image
+      run: make
+
+    - name: Build the latest loxilb Docker image
+      if: github.event.inputs.tagName == ''
+      run: docker build . --tag ghcr.io/loxilb-io/kube-loxilb:latest
+
+    - name: Build the kube-loxilb Docker image with given tag
+      if: github.event.inputs.tagName != ''
+      run: docker build . --tag ghcr.io/loxilb-io/kube-loxilb:${{ github.event.inputs.tagName }}
+
+    - name: Publish the latest loxilb Docker image
+      if: |
+          github.repository == 'loxilb-io/kube-loxilb'
+          &&  github.event.inputs.tagName == ''
+      run: docker push ghcr.io/loxilb-io/kube-loxilb:latest
+
+    - name: Publish the kube-loxilb Docker image with given tag
+      if: |
+          github.repository == 'loxilb-io/kube-loxilb'
+          &&  github.event.inputs.tagName != ''
+      run: docker push ghcr.io/loxilb-io/kube-loxilb:${{ github.event.inputs.tagName }}
