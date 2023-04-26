@@ -18,12 +18,12 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
-	"net/url"
-	"strings"
-	"net"
 	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v2"
+	"io/ioutil"
+	"net"
+	"net/url"
+	"strings"
 )
 
 var (

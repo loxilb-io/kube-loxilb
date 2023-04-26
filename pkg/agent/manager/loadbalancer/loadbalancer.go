@@ -236,6 +236,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return nil
 	}
 
+	endpointIPs, err := m.getEndpoints()
+	if err != nil {
+		return err
+	}
+
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	_, added := m.lbCache[cacheKey]
 	if !added {
@@ -245,11 +250,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	endpointIPs, err := m.getEndpoints()
-	if err != nil {
-		return err
-	}
-
 	// validation check if service have ingress IP already.
 	// and update service.Status.LoadBalancer.Ingress.
 	oldsvc := svc.DeepCopy()
@@ -257,6 +257,43 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	ingSvcPairs, err := m.getIngressSvcPairs(svc)
 	if err != nil {
 		return err
+	}
+
+	update := false
+	if len(m.lbCache[cacheKey].LbModelList) <= 0 {
+		update = true
+	}
+
+	for _, lbModel := range m.lbCache[cacheKey].LbModelList {
+		if len(endpointIPs) == len(lbModel.Endpoints) {
+			nEps := 0
+			for _, ep := range endpointIPs {
+				found := false
+				for _, oldEp := range lbModel.Endpoints {
+					if ep == oldEp.EndpointIP {
+						found = true
+						nEps++
+						break
+					}
+				}
+				if !found {
+					break
+				}
+			}
+			if nEps != len(endpointIPs) {
+				update = true
+			}
+		} else {
+			update = true
+		}
+	}
+
+	if !update {
+		ingSvcPairs = nil
+		return nil
+	} else {
+		m.lbCache[cacheKey].LbModelList = nil
+		svc.Status.LoadBalancer.Ingress = nil
 	}
 
 	// set defer for deallocate IP when get error
@@ -439,11 +476,11 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service) ([]SvcPair, error)
 			ident := inSPair.Port
 			klog.Infof("ingress service exists")
 
-			inRange, reserved := m.ExternalIPPool.CheckAndReserveIP(inSPair.IPString, uint32(ident))
+			inRange, _ := m.ExternalIPPool.CheckAndReserveIP(inSPair.IPString, uint32(ident))
 			if inRange {
-				if !reserved {
-					return nil, nil
-				}
+				//if !reserved {
+				//	return nil, nil
+				//}
 				sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol}
 				sPairs = append(sPairs, sp)
 				isHasLoxiExternalIP = true
