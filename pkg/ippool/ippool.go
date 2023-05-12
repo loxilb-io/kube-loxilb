@@ -17,9 +17,10 @@ package ippool
 
 import (
 	"errors"
-	"k8s.io/klog/v2"
 	"net"
 	"sync"
+
+	"k8s.io/klog/v2"
 
 	tk "github.com/loxilb-io/loxilib"
 )
@@ -53,7 +54,7 @@ func NewIPPool(ipa *tk.IPAllocator, CIDR string, Shared bool) (*IPPool, error) {
 // GetNewIPAddr generate new IP and add key(IP) in IP Pool.
 // If IP is already in pool, try to generate next IP.
 // Returns nil If all IPs in the subnet are already in the pool.
-func (i *IPPool) GetNewIPAddr(sIdent uint32) net.IP {
+func (i *IPPool) GetNewIPAddr(sIdent uint32, proto string) net.IP {
 
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
@@ -62,18 +63,19 @@ func (i *IPPool) GetNewIPAddr(sIdent uint32) net.IP {
 		sIdent = 0
 	}
 
-	newIP, err := i.IPAlloc.AllocateNewIP(tk.IPClusterDefault, i.CIDR, sIdent)
+	newIP, err := i.IPAlloc.AllocateNewIP(tk.IPClusterDefault, i.CIDR, sIdent, proto)
 	if err != nil {
+		klog.Error(err.Error())
 		return nil
 	}
 
-	klog.Infof("Allocate ServiceIP %s:%v", newIP.String(), sIdent)
+	klog.Infof("Allocate ServiceIP %s:%v (%s)", newIP.String(), sIdent, proto)
 
 	return newIP
 }
 
 // ReturnIPAddr return IPaddress in IP Pool
-func (i *IPPool) ReturnIPAddr(ip string, sIdent uint32) {
+func (i *IPPool) ReturnIPAddr(ip string, sIdent uint32, proto string) {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 
@@ -83,11 +85,11 @@ func (i *IPPool) ReturnIPAddr(ip string, sIdent uint32) {
 
 	klog.Infof("Release ServiceIP %s:%v", ip, sIdent)
 
-	i.IPAlloc.DeAllocateIP(tk.IPClusterDefault, i.CIDR, sIdent, ip)
+	i.IPAlloc.DeAllocateIP(tk.IPClusterDefault, i.CIDR, sIdent, ip, proto)
 }
 
 // ReserveIPAddr reserve this IPaddress in IP Pool
-func (i *IPPool) ReserveIPAddr(ip string, sIdent uint32) error {
+func (i *IPPool) ReserveIPAddr(ip string, sIdent uint32, proto string) error {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 
@@ -95,16 +97,16 @@ func (i *IPPool) ReserveIPAddr(ip string, sIdent uint32) error {
 		sIdent = 0
 	}
 
-	klog.Infof("Reserve ServiceIP %s:%v", ip, sIdent)
+	klog.V(2).Infof("Reserve ServiceIP %s:%v", ip, sIdent)
 
-	return i.IPAlloc.ReserveIP(tk.IPClusterDefault, i.CIDR, sIdent, ip)
+	return i.IPAlloc.ReserveIP(tk.IPClusterDefault, i.CIDR, sIdent, ip, proto)
 }
 
 // CheckAndReserveIP check and reserve this IPaddress in IP Pool
-func (i *IPPool) CheckAndReserveIP(ip string, sIdent uint32) (bool, bool) {
+func (i *IPPool) CheckAndReserveIP(ip string, sIdent uint32, proto string) (bool, bool) {
 	IP := net.ParseIP(ip)
 	if IP != nil && i.NetCIDR.Contains(IP) {
-		if err := i.ReserveIPAddr(ip, sIdent); err != nil {
+		if err := i.ReserveIPAddr(ip, sIdent, proto); err != nil {
 			return true, false
 		}
 		return true, true

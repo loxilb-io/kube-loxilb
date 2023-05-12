@@ -74,7 +74,6 @@ type LbCacheEntry struct {
 	LbModelList []api.LoadBalancerModel
 }
 
-// type LbCacheTable map[string][]api.LoadBalancerModel
 type LbCacheTable map[string]*LbCacheEntry
 
 type LbCacheKey struct {
@@ -88,10 +87,13 @@ type SvcPair struct {
 	Protocol string
 }
 
+// GenKey generate key for cache
 func GenKey(ns, name string) string {
 	return path.Join(ns, name)
 }
 
+// Create and Init Manager.
+// Manager is called by kube-loxilb when k8s service is created & updated.
 func NewLoadBalancerManager(
 	kubeClient clientset.Interface,
 	loxiClients []*api.LoxiClient,
@@ -115,7 +117,6 @@ func NewLoadBalancerManager(
 
 		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
 		lbCache: make(LbCacheTable),
-		//lbCache: cache.NewIndexer(lbKeyFunc, cache.Indexers{"selectorPods": lbIndexFunc}),
 	}
 
 	serviceInformer.Informer().AddEventHandlerWithResyncPeriod(
@@ -125,7 +126,6 @@ func NewLoadBalancerManager(
 			},
 			UpdateFunc: func(old, cur interface{}) {
 				manager.enqueueService(cur)
-
 			},
 			DeleteFunc: func(old interface{}) {
 				manager.enqueueService(old)
@@ -303,7 +303,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			klog.Infof("deallocateOnFailure defer function called")
 			for _, sp := range ingSvcPairs {
 				klog.Infof("ip %s is newIP so retrieve pool", sp.IPString)
-				m.ExternalIPPool.ReturnIPAddr(sp.IPString, uint32(sp.Port))
+				m.ExternalIPPool.ReturnIPAddr(sp.IPString, uint32(sp.Port), sp.Protocol)
 			}
 		}
 	}()
@@ -400,7 +400,7 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 		if isError {
 			return fmt.Errorf("failed to delete loxiLB LoadBalancer")
 		}
-		m.ExternalIPPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port))
+		m.ExternalIPPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
 	}
 
 	delete(m.lbCache, cacheKey)
@@ -471,16 +471,15 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service) ([]SvcPair, error)
 	var sPairs []SvcPair
 	inSPairs := m.getLBIngressSvcPairs(service)
 	isHasLoxiExternalIP := false
+
+	// k8s service has ingress IP already
 	if len(inSPairs) >= 1 {
 		for _, inSPair := range inSPairs {
 			ident := inSPair.Port
-			klog.Infof("ingress service exists")
+			proto := inSPair.Protocol
 
-			inRange, _ := m.ExternalIPPool.CheckAndReserveIP(inSPair.IPString, uint32(ident))
+			inRange, _ := m.ExternalIPPool.CheckAndReserveIP(inSPair.IPString, uint32(ident), proto)
 			if inRange {
-				//if !reserved {
-				//	return nil, nil
-				//}
 				sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol}
 				sPairs = append(sPairs, sp)
 				isHasLoxiExternalIP = true
@@ -488,14 +487,26 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service) ([]SvcPair, error)
 		}
 	}
 
+	// If isHasLoxiExternalIP is false, that means:
+	//    1. k8s service has no ingress IP
+	//    2. k8s service has ingress IPs, but that is outside the range of kube-loxilb's externalIP.
+	// so that service need to be allowed new external IP
 	if !isHasLoxiExternalIP {
 		for _, port := range service.Spec.Ports {
-			newIP := m.ExternalIPPool.GetNewIPAddr(uint32(port.Port))
+			proto := strings.ToLower(string(port.Protocol))
+			portNum := port.Port
+			newIP := m.ExternalIPPool.GetNewIPAddr(uint32(portNum), proto)
 			if newIP == nil {
+				// This is a safety code in case the service has the same port.
+				for _, s := range sPairs {
+					if s.Port == portNum && s.Protocol == proto {
+						continue
+					}
+				}
 				klog.Errorf("failed to generate external IP. IP Pool is full")
 				return nil, errors.New("failed to generate external IP. IP Pool is full")
 			}
-			sp := SvcPair{newIP.String(), port.Port, strings.ToLower(string(port.Protocol))}
+			sp := SvcPair{newIP.String(), portNum, proto}
 			sPairs = append(sPairs, sp)
 		}
 	}
