@@ -250,10 +250,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	// validation check if service have ingress IP already.
-	// and update service.Status.LoadBalancer.Ingress.
 	oldsvc := svc.DeepCopy()
 
+	// Check if service has ingress IP already allocated
 	ingSvcPairs, err := m.getIngressSvcPairs(svc)
 	if err != nil {
 		return err
@@ -264,6 +263,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		update = true
 	}
 
+	// Update endpoint list if the list has changed
 	for _, lbModel := range m.lbCache[cacheKey].LbModelList {
 		if len(endpointIPs) == len(lbModel.Endpoints) {
 			nEps := 0
@@ -352,6 +352,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("added load-balancer")
 	}
 
+	// Update service.Status.LoadBalancer.Ingress
 	m.updateService(oldsvc, svc)
 
 	return nil
