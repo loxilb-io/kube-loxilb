@@ -22,4 +22,5 @@ type NetworkConfig struct {
 	ExternalCIDR            string
 	SetBGP                  bool
 	SetLBMode               uint16
+	Monitor                 bool
 }

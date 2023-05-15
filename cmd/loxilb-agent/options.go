@@ -18,12 +18,13 @@ package main
 
 import (
 	"fmt"
-	"github.com/spf13/pflag"
-	"gopkg.in/yaml.v2"
-	"io/ioutil"
 	"net"
 	"net/url"
+	"os"
 	"strings"
+
+	"github.com/spf13/pflag"
+	"gopkg.in/yaml.v2"
 )
 
 var (
@@ -52,6 +53,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
 	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", o.config.ExclIPAM, "Use unique IPAM per service")
 	fs.Uint16Var(&o.config.SetLBMode, "setLBMode", o.config.SetLBMode, "LB mode to use")
+	fs.BoolVar(&o.config.Monitor, "monitor", o.config.Monitor, "Enable monitoring end-points of LB rule")
 }
 
 // complete completes all the required options
@@ -96,7 +98,7 @@ func (o *Options) validate(args []string) error {
 }
 
 func (o *Options) loadConfigFromFile() error {
-	data, err := ioutil.ReadFile(o.configFile)
+	data, err := os.ReadFile(o.configFile)
 	if err != nil {
 		return err
 	}

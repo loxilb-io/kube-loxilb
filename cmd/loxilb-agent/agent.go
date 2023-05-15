@@ -72,6 +72,7 @@ func run(o *Options) error {
 	klog.Infof("SetBGP: %v", o.config.SetBGP)
 	klog.Infof("SetLBMode: %v", o.config.SetLBMode)
 	klog.Infof("ExclIPAM: %v", o.config.ExclIPAM)
+	klog.Infof("Monitor: %v", o.config.Monitor)
 
 	networkConfig := &config.NetworkConfig{
 		LoxilbURLs:              o.config.LoxiURLs,
@@ -79,6 +80,7 @@ func run(o *Options) error {
 		ExternalCIDR:            o.config.ExternalCIDR,
 		SetBGP:                  o.config.SetBGP,
 		SetLBMode:               o.config.SetLBMode,
+		Monitor:                 o.config.Monitor,
 	}
 
 	ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), networkConfig.ExternalCIDR, !o.config.ExclIPAM)

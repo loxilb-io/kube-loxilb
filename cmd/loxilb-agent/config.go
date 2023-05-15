@@ -46,4 +46,6 @@ type AgentConfig struct {
 	SetLBMode uint16 `yaml:"setLBMode,omitempty"`
 	// Shared or exclusive IPAM
 	ExclIPAM bool `yaml:"setExclIPAM"`
+	// Enable monitoring end-points of LB rule
+	Monitor bool `yaml:"monitor"`
 }

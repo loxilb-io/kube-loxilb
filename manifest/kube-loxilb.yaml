@@ -112,7 +112,8 @@ spec:
         args:
         - --loxiURL=http://12.12.12.1:11111,http://14.14.14.1:11111
         - --externalCIDR=123.123.123.1/24
-        #- --setBGP=true
+        #- --monitor
+        #- --setBGP
         #- --setLBMode=1
         #- --config=/opt/loxilb/agent/kube-loxilb.conf
         resources:

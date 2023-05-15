@@ -553,6 +553,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, port corev1.Servi
 			Protocol:   strings.ToLower(string(port.Protocol)),
 			BGP:        m.networkConfig.SetBGP,
 			Mode:       api.LbMode(m.networkConfig.SetLBMode),
+			Monitor:    m.networkConfig.Monitor,
 		},
 		Endpoints: loxiEndpointModelList,
 	}
