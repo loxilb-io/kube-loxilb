@@ -3,7 +3,7 @@ kind: Service
 metadata:
   name: multus-service
   annotations:
-    "loxilb.io/multus-nets" : "mac-vlan1,mac-vlan2"
+    loxilb.io/multus-nets : mac-vlan1,mac-vlan2
 spec:
   externalTrafficPolicy: Local
   loadBalancerClass: loxilb.io/loxilb
