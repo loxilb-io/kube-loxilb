@@ -42,6 +42,7 @@ import (
 	"kube-loxilb/pkg/agent/config"
 	"kube-loxilb/pkg/api"
 	"kube-loxilb/pkg/ippool"
+	"kube-loxilb/pkg/k8s"
 )
 
 const (
@@ -442,7 +443,16 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 	return nil
 }
 
-func (m *Manager) getEndpoints() ([]string, error) {
+func (m *Manager) getEndpoints(svc *corev1.Service) ([]string, error) {
+	_, ok := svc.Annotations["loxilb.io/multus-nets"]
+	if ok {
+		return m.getMultusEndpoints(svc)
+	}
+
+	return m.getNodeEndpoints()
+}
+
+func (m *Manager) getNodeEndpoints() ([]string, error) {
 	req, err := labels.NewRequirement("node.kubernetes.io/exclude-from-external-load-balancers", selection.DoesNotExist, []string{})
 	if err != nil {
 		klog.Infof("getEndpoints: failed to make label requirement. err: %v", err)
@@ -456,7 +466,69 @@ func (m *Manager) getEndpoints() ([]string, error) {
 	}
 
 	return m.getEndpointsForLB(nodes), nil
+}
 
+func (m *Manager) getMultusEndpoints(svc *corev1.Service) ([]string, error) {
+	var epList []string
+
+	netListStr, ok := svc.Annotations["loxilb.io/multus-nets"]
+	if !ok {
+		return nil, errors.New("not found multus annotations")
+	}
+	netList := strings.Split(netListStr, ",")
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	selectorLabelStr := labels.Set(svc.Spec.Selector).String()
+	podList, err := m.kubeClient.CoreV1().Pods(svc.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
+	if err != nil {
+		return epList, err
+	}
+
+	contain := func(strList []string, s string) bool {
+		for _, str := range strList {
+			if str == s {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, pod := range podList.Items {
+		multusNetworkListStr, ok := pod.Annotations["k8s.v1.cni.cncf.io/networks"]
+		if !ok {
+			continue
+		}
+
+		networkStatusListStr, ok := pod.Annotations["k8s.v1.cni.cncf.io/networks-status"]
+		if !ok {
+			return epList, errors.New("net found k8s.v1.cni.cncf.io/networks-status annotation")
+		}
+
+		networkStatusList, err := k8s.UnmarshalNetworkStatus(networkStatusListStr)
+		if err != nil {
+			return epList, err
+		}
+
+		multusNetworkList := strings.Split(multusNetworkListStr, ",")
+		for _, mNet := range multusNetworkList {
+			if !contain(netList, mNet) {
+				continue
+			}
+
+			netName := k8s.GetMultusNetworkName(pod.Namespace, mNet)
+			for _, ns := range networkStatusList {
+				if ns.Name == netName {
+					if len(ns.Ips) > 0 {
+						epList = append(epList, ns.Ips...)
+					}
+				}
+			}
+		}
+	}
+
+	return epList, nil
 }
 
 func (m *Manager) getNodeAddress(node corev1.Node) (string, error) {
