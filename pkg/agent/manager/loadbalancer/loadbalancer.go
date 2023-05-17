@@ -46,13 +46,14 @@ import (
 )
 
 const (
-	mgrName            = "LoxilbLoadBalancerManager"
-	resyncPeriod       = 60 * time.Second
-	minRetryDelay      = 2 * time.Second
-	maxRetryDelay      = 120 * time.Second
-	defaultWorkers     = 4
-	LoxiMaxWeight      = 10
-	numSecIPAnnotation = "loxilb.io/num-secondary-networks"
+	mgrName                     = "LoxilbLoadBalancerManager"
+	resyncPeriod                = 60 * time.Second
+	minRetryDelay               = 2 * time.Second
+	maxRetryDelay               = 120 * time.Second
+	defaultWorkers              = 4
+	LoxiMaxWeight               = 10
+	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
+	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
 )
 
 type Manager struct {
@@ -254,7 +255,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	endpointIPs, err := m.getEndpoints()
+	// Check for loxilb specific annotation
+	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
+	endpointIPs, err := m.getEndpoints(svc, needPodEP)
 	if err != nil {
 		return err
 	}
@@ -342,7 +345,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		var errChList []chan error
 		var lbModelList []api.LoadBalancerModel
 		for _, port := range svc.Spec.Ports {
-			lbModel := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, lbCache.SecIPs, port, endpointIPs)
+			lbModel := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, lbCache.SecIPs, port, endpointIPs, needPodEP)
 			lbModelList = append(lbModelList, lbModel)
 		}
 
@@ -443,9 +446,8 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 	return nil
 }
 
-func (m *Manager) getEndpoints(svc *corev1.Service) ([]string, error) {
-	_, ok := svc.Annotations["loxilb.io/multus-nets"]
-	if ok {
+func (m *Manager) getEndpoints(svc *corev1.Service, podEP bool) ([]string, error) {
+	if podEP {
 		return m.getMultusEndpoints(svc)
 	}
 
@@ -471,7 +473,7 @@ func (m *Manager) getNodeEndpoints() ([]string, error) {
 func (m *Manager) getMultusEndpoints(svc *corev1.Service) ([]string, error) {
 	var epList []string
 
-	netListStr, ok := svc.Annotations["loxilb.io/multus-nets"]
+	netListStr, ok := svc.Annotations[LoxiMultusServiceAnnotation]
 	if !ok {
 		return nil, errors.New("not found multus annotations")
 	}
@@ -667,7 +669,7 @@ func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []st
 	return ips
 }
 
-func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string, port corev1.ServicePort, endpointIPs []string) api.LoadBalancerModel {
+func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string, port corev1.ServicePort, endpointIPs []string, needPodEP bool) api.LoadBalancerModel {
 	loxiEndpointModelList := []api.LoadBalancerEndpoint{}
 	loxiSecIPModelList := []api.LoadBalancerSecIp{}
 
@@ -682,9 +684,14 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string, 
 				remainderWeight--
 			}
 
+			tport := uint16(port.NodePort)
+			if needPodEP {
+				tport = uint16(port.TargetPort.IntVal)
+			}
+
 			loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
 				EndpointIP: endpoint,
-				TargetPort: uint16(port.NodePort),
+				TargetPort: tport,
 				Weight:     weight,
 			})
 		}

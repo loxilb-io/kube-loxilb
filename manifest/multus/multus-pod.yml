@@ -5,7 +5,7 @@ metadata:
   labels:
     app: pod-01
   annotations:
-    k8s.v1.cni.cncf.io/networks: macvlan-conf-1
+    k8s.v1.cni.cncf.io/networks: macvlan1
 spec:
   containers:
     - name: iperf
