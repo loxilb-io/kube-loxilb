@@ -64,6 +64,7 @@ type Manager struct {
 	nodeLister          corelisters.NodeLister
 	nodeListerSynced    cache.InformerSynced
 	ExternalIPPool      *ippool.IPPool
+	ExtSecondaryIPPools []*ippool.IPPool
 
 	queue   workqueue.RateLimitingInterface
 	lbCache LbCacheTable
@@ -71,6 +72,7 @@ type Manager struct {
 
 type LbCacheEntry struct {
 	State       string
+	SecIPs      []string
 	LbModelList []api.LoadBalancerModel
 }
 
@@ -98,6 +100,7 @@ func NewLoadBalancerManager(
 	kubeClient clientset.Interface,
 	loxiClients []*api.LoxiClient,
 	externalIPPool *ippool.IPPool,
+	externalSecondaryIPPools []*ippool.IPPool,
 	networkConfig *config.NetworkConfig,
 	informerFactory informers.SharedInformerFactory) *Manager {
 
@@ -107,6 +110,7 @@ func NewLoadBalancerManager(
 		kubeClient:          kubeClient,
 		loxiClients:         loxiClients,
 		ExternalIPPool:      externalIPPool,
+		ExtSecondaryIPPools: externalSecondaryIPPools,
 		networkConfig:       networkConfig,
 		serviceInformer:     serviceInformer,
 		serviceLister:       serviceInformer.Lister(),
@@ -232,6 +236,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return nil
 	}
 
+	numSecondarySvc := 0
+
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
 		return nil
 	}
@@ -242,7 +248,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	cacheKey := GenKey(svc.Namespace, svc.Name)
-	_, added := m.lbCache[cacheKey]
+	lbCache, added := m.lbCache[cacheKey]
 	if !added {
 		//c.lbCache[cacheKey] = make([]api.LoadBalancerModel, 0)
 		m.lbCache[cacheKey] = &LbCacheEntry{
@@ -256,6 +262,18 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	ingSvcPairs, err := m.getIngressSvcPairs(svc)
 	if err != nil {
 		return err
+	}
+
+	if !added {
+		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc)
+		if err != nil {
+			return err
+		}
+		klog.Infof("Secondary IP Pairs %v", ingSecSvcPairs)
+
+		for _, ingSecSvcPair := range ingSecSvcPairs {
+			lbCache.SecIPs = append(lbCache.SecIPs, ingSecSvcPair.IPString)
+		}
 	}
 
 	update := false
@@ -402,6 +420,11 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 			return fmt.Errorf("failed to delete loxiLB LoadBalancer")
 		}
 		m.ExternalIPPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
+		for idx, ingSecIP := range lbEntry.SecIPs {
+			if idx < len(m.ExtSecondaryIPPools) {
+				m.ExtSecondaryIPPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+			}
+		}
 	}
 
 	delete(m.lbCache, cacheKey)
@@ -506,6 +529,43 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service) ([]SvcPair, error)
 				}
 				klog.Errorf("failed to generate external IP. IP Pool is full")
 				return nil, errors.New("failed to generate external IP. IP Pool is full")
+			}
+			sp := SvcPair{newIP.String(), portNum, proto}
+			sPairs = append(sPairs, sp)
+		}
+	}
+
+	return sPairs, nil
+}
+
+// getIngressSecSvcPairs returns a set of secondary IPs
+func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary int) ([]SvcPair, error) {
+	var sPairs []SvcPair
+
+	if len(m.ExtSecondaryIPPools) < numSecondary {
+		klog.Errorf("failed to generate external secondary IP. No IP pools")
+		return nil, errors.New("failed to generate external secondary IP. No IP pools")
+	}
+
+	for i := 0; i < numSecondary; i++ {
+		for _, port := range service.Spec.Ports {
+			pool := m.ExtSecondaryIPPools[i]
+			proto := strings.ToLower(string(port.Protocol))
+			portNum := port.Port
+			newIP := pool.GetNewIPAddr(uint32(portNum), proto)
+			if newIP == nil {
+				// This is a safety code in case the service has the same port.
+				for _, s := range sPairs {
+					if s.Port == portNum && s.Protocol == proto {
+						continue
+					}
+				}
+				for j := 0; j < i; j++ {
+					rpool := m.ExtSecondaryIPPools[j]
+					rpool.ReturnIPAddr(sPairs[j].IPString, uint32(portNum), proto)
+				}
+				klog.Errorf("failed to generate external secondary IP. IP Pool is full")
+				return nil, errors.New("failed to generate external secondary IP. IP Pool is full")
 			}
 			sp := SvcPair{newIP.String(), portNum, proto}
 			sPairs = append(sPairs, sp)

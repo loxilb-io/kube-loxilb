@@ -19,16 +19,16 @@ package main
 import (
 	"fmt"
 	"kube-loxilb/pkg/agent/config"
+	"kube-loxilb/pkg/agent/manager/loadbalancer"
 	"kube-loxilb/pkg/api"
 	"kube-loxilb/pkg/ippool"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
-	"kube-loxilb/pkg/agent/manager/loadbalancer"
 	"kube-loxilb/pkg/k8s"
 	"kube-loxilb/pkg/log"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
 
 	"k8s.io/client-go/informers"
 	"k8s.io/klog/v2"
@@ -89,6 +89,25 @@ func run(o *Options) error {
 		return err
 	}
 
+	var sipPools []*ippool.IPPool
+	if o.config.ExternalSecondaryCIDRs != "" {
+		CIDRs := strings.Split(o.config.ExternalSecondaryCIDRs, ",")
+		if len(CIDRs) <= 0 && len(CIDRs) > 4 {
+			return fmt.Errorf("externalSecondaryCIDR %s config is invalid", o.config.ExternalSecondaryCIDRs)
+		}
+
+		for _, CIDR := range CIDRs {
+			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), CIDR, !o.config.ExclIPAM)
+			if err != nil {
+				klog.Errorf("failed to create external secondary IP Pool (CIDR: %s)", CIDR)
+				return err
+			}
+
+			networkConfig.ExternalSecondaryCIDRs = append(networkConfig.ExternalSecondaryCIDRs, CIDR)
+			sipPools = append(sipPools, ipPool)
+		}
+	}
+
 	loxiAliveCh := make(chan *api.LoxiClient)
 	var loxilbClients []*api.LoxiClient
 	for _, lbURL := range networkConfig.LoxilbURLs {
@@ -104,6 +123,7 @@ func run(o *Options) error {
 		k8sClient,
 		loxilbClients,
 		ipPool,
+		sipPools,
 		networkConfig,
 		informerFactory,
 	)
