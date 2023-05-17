@@ -20,12 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"path"
-	"reflect"
-	"strings"
-	"time"
-
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -38,6 +32,12 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"net"
+	"path"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
 
 	"kube-loxilb/pkg/agent/config"
 	"kube-loxilb/pkg/api"
@@ -45,12 +45,13 @@ import (
 )
 
 const (
-	mgrName        = "LoxilbLoadBalancerManager"
-	resyncPeriod   = 60 * time.Second
-	minRetryDelay  = 2 * time.Second
-	maxRetryDelay  = 120 * time.Second
-	defaultWorkers = 4
-	LoxiMaxWeight  = 10
+	mgrName            = "LoxilbLoadBalancerManager"
+	resyncPeriod       = 60 * time.Second
+	minRetryDelay      = 2 * time.Second
+	maxRetryDelay      = 120 * time.Second
+	defaultWorkers     = 4
+	LoxiMaxWeight      = 10
+	numSecIPAnnotation = "loxilb.io/num-secondary-networks"
 )
 
 type Manager struct {
@@ -240,6 +241,16 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
 		return nil
+	}
+
+	// Check for loxilb specific annotations
+	if na := svc.Annotations[numSecIPAnnotation]; na != "" {
+		num, err := strconv.Atoi(na)
+		if err != nil {
+			numSecondarySvc = 0
+		} else {
+			numSecondarySvc = num
+		}
 	}
 
 	endpointIPs, err := m.getEndpoints()
