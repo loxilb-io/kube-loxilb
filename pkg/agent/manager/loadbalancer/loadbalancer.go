@@ -345,7 +345,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		var errChList []chan error
 		var lbModelList []api.LoadBalancerModel
 		for _, port := range svc.Spec.Ports {
-			lbModel := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, lbCache.SecIPs, port, endpointIPs, needPodEP)
+			lbModel, err := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, lbCache.SecIPs, svc, port, endpointIPs, needPodEP)
+			if err != nil {
+				return err
+			}
 			lbModelList = append(lbModelList, lbModel)
 		}
 
@@ -446,6 +449,9 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 	return nil
 }
 
+// getEndpoints return LB's endpoints IP list.
+// If podEP is true, return multus endpoints list.
+// If false, return worker nodes IP list.
 func (m *Manager) getEndpoints(svc *corev1.Service, podEP bool) ([]string, error) {
 	if podEP {
 		return m.getMultusEndpoints(svc)
@@ -454,6 +460,7 @@ func (m *Manager) getEndpoints(svc *corev1.Service, podEP bool) ([]string, error
 	return m.getNodeEndpoints()
 }
 
+// getNodeEndpoints returns the IP list of nodes available as nodePort service.
 func (m *Manager) getNodeEndpoints() ([]string, error) {
 	req, err := labels.NewRequirement("node.kubernetes.io/exclude-from-external-load-balancers", selection.DoesNotExist, []string{})
 	if err != nil {
@@ -470,67 +477,15 @@ func (m *Manager) getNodeEndpoints() ([]string, error) {
 	return m.getEndpointsForLB(nodes), nil
 }
 
+// getMultusEndpoints returns the IP list of the Pods connected to the multus network.
 func (m *Manager) getMultusEndpoints(svc *corev1.Service) ([]string, error) {
-	var epList []string
-
 	netListStr, ok := svc.Annotations[LoxiMultusServiceAnnotation]
 	if !ok {
 		return nil, errors.New("not found multus annotations")
 	}
 	netList := strings.Split(netListStr, ",")
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
-
-	selectorLabelStr := labels.Set(svc.Spec.Selector).String()
-	podList, err := m.kubeClient.CoreV1().Pods(svc.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
-	if err != nil {
-		return epList, err
-	}
-
-	contain := func(strList []string, s string) bool {
-		for _, str := range strList {
-			if str == s {
-				return true
-			}
-		}
-		return false
-	}
-
-	for _, pod := range podList.Items {
-		multusNetworkListStr, ok := pod.Annotations["k8s.v1.cni.cncf.io/networks"]
-		if !ok {
-			continue
-		}
-
-		networkStatusListStr, ok := pod.Annotations["k8s.v1.cni.cncf.io/networks-status"]
-		if !ok {
-			return epList, errors.New("net found k8s.v1.cni.cncf.io/networks-status annotation")
-		}
-
-		networkStatusList, err := k8s.UnmarshalNetworkStatus(networkStatusListStr)
-		if err != nil {
-			return epList, err
-		}
-
-		multusNetworkList := strings.Split(multusNetworkListStr, ",")
-		for _, mNet := range multusNetworkList {
-			if !contain(netList, mNet) {
-				continue
-			}
-
-			netName := k8s.GetMultusNetworkName(pod.Namespace, mNet)
-			for _, ns := range networkStatusList {
-				if ns.Name == netName {
-					if len(ns.Ips) > 0 {
-						epList = append(epList, ns.Ips...)
-					}
-				}
-			}
-		}
-	}
-
-	return epList, nil
+	return k8s.GetMultusEndpoints(m.kubeClient, svc, netList)
 }
 
 func (m *Manager) getNodeAddress(node corev1.Node) (string, error) {
@@ -669,7 +624,7 @@ func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []st
 	return ips
 }
 
-func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string, port corev1.ServicePort, endpointIPs []string, needPodEP bool) api.LoadBalancerModel {
+func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string,  svc *corev1.Service, port corev1.ServicePort, endpointIPs []string, needPodEP bool) (api.LoadBalancerModel, error) {
 	loxiEndpointModelList := []api.LoadBalancerEndpoint{}
 	loxiSecIPModelList := []api.LoadBalancerSecIp{}
 
@@ -686,7 +641,11 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string, 
 
 			tport := uint16(port.NodePort)
 			if needPodEP {
-				tport = uint16(port.TargetPort.IntVal)
+				portNum, err := k8s.GetServicePortIntValue(m.kubeClient, svc, port)
+				if err != nil {
+					return api.LoadBalancerModel{}, err
+				}
+				tport = uint16(portNum)
 			}
 
 			loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
@@ -714,7 +673,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string, 
 		},
 		SecondaryIPs: loxiSecIPModelList,
 		Endpoints:    loxiEndpointModelList,
-	}
+	}, nil
 }
 
 func (m *Manager) addIngress(service *corev1.Service, newIP net.IP) {
