@@ -97,9 +97,9 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svc *corev1.Service, net
 			continue
 		}
 
-		networkStatusListStr, ok := pod.Annotations["k8s.v1.cni.cncf.io/networks-status"]
+		networkStatusListStr, ok := pod.Annotations["k8s.v1.cni.cncf.io/network-status"]
 		if !ok {
-			return epList, errors.New("net found k8s.v1.cni.cncf.io/networks-status annotation")
+			return epList, errors.New("net found k8s.v1.cni.cncf.io/network-status annotation")
 		}
 
 		networkStatusList, err := UnmarshalNetworkStatus(networkStatusListStr)

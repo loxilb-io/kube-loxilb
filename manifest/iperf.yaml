@@ -3,7 +3,6 @@ kind: Service
 metadata:
   name: iperf-service
 spec:
-  externalTrafficPolicy: Local
   loadBalancerClass: loxilb.io/loxilb
   selector:
     what: perf-test
