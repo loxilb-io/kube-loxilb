@@ -341,7 +341,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		var errChList []chan error
 		var lbModelList []api.LoadBalancerModel
 		for _, port := range svc.Spec.Ports {
-			lbModel := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, port, endpointIPs)
+			lbModel := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, lbCache.SecIPs, port, endpointIPs)
 			lbModelList = append(lbModelList, lbModel)
 		}
 
@@ -595,8 +595,9 @@ func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []st
 	return ips
 }
 
-func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, port corev1.ServicePort, endpointIPs []string) api.LoadBalancerModel {
+func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string, port corev1.ServicePort, endpointIPs []string) api.LoadBalancerModel {
 	loxiEndpointModelList := []api.LoadBalancerEndpoint{}
+	loxiSecIPModelList := []api.LoadBalancerSecIp{}
 
 	if len(endpointIPs) > 0 {
 		endpointWeight := uint8(LoxiMaxWeight / len(endpointIPs))
@@ -617,6 +618,12 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, port corev1.Servi
 		}
 	}
 
+	if len(secIPs) > 0 {
+		for _, secIP := range secIPs {
+			loxiSecIPModelList = append(loxiSecIPModelList, api.LoadBalancerSecIp{SecondaryIP: secIP})
+		}
+	}
+
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
 			ExternalIP: externalIP,
@@ -626,7 +633,8 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, port corev1.Servi
 			Mode:       api.LbMode(m.networkConfig.SetLBMode),
 			Monitor:    m.networkConfig.Monitor,
 		},
-		Endpoints: loxiEndpointModelList,
+		SecondaryIPs: loxiSecIPModelList,
+		Endpoints:    loxiEndpointModelList,
 	}
 }
 
