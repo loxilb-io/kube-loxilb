@@ -263,11 +263,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	cacheKey := GenKey(svc.Namespace, svc.Name)
-	lbCache, added := m.lbCache[cacheKey]
+	_, added := m.lbCache[cacheKey]
 	if !added {
 		//c.lbCache[cacheKey] = make([]api.LoadBalancerModel, 0)
 		m.lbCache[cacheKey] = &LbCacheEntry{
-			State: "Added",
+			State:  "Added",
+			SecIPs: []string{},
 		}
 	}
 
@@ -287,7 +288,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("Secondary IP Pairs %v", ingSecSvcPairs)
 
 		for _, ingSecSvcPair := range ingSecSvcPairs {
-			lbCache.SecIPs = append(lbCache.SecIPs, ingSecSvcPair.IPString)
+			m.lbCache[cacheKey].SecIPs = append(m.lbCache[cacheKey].SecIPs, ingSecSvcPair.IPString)
 		}
 	}
 
@@ -345,7 +346,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		var errChList []chan error
 		var lbModelList []api.LoadBalancerModel
 		for _, port := range svc.Spec.Ports {
-			lbModel, err := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, lbCache.SecIPs, svc, port, endpointIPs, needPodEP)
+			lbModel, err := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, m.lbCache[cacheKey].SecIPs, svc, port, endpointIPs, needPodEP)
 			if err != nil {
 				return err
 			}
@@ -584,7 +585,7 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 
 	if len(m.ExtSecondaryIPPools) < numSecondary {
 		klog.Errorf("failed to generate external secondary IP. No IP pools")
-		return nil, errors.New("failed to generate external secondary IP. No IP pools")
+		return sPairs, errors.New("failed to generate external secondary IP. No IP pools")
 	}
 
 	for i := 0; i < numSecondary; i++ {
@@ -624,7 +625,7 @@ func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []st
 	return ips
 }
 
-func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string,  svc *corev1.Service, port corev1.ServicePort, endpointIPs []string, needPodEP bool) (api.LoadBalancerModel, error) {
+func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string, svc *corev1.Service, port corev1.ServicePort, endpointIPs []string, needPodEP bool) (api.LoadBalancerModel, error) {
 	loxiEndpointModelList := []api.LoadBalancerEndpoint{}
 	loxiSecIPModelList := []api.LoadBalancerSecIp{}
 
