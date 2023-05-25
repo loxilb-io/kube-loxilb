@@ -16,8 +16,9 @@ func (lbListModel *LoadBalancerListModel) GetKeyStruct() LoxiModel {
 }
 
 type LoadBalancerModel struct {
-	Service   LoadBalancerService    `json:"serviceArguments"`
-	Endpoints []LoadBalancerEndpoint `json:"endpoints"`
+	Service      LoadBalancerService    `json:"serviceArguments"`
+	SecondaryIPs []LoadBalancerSecIp    `json:"secondaryIPs"`
+	Endpoints    []LoadBalancerEndpoint `json:"endpoints"`
 }
 
 func (lbModel *LoadBalancerModel) GetKeyStruct() LoxiModel {
@@ -45,6 +46,10 @@ type LoadBalancerEndpoint struct {
 	TargetPort uint16 `json:"targetPort"`
 	Weight     uint8  `json:"weight"`
 	State      string `json:"state"`
+}
+
+type LoadBalancerSecIp struct {
+	SecondaryIP string `json:"secondaryIP"`
 }
 
 type LoadBalancerAPI struct {

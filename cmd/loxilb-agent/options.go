@@ -49,6 +49,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.configFile, "config", o.configFile, "The path to the configuration file")
 	fs.StringVar(&loxiURLFlag, "loxiURL", loxiURLFlag, "loxilb API server URL(s)")
 	fs.StringVar(&o.config.ExternalCIDR, "externalCIDR", o.config.ExternalCIDR, "External CIDR Range")
+	fs.StringVar(&o.config.ExternalSecondaryCIDRs, "externalSecondaryCIDRs", o.config.ExternalCIDR, "External Secondary CIDR Range(s)")
 	fs.StringVar(&o.config.LoxilbLoadBalancerClass, "loxilbLoadBalancerClass", o.config.LoxilbLoadBalancerClass, "Load-Balancer Class Name")
 	fs.BoolVar(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
 	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", o.config.ExclIPAM, "Use unique IPAM per service")
@@ -85,6 +86,19 @@ func (o *Options) validate(args []string) error {
 	if o.config.ExternalCIDR != "" {
 		if _, _, err := net.ParseCIDR(o.config.ExternalCIDR); err != nil {
 			return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDR)
+		}
+	}
+
+	if o.config.ExternalSecondaryCIDRs != "" {
+		CIDRs := strings.Split(o.config.ExternalSecondaryCIDRs, ",")
+		if len(CIDRs) <= 0 && len(CIDRs) > 4 {
+			return fmt.Errorf("externalSecondaryCIDR %s config is invalid", o.config.ExternalSecondaryCIDRs)
+		}
+
+		for _, CIDR := range CIDRs {
+			if _, _, err := net.ParseCIDR(CIDR); err != nil {
+				return fmt.Errorf("externalSecondaryCIDR %s config is invalid", CIDR)
+			}
 		}
 	}
 

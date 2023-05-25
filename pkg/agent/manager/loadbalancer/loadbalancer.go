@@ -20,12 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"path"
-	"reflect"
-	"strings"
-	"time"
-
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -38,6 +32,12 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"net"
+	"path"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
 
 	"kube-loxilb/pkg/agent/config"
 	"kube-loxilb/pkg/api"
@@ -53,6 +53,7 @@ const (
 	defaultWorkers              = 4
 	LoxiMaxWeight               = 10
 	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
+	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
 )
 
 type Manager struct {
@@ -66,6 +67,7 @@ type Manager struct {
 	nodeLister          corelisters.NodeLister
 	nodeListerSynced    cache.InformerSynced
 	ExternalIPPool      *ippool.IPPool
+	ExtSecondaryIPPools []*ippool.IPPool
 
 	queue   workqueue.RateLimitingInterface
 	lbCache LbCacheTable
@@ -73,6 +75,7 @@ type Manager struct {
 
 type LbCacheEntry struct {
 	State       string
+	SecIPs      []string
 	LbModelList []api.LoadBalancerModel
 }
 
@@ -100,6 +103,7 @@ func NewLoadBalancerManager(
 	kubeClient clientset.Interface,
 	loxiClients []*api.LoxiClient,
 	externalIPPool *ippool.IPPool,
+	externalSecondaryIPPools []*ippool.IPPool,
 	networkConfig *config.NetworkConfig,
 	informerFactory informers.SharedInformerFactory) *Manager {
 
@@ -109,6 +113,7 @@ func NewLoadBalancerManager(
 		kubeClient:          kubeClient,
 		loxiClients:         loxiClients,
 		ExternalIPPool:      externalIPPool,
+		ExtSecondaryIPPools: externalSecondaryIPPools,
 		networkConfig:       networkConfig,
 		serviceInformer:     serviceInformer,
 		serviceLister:       serviceInformer.Lister(),
@@ -234,8 +239,20 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return nil
 	}
 
+	numSecondarySvc := 0
+
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
 		return nil
+	}
+
+	// Check for loxilb specific annotations
+	if na := svc.Annotations[numSecIPAnnotation]; na != "" {
+		num, err := strconv.Atoi(na)
+		if err != nil {
+			numSecondarySvc = 0
+		} else {
+			numSecondarySvc = num
+		}
 	}
 
 	// Check for loxilb specific annotation
@@ -250,7 +267,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	if !added {
 		//c.lbCache[cacheKey] = make([]api.LoadBalancerModel, 0)
 		m.lbCache[cacheKey] = &LbCacheEntry{
-			State: "Added",
+			State:  "Added",
+			SecIPs: []string{},
 		}
 	}
 
@@ -260,6 +278,18 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	ingSvcPairs, err := m.getIngressSvcPairs(svc)
 	if err != nil {
 		return err
+	}
+
+	if !added {
+		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc)
+		if err != nil {
+			return err
+		}
+		klog.Infof("Secondary IP Pairs %v", ingSecSvcPairs)
+
+		for _, ingSecSvcPair := range ingSecSvcPairs {
+			m.lbCache[cacheKey].SecIPs = append(m.lbCache[cacheKey].SecIPs, ingSecSvcPair.IPString)
+		}
 	}
 
 	update := false
@@ -316,7 +346,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		var errChList []chan error
 		var lbModelList []api.LoadBalancerModel
 		for _, port := range svc.Spec.Ports {
-			lbModel, err := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, svc, port, endpointIPs, needPodEP)
+			lbModel, err := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, m.lbCache[cacheKey].SecIPs, svc, port, endpointIPs, needPodEP)
 			if err != nil {
 				return err
 			}
@@ -409,6 +439,11 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 			return fmt.Errorf("failed to delete loxiLB LoadBalancer")
 		}
 		m.ExternalIPPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
+		for idx, ingSecIP := range lbEntry.SecIPs {
+			if idx < len(m.ExtSecondaryIPPools) {
+				m.ExtSecondaryIPPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+			}
+		}
 	}
 
 	delete(m.lbCache, cacheKey)
@@ -544,6 +579,43 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service) ([]SvcPair, error)
 	return sPairs, nil
 }
 
+// getIngressSecSvcPairs returns a set of secondary IPs
+func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary int) ([]SvcPair, error) {
+	var sPairs []SvcPair
+
+	if len(m.ExtSecondaryIPPools) < numSecondary {
+		klog.Errorf("failed to generate external secondary IP. No IP pools")
+		return sPairs, errors.New("failed to generate external secondary IP. No IP pools")
+	}
+
+	for i := 0; i < numSecondary; i++ {
+		for _, port := range service.Spec.Ports {
+			pool := m.ExtSecondaryIPPools[i]
+			proto := strings.ToLower(string(port.Protocol))
+			portNum := port.Port
+			newIP := pool.GetNewIPAddr(uint32(portNum), proto)
+			if newIP == nil {
+				// This is a safety code in case the service has the same port.
+				for _, s := range sPairs {
+					if s.Port == portNum && s.Protocol == proto {
+						continue
+					}
+				}
+				for j := 0; j < i; j++ {
+					rpool := m.ExtSecondaryIPPools[j]
+					rpool.ReturnIPAddr(sPairs[j].IPString, uint32(portNum), proto)
+				}
+				klog.Errorf("failed to generate external secondary IP. IP Pool is full")
+				return nil, errors.New("failed to generate external secondary IP. IP Pool is full")
+			}
+			sp := SvcPair{newIP.String(), portNum, proto}
+			sPairs = append(sPairs, sp)
+		}
+	}
+
+	return sPairs, nil
+}
+
 func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []string {
 	var ips []string
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
@@ -553,8 +625,9 @@ func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []st
 	return ips
 }
 
-func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, svc *corev1.Service, port corev1.ServicePort, endpointIPs []string, needPodEP bool) (api.LoadBalancerModel, error) {
+func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, secIPs []string, svc *corev1.Service, port corev1.ServicePort, endpointIPs []string, needPodEP bool) (api.LoadBalancerModel, error) {
 	loxiEndpointModelList := []api.LoadBalancerEndpoint{}
+	loxiSecIPModelList := []api.LoadBalancerSecIp{}
 
 	if len(endpointIPs) > 0 {
 		endpointWeight := uint8(LoxiMaxWeight / len(endpointIPs))
@@ -584,6 +657,12 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, svc *corev1.Servi
 		}
 	}
 
+	if len(secIPs) > 0 {
+		for _, secIP := range secIPs {
+			loxiSecIPModelList = append(loxiSecIPModelList, api.LoadBalancerSecIp{SecondaryIP: secIP})
+		}
+	}
+
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
 			ExternalIP: externalIP,
@@ -593,7 +672,8 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, svc *corev1.Servi
 			Mode:       api.LbMode(m.networkConfig.SetLBMode),
 			Monitor:    m.networkConfig.Monitor,
 		},
-		Endpoints: loxiEndpointModelList,
+		SecondaryIPs: loxiSecIPModelList,
+		Endpoints:    loxiEndpointModelList,
 	}, nil
 }
 
