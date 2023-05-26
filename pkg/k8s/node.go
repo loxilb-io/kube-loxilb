@@ -17,10 +17,17 @@
 package k8s
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	clientset "k8s.io/client-go/kubernetes"
 )
 
 // GetNodeAddr gets the available IP address of a Node.
@@ -43,4 +50,33 @@ func GetNodeAddr(node *v1.Node) (net.IP, error) {
 		return nil, fmt.Errorf("<%v> is not a valid ip address", ipAddrStr)
 	}
 	return ipAddr, nil
+}
+
+// GetServiceLocalEndpoints - Get HostIPs of pods belonging to the given service
+func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Service) ([]string, error) {
+	var epList []string
+	var epMap map[string]struct{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	selectorLabelStr := labels.Set(svc.Spec.Selector).String()
+	podList, err := kubeClient.CoreV1().Pods(svc.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
+	if err != nil {
+		return epList, err
+	}
+
+	for _, pod := range podList.Items {
+		if pod.Status.HostIP != "" {
+			if _, found := epMap[pod.Status.HostIP]; !found {
+				epList = append(epList, pod.Status.HostIP)
+			} else {
+				epMap[pod.Status.HostIP] = struct{}{}
+			}
+		}
+	}
+	if len(epList) <= 0 {
+		return epList, errors.New("no active endpoints")
+	}
+	return epList, nil
 }

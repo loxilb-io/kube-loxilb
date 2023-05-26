@@ -271,6 +271,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return err
 	}
 
+	klog.Infof("Endpoint IP Pairs %v", endpointIPs)
+
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	_, added := m.lbCache[cacheKey]
 	if !added {
@@ -469,9 +471,14 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 // If false, return worker nodes IP list.
 func (m *Manager) getEndpoints(svc *corev1.Service, podEP bool) ([]string, error) {
 	if podEP {
+		klog.Infof("getEndpoints: Pod end-points")
 		return m.getMultusEndpoints(svc)
 	}
 
+	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeLocal {
+		klog.Infof("getEndpoints: Traffic Policy Local")
+		return k8s.GetServiceLocalEndpoints(m.kubeClient, svc)
+	}
 	return m.getNodeEndpoints()
 }
 
@@ -490,6 +497,17 @@ func (m *Manager) getNodeEndpoints() ([]string, error) {
 	}
 
 	return m.getEndpointsForLB(nodes), nil
+}
+
+// getLocalEndpoints returns the IP list of the Pods connected to the multus network.
+func (m *Manager) getLocalEndpoints(svc *corev1.Service) ([]string, error) {
+	netListStr, ok := svc.Annotations[LoxiMultusServiceAnnotation]
+	if !ok {
+		return nil, errors.New("not found multus annotations")
+	}
+	netList := strings.Split(netListStr, ",")
+
+	return k8s.GetMultusEndpoints(m.kubeClient, svc, netList)
 }
 
 // getMultusEndpoints returns the IP list of the Pods connected to the multus network.
