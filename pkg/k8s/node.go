@@ -55,7 +55,6 @@ func GetNodeAddr(node *v1.Node) (net.IP, error) {
 // GetServiceLocalEndpoints - Get HostIPs of pods belonging to the given service
 func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Service) ([]string, error) {
 	var epList []string
-	var epMap map[string]struct{}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
@@ -66,12 +65,12 @@ func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Servic
 		return epList, err
 	}
 
+	epMap := make(map[string]struct{})
 	for _, pod := range podList.Items {
 		if pod.Status.HostIP != "" {
 			if _, found := epMap[pod.Status.HostIP]; !found {
-				epList = append(epList, pod.Status.HostIP)
-			} else {
 				epMap[pod.Status.HostIP] = struct{}{}
+				epList = append(epList, pod.Status.HostIP)
 			}
 		}
 	}
