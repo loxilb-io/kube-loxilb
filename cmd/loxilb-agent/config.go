@@ -41,7 +41,7 @@ type AgentConfig struct {
 	// support LoadBalancer external IP
 	ExternalCIDR string `yaml:"externalCIDR,omitempty"`
 	// support LoadBalancer external secondary IP. This is a comma separated list
-	ExternalSecondaryCIDRs string `yaml:"ExternalSecondaryCIDRs,omitempty"`
+	ExternalSecondaryCIDRs []string `yaml:"externalSecondaryCIDRs,omitempty"`
 	// support BGP protocol
 	SetBGP bool `yaml:"setBGP,omitempty"`
 	// loxilb loadbalancer mode

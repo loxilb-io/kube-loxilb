@@ -28,7 +28,8 @@ import (
 )
 
 var (
-	loxiURLFlag = ""
+	loxiURLFlag    = ""
+	secondaryCIDRs = ""
 )
 
 type Options struct {
@@ -49,7 +50,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.configFile, "config", o.configFile, "The path to the configuration file")
 	fs.StringVar(&loxiURLFlag, "loxiURL", loxiURLFlag, "loxilb API server URL(s)")
 	fs.StringVar(&o.config.ExternalCIDR, "externalCIDR", o.config.ExternalCIDR, "External CIDR Range")
-	fs.StringVar(&o.config.ExternalSecondaryCIDRs, "externalSecondaryCIDRs", o.config.ExternalCIDR, "External Secondary CIDR Range(s)")
+	fs.StringVar(&secondaryCIDRs, "externalSecondaryCIDRs", secondaryCIDRs, "External Secondary CIDR Range(s)")
 	fs.StringVar(&o.config.LoxilbLoadBalancerClass, "loxilbLoadBalancerClass", o.config.LoxilbLoadBalancerClass, "Load-Balancer Class Name")
 	fs.BoolVar(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
 	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", o.config.ExclIPAM, "Use unique IPAM per service")
@@ -89,13 +90,12 @@ func (o *Options) validate(args []string) error {
 		}
 	}
 
-	if o.config.ExternalSecondaryCIDRs != "" {
-		CIDRs := strings.Split(o.config.ExternalSecondaryCIDRs, ",")
-		if len(CIDRs) <= 0 && len(CIDRs) > 4 {
-			return fmt.Errorf("externalSecondaryCIDR %s config is invalid", o.config.ExternalSecondaryCIDRs)
+	if len(o.config.ExternalSecondaryCIDRs) > 0 {
+		if len(o.config.ExternalSecondaryCIDRs) > 4 {
+			return fmt.Errorf("externalSecondaryCIDR %v config is invalid", o.config.ExternalSecondaryCIDRs)
 		}
 
-		for _, CIDR := range CIDRs {
+		for _, CIDR := range o.config.ExternalSecondaryCIDRs {
 			if _, _, err := net.ParseCIDR(CIDR); err != nil {
 				return fmt.Errorf("externalSecondaryCIDR %s config is invalid", CIDR)
 			}
@@ -128,6 +128,9 @@ func (o *Options) updateConfigFromCommandLine() {
 	if loxiURLFlag != "" {
 		o.config.LoxiURLs = strings.Split(loxiURLFlag, ",")
 	}
+	if secondaryCIDRs != "" {
+		o.config.ExternalSecondaryCIDRs = strings.Split(secondaryCIDRs, ",")
+	}
 }
 
 const (
@@ -154,5 +157,8 @@ func (o *Options) setDefaults() {
 	}
 	if o.config.ExternalCIDR == "" {
 		o.config.ExternalCIDR = "123.123.123.1/24"
+	}
+	if o.config.ExternalSecondaryCIDRs == nil {
+		o.config.ExternalSecondaryCIDRs = []string{}
 	}
 }

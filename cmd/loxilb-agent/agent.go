@@ -26,7 +26,6 @@ import (
 	"kube-loxilb/pkg/log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -73,6 +72,7 @@ func run(o *Options) error {
 	klog.Infof("SetLBMode: %v", o.config.SetLBMode)
 	klog.Infof("ExclIPAM: %v", o.config.ExclIPAM)
 	klog.Infof("Monitor: %v", o.config.Monitor)
+	klog.Infof("SecondaryCIDRs: %v", o.config.ExternalSecondaryCIDRs)
 
 	networkConfig := &config.NetworkConfig{
 		LoxilbURLs:              o.config.LoxiURLs,
@@ -81,6 +81,7 @@ func run(o *Options) error {
 		SetBGP:                  o.config.SetBGP,
 		SetLBMode:               o.config.SetLBMode,
 		Monitor:                 o.config.Monitor,
+		ExternalSecondaryCIDRs:  o.config.ExternalSecondaryCIDRs,
 	}
 
 	ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), networkConfig.ExternalCIDR, !o.config.ExclIPAM)
@@ -90,13 +91,13 @@ func run(o *Options) error {
 	}
 
 	var sipPools []*ippool.IPPool
-	if o.config.ExternalSecondaryCIDRs != "" {
-		CIDRs := strings.Split(o.config.ExternalSecondaryCIDRs, ",")
-		if len(CIDRs) <= 0 && len(CIDRs) > 4 {
+	if len(o.config.ExternalSecondaryCIDRs) != 0 {
+
+		if len(o.config.ExternalSecondaryCIDRs) > 4 {
 			return fmt.Errorf("externalSecondaryCIDR %s config is invalid", o.config.ExternalSecondaryCIDRs)
 		}
 
-		for _, CIDR := range CIDRs {
+		for _, CIDR := range o.config.ExternalSecondaryCIDRs {
 			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), CIDR, !o.config.ExclIPAM)
 			if err != nil {
 				klog.Errorf("failed to create external secondary IP Pool (CIDR: %s)", CIDR)
@@ -105,6 +106,7 @@ func run(o *Options) error {
 
 			networkConfig.ExternalSecondaryCIDRs = append(networkConfig.ExternalSecondaryCIDRs, CIDR)
 			sipPools = append(sipPools, ipPool)
+			klog.Infof("create external secondary IP Pool (CIDR: %s) %v", CIDR, len(sipPools))
 		}
 	}
 
