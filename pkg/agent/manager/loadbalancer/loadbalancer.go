@@ -271,8 +271,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return err
 	}
 
-	klog.Infof("Endpoint IP Pairs %v", endpointIPs)
-
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	_, added := m.lbCache[cacheKey]
 	if !added {
@@ -296,7 +294,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if err != nil {
 			return err
 		}
-		klog.Infof("Secondary IP Pairs %v", ingSecSvcPairs)
 
 		for _, ingSecSvcPair := range ingSecSvcPairs {
 			m.lbCache[cacheKey].SecIPs = append(m.lbCache[cacheKey].SecIPs, ingSecSvcPair.IPString)
@@ -339,6 +336,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	} else {
 		m.lbCache[cacheKey].LbModelList = nil
 		svc.Status.LoadBalancer.Ingress = nil
+		klog.Infof("Endpoint IP Pairs %v", endpointIPs)
+		klog.Infof("Secondary IP Pairs %v", m.lbCache[cacheKey].SecIPs)
 	}
 
 	// set defer for deallocate IP when get error
@@ -471,12 +470,12 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 // If false, return worker nodes IP list.
 func (m *Manager) getEndpoints(svc *corev1.Service, podEP bool) ([]string, error) {
 	if podEP {
-		klog.Infof("getEndpoints: Pod end-points")
+		//klog.Infof("getEndpoints: Pod end-points")
 		return m.getMultusEndpoints(svc)
 	}
 
 	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeLocal {
-		klog.Infof("getEndpoints: Traffic Policy Local")
+		//klog.Infof("getEndpoints: Traffic Policy Local")
 		return k8s.GetServiceLocalEndpoints(m.kubeClient, svc)
 	}
 	return m.getNodeEndpoints()
