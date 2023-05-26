@@ -347,6 +347,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			for _, sp := range ingSvcPairs {
 				klog.Infof("ip %s is newIP so retrieve pool", sp.IPString)
 				m.ExternalIPPool.ReturnIPAddr(sp.IPString, uint32(sp.Port), sp.Protocol)
+				for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
+					if idx < len(m.ExtSecondaryIPPools) {
+						m.ExtSecondaryIPPools[idx].ReturnIPAddr(ingSecIP, uint32(sp.Port), sp.Protocol)
+					}
+				}
 			}
 		}
 	}()
