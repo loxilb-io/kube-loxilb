@@ -55,6 +55,7 @@ const (
 	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
 	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
 	livenessAnnotation          = "loxilb.io/liveness"
+	lbModeAnnotation            = "loxilb.io/lbmode"
 )
 
 type Manager struct {
@@ -242,6 +243,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	numSecondarySvc := 0
 	livenessCheck := false
+	lbMode := -1
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
 		return nil
@@ -254,6 +256,19 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			numSecondarySvc = 0
 		} else {
 			numSecondarySvc = num
+		}
+	}
+
+	// Check for loxilb specific annotations - NAT LB Mode
+	if lbm := svc.Annotations[lbModeAnnotation]; lbm != "" {
+		if lbm == "fullnat" {
+			lbMode = 2
+		} else if lbm == "onearm" {
+			lbMode = 1
+		} else if lbm == "default" {
+			lbMode = 0
+		} else {
+			lbMode = -1
 		}
 	}
 
@@ -361,7 +376,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		var errChList []chan error
 		var lbModelList []api.LoadBalancerModel
 		for _, port := range svc.Spec.Ports {
-			lbModel, err := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, livenessCheck, m.lbCache[cacheKey].SecIPs, svc, port, endpointIPs, needPodEP)
+			lbModel, err := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, livenessCheck, lbMode, m.lbCache[cacheKey].SecIPs, svc, port, endpointIPs, needPodEP)
 			if err != nil {
 				return err
 			}
@@ -656,9 +671,10 @@ func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []st
 	return ips
 }
 
-func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, livenessCheck bool, secIPs []string, svc *corev1.Service, port corev1.ServicePort, endpointIPs []string, needPodEP bool) (api.LoadBalancerModel, error) {
+func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, livenessCheck bool, lbMode int, secIPs []string, svc *corev1.Service, port corev1.ServicePort, endpointIPs []string, needPodEP bool) (api.LoadBalancerModel, error) {
 	loxiEndpointModelList := []api.LoadBalancerEndpoint{}
 	loxiSecIPModelList := []api.LoadBalancerSecIp{}
+	lbModeSvc := api.LbMode(m.networkConfig.SetLBMode)
 
 	if len(endpointIPs) > 0 {
 		endpointWeight := uint8(LoxiMaxWeight / len(endpointIPs))
@@ -698,13 +714,17 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, livenessCheck boo
 		livenessCheck = true
 	}
 
+	if lbMode >= 0 {
+		lbModeSvc = api.LbMode(lbMode)
+	}
+
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
 			ExternalIP: externalIP,
 			Port:       uint16(port.Port),
 			Protocol:   strings.ToLower(string(port.Protocol)),
 			BGP:        m.networkConfig.SetBGP,
-			Mode:       api.LbMode(m.networkConfig.SetLBMode),
+			Mode:       lbModeSvc,
 			Monitor:    livenessCheck,
 		},
 		SecondaryIPs: loxiSecIPModelList,
