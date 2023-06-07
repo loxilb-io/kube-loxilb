@@ -39,10 +39,10 @@ import (
 	"strings"
 	"time"
 
-	"kube-loxilb/pkg/agent/config"
-	"kube-loxilb/pkg/api"
-	"kube-loxilb/pkg/ippool"
-	"kube-loxilb/pkg/k8s"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
+	"github.com/loxilb-io/kube-loxilb/pkg/api"
+	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
+	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 )
 
 const (

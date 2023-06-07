@@ -1,4 +1,4 @@
-module kube-loxilb
+module github.com/loxilb-io/kube-loxilb
 
 go 1.19
 

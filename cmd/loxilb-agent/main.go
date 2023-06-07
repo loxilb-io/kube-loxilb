@@ -25,9 +25,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"kube-loxilb/cmd"
-	"kube-loxilb/pkg/api"
-	"kube-loxilb/pkg/log"
+	"github.com/loxilb-io/kube-loxilb/cmd"
+	"github.com/loxilb-io/kube-loxilb/pkg/api"
+	"github.com/loxilb-io/kube-loxilb/pkg/log"
 )
 
 func Execute() {

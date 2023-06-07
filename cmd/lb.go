@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/spf13/cobra"
-	"kube-loxilb/pkg/api"
+	"github.com/loxilb-io/kube-loxilb/pkg/api"
 )
 
 func GetCmd(client *api.LoxiClient) *cobra.Command {
