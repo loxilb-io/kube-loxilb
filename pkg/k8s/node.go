@@ -70,10 +70,11 @@ func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Servic
 	for _, pod := range podList.Items {
 		if pod.Status.HostIP != "" {
 			if addrType == "ipv6" && !tk.IsNetIPv6(pod.Status.HostIP) {
-				if _, found := epMap[pod.Status.HostIP]; !found {
-					epMap[pod.Status.HostIP] = struct{}{}
-					epList = append(epList, pod.Status.HostIP)
-				}
+				continue
+			}
+			if _, found := epMap[pod.Status.HostIP]; !found {
+				epMap[pod.Status.HostIP] = struct{}{}
+				epList = append(epList, pod.Status.HostIP)
 			}
 		}
 	}

@@ -53,7 +53,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&loxiURLFlag, "loxiURL", loxiURLFlag, "loxilb API server URL(s)")
 	fs.StringVar(&o.config.ExternalCIDR, "externalCIDR", o.config.ExternalCIDR, "External CIDR Range")
 	fs.StringVar(&secondaryCIDRs, "externalSecondaryCIDRs", secondaryCIDRs, "External Secondary CIDR Range(s)")
-	fs.StringVar(&o.config.ExternalCIDR6, "externalCIDR", o.config.ExternalCIDR, "External CIDR6 Range")
+	fs.StringVar(&o.config.ExternalCIDR6, "externalCIDR6", o.config.ExternalCIDR6, "External CIDR6 Range")
 	fs.StringVar(&secondaryCIDRs6, "externalSecondaryCIDRs6", secondaryCIDRs6, "External Secondary CIDR6 Range(s)")
 	fs.StringVar(&o.config.LoxilbLoadBalancerClass, "loxilbLoadBalancerClass", o.config.LoxilbLoadBalancerClass, "Load-Balancer Class Name")
 	fs.BoolVar(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
