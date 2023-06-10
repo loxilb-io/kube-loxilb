@@ -20,6 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"path"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -32,12 +39,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-	"net"
-	"path"
-	"reflect"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -290,14 +291,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	// Check for loxilb specific annotations - Addressing
 	if lba := svc.Annotations[lbAddressAnnotation]; lba != "" {
-		if lba == "ipv4" || lba == "ipv6" || lba == "ipv64" {
+		if lba == "ipv4" || lba == "ipv6" || lba == "ipv6to4" {
 			addrType = lba
 		} else if lba == "ip" || lba == "ip4" {
 			addrType = "ipv4"
 		} else if lba == "ip6" || lba == "nat66" {
 			addrType = "ipv6"
 		} else if lba == "nat64" {
-			addrType = "ipv64"
+			addrType = "ipv6to4"
 		}
 	}
 
@@ -349,7 +350,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 
 		sipPools := m.ExtSecondaryIPPools
-		if addrType == "ipv6" {
+		if addrType == "ipv6" || addrType == "ipv6to4" {
 			sipPools = m.ExtSecondaryIP6Pools
 		}
 		for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
@@ -408,7 +409,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if isFailed {
 			ipPool := m.ExternalIPPool
 			sipPools := m.ExtSecondaryIPPools
-			if addrType == "ipv6" {
+			if addrType == "ipv6" || addrType == "ipv6to4" {
 				ipPool = m.ExternalIP6Pool
 				sipPools = m.ExtSecondaryIP6Pools
 			}
@@ -498,6 +499,13 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 		return nil
 	}
 
+	ipPool := m.ExternalIPPool
+	sipPools := m.ExtSecondaryIPPools
+	if lbEntry.Addr == "ipv6" || lbEntry.Addr == "ipv6to4" {
+		ipPool = m.ExternalIP6Pool
+		sipPools = m.ExtSecondaryIP6Pools
+	}
+
 	for _, lb := range lbEntry.LbModelList {
 		var errChList []chan error
 		for _, loxiClient := range m.loxiClients {
@@ -521,10 +529,10 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 		if isError {
 			return fmt.Errorf("failed to delete loxiLB LoadBalancer")
 		}
-		m.ExternalIPPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
+		ipPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
 		for idx, ingSecIP := range lbEntry.SecIPs {
 			if idx < len(m.ExtSecondaryIPPools) {
-				m.ExtSecondaryIPPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+				sipPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
 			}
 		}
 	}
@@ -643,7 +651,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 	isHasLoxiExternalIP := false
 
 	ipPool := m.ExternalIPPool
-	if addrType == "ipv6" {
+	if addrType == "ipv6" || addrType == "ipv6to4" {
 		ipPool = m.ExternalIP6Pool
 	}
 

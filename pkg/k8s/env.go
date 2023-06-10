@@ -51,7 +51,7 @@ func GetNodeName() (string, error) {
 
 // Check address belongs to desired family
 func AddrInFamily(addrType string, addr string) bool {
-	if ((addrType == "ipv4" || addrType == "ipv64") && tk.IsNetIPv4(addr)) ||
+	if ((addrType == "ipv4" || addrType == "ipv6to4") && tk.IsNetIPv4(addr)) ||
 		(addrType == "ipv6" && tk.IsNetIPv6(addr)) {
 		return true
 	}
