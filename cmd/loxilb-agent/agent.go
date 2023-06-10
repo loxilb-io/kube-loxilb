@@ -78,10 +78,12 @@ func run(o *Options) error {
 		LoxilbURLs:              o.config.LoxiURLs,
 		LoxilbLoadBalancerClass: o.config.LoxilbLoadBalancerClass,
 		ExternalCIDR:            o.config.ExternalCIDR,
+		ExternalCIDR6:           o.config.ExternalCIDR6,
 		SetBGP:                  o.config.SetBGP,
 		SetLBMode:               o.config.SetLBMode,
 		Monitor:                 o.config.Monitor,
 		ExternalSecondaryCIDRs:  o.config.ExternalSecondaryCIDRs,
+		ExternalSecondaryCIDRs6: o.config.ExternalSecondaryCIDRs6,
 	}
 
 	ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), networkConfig.ExternalCIDR, !o.config.ExclIPAM)
@@ -110,6 +112,32 @@ func run(o *Options) error {
 		}
 	}
 
+	ipPool6, err := ippool.NewIPPool(tk.IpAllocatorNew(), networkConfig.ExternalCIDR6, !o.config.ExclIPAM)
+	if err != nil {
+		klog.Errorf("failed to create external IP Pool (CIDR: %s)", networkConfig.ExternalCIDR6)
+		return err
+	}
+
+	var sipPools6 []*ippool.IPPool
+	if len(o.config.ExternalSecondaryCIDRs6) != 0 {
+
+		if len(o.config.ExternalSecondaryCIDRs6) > 4 {
+			return fmt.Errorf("externalSecondaryCIDR %s config is invalid", o.config.ExternalSecondaryCIDRs6)
+		}
+
+		for _, CIDR := range o.config.ExternalSecondaryCIDRs6 {
+			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), CIDR, !o.config.ExclIPAM)
+			if err != nil {
+				klog.Errorf("failed to create external secondary IP Pool (CIDR: %s)", CIDR)
+				return err
+			}
+
+			networkConfig.ExternalSecondaryCIDRs = append(networkConfig.ExternalSecondaryCIDRs6, CIDR)
+			sipPools6 = append(sipPools6, ipPool)
+			klog.Infof("create external secondary IP Pool (CIDR: %s) %v", CIDR, len(sipPools6))
+		}
+	}
+
 	loxiAliveCh := make(chan *api.LoxiClient)
 	var loxilbClients []*api.LoxiClient
 	for _, lbURL := range networkConfig.LoxilbURLs {
@@ -126,6 +154,8 @@ func run(o *Options) error {
 		loxilbClients,
 		ipPool,
 		sipPools,
+		ipPool6,
+		sipPools6,
 		networkConfig,
 		informerFactory,
 	)

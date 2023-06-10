@@ -21,6 +21,8 @@ type NetworkConfig struct {
 	LoxilbLoadBalancerClass string
 	ExternalCIDR            string
 	ExternalSecondaryCIDRs  []string
+	ExternalCIDR6           string
+	ExternalSecondaryCIDRs6 []string
 	SetBGP                  bool
 	SetLBMode               uint16
 	Monitor                 bool

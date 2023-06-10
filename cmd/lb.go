@@ -3,8 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/spf13/cobra"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
+	"github.com/spf13/cobra"
 )
 
 func GetCmd(client *api.LoxiClient) *cobra.Command {
