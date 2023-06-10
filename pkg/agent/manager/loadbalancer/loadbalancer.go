@@ -20,6 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"path"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -32,12 +39,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-	"net"
-	"path"
-	"reflect"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -56,26 +57,30 @@ const (
 	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
 	livenessAnnotation          = "loxilb.io/liveness"
 	lbModeAnnotation            = "loxilb.io/lbmode"
+	lbAddressAnnotation         = "loxilb.io/ipam"
 )
 
 type Manager struct {
-	kubeClient          clientset.Interface
-	loxiClients         []*api.LoxiClient
-	networkConfig       *config.NetworkConfig
-	serviceInformer     coreinformers.ServiceInformer
-	serviceLister       corelisters.ServiceLister
-	serviceListerSynced cache.InformerSynced
-	nodeInformer        coreinformers.NodeInformer
-	nodeLister          corelisters.NodeLister
-	nodeListerSynced    cache.InformerSynced
-	ExternalIPPool      *ippool.IPPool
-	ExtSecondaryIPPools []*ippool.IPPool
+	kubeClient           clientset.Interface
+	loxiClients          []*api.LoxiClient
+	networkConfig        *config.NetworkConfig
+	serviceInformer      coreinformers.ServiceInformer
+	serviceLister        corelisters.ServiceLister
+	serviceListerSynced  cache.InformerSynced
+	nodeInformer         coreinformers.NodeInformer
+	nodeLister           corelisters.NodeLister
+	nodeListerSynced     cache.InformerSynced
+	ExternalIPPool       *ippool.IPPool
+	ExtSecondaryIPPools  []*ippool.IPPool
+	ExternalIP6Pool      *ippool.IPPool
+	ExtSecondaryIP6Pools []*ippool.IPPool
 
 	queue   workqueue.RateLimitingInterface
 	lbCache LbCacheTable
 }
 
 type LbCacheEntry struct {
+	Addr        string
 	State       string
 	SecIPs      []string
 	LbModelList []api.LoadBalancerModel
@@ -106,23 +111,27 @@ func NewLoadBalancerManager(
 	loxiClients []*api.LoxiClient,
 	externalIPPool *ippool.IPPool,
 	externalSecondaryIPPools []*ippool.IPPool,
+	externalIP6Pool *ippool.IPPool,
+	externalSecondaryIP6Pools []*ippool.IPPool,
 	networkConfig *config.NetworkConfig,
 	informerFactory informers.SharedInformerFactory) *Manager {
 
 	serviceInformer := informerFactory.Core().V1().Services()
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	manager := &Manager{
-		kubeClient:          kubeClient,
-		loxiClients:         loxiClients,
-		ExternalIPPool:      externalIPPool,
-		ExtSecondaryIPPools: externalSecondaryIPPools,
-		networkConfig:       networkConfig,
-		serviceInformer:     serviceInformer,
-		serviceLister:       serviceInformer.Lister(),
-		serviceListerSynced: serviceInformer.Informer().HasSynced,
-		nodeInformer:        nodeInformer,
-		nodeLister:          nodeInformer.Lister(),
-		nodeListerSynced:    nodeInformer.Informer().HasSynced,
+		kubeClient:           kubeClient,
+		loxiClients:          loxiClients,
+		ExternalIPPool:       externalIPPool,
+		ExtSecondaryIPPools:  externalSecondaryIPPools,
+		ExternalIP6Pool:      externalIP6Pool,
+		ExtSecondaryIP6Pools: externalSecondaryIP6Pools,
+		networkConfig:        networkConfig,
+		serviceInformer:      serviceInformer,
+		serviceLister:        serviceInformer.Lister(),
+		serviceListerSynced:  serviceInformer.Informer().HasSynced,
+		nodeInformer:         nodeInformer,
+		nodeLister:           nodeInformer.Lister(),
+		nodeListerSynced:     nodeInformer.Informer().HasSynced,
 
 		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
 		lbCache: make(LbCacheTable),
@@ -244,6 +253,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	numSecondarySvc := 0
 	livenessCheck := false
 	lbMode := -1
+	addrType := "ipv4"
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
 		return nil
@@ -279,9 +289,28 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	// Check for loxilb specific annotations - Addressing
+	if lba := svc.Annotations[lbAddressAnnotation]; lba != "" {
+		if lba == "ipv4" || lba == "ipv6" || lba == "ipv6to4" {
+			addrType = lba
+		} else if lba == "ip" || lba == "ip4" {
+			addrType = "ipv4"
+		} else if lba == "ip6" || lba == "nat66" {
+			addrType = "ipv6"
+		} else if lba == "nat64" {
+			addrType = "ipv6to4"
+		}
+	}
+
+	if addrType != "ipv4" && numSecondarySvc != 0 {
+		klog.Infof("SecondaryIP Svc not possible for %v", addrType)
+		numSecondarySvc = 0
+	}
+
 	// Check for loxilb specific annotation - Multus Networks
 	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
-	endpointIPs, err := m.getEndpoints(svc, needPodEP)
+
+	endpointIPs, err := m.getEndpoints(svc, needPodEP, addrType)
 	if err != nil {
 		return err
 	}
@@ -289,9 +318,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	_, added := m.lbCache[cacheKey]
 	if !added {
+		if len(endpointIPs) <= 0 {
+			return errors.New("no active endpoints")
+		}
+
 		//c.lbCache[cacheKey] = make([]api.LoadBalancerModel, 0)
 		m.lbCache[cacheKey] = &LbCacheEntry{
 			State:  "Added",
+			Addr:   addrType,
 			SecIPs: []string{},
 		}
 	}
@@ -299,25 +333,44 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	oldsvc := svc.DeepCopy()
 
 	// Check if service has ingress IP already allocated
-	ingSvcPairs, err := m.getIngressSvcPairs(svc)
+	ingSvcPairs, err := m.getIngressSvcPairs(svc, addrType)
 	if err != nil {
 		return err
-	}
-
-	if !added {
-		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc)
-		if err != nil {
-			return err
-		}
-
-		for _, ingSecSvcPair := range ingSecSvcPairs {
-			m.lbCache[cacheKey].SecIPs = append(m.lbCache[cacheKey].SecIPs, ingSecSvcPair.IPString)
-		}
 	}
 
 	update := false
 	if len(m.lbCache[cacheKey].LbModelList) <= 0 {
 		update = true
+	}
+
+	if addrType != m.lbCache[cacheKey].Addr {
+		update = true
+	}
+
+	if len(m.lbCache[cacheKey].SecIPs) != numSecondarySvc {
+		update = true
+		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, addrType)
+		if err != nil {
+			return err
+		}
+
+		sipPools := m.ExtSecondaryIPPools
+		if addrType == "ipv6" || addrType == "ipv6to4" {
+			sipPools = m.ExtSecondaryIP6Pools
+		}
+		for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
+			if idx < len(sipPools) {
+				for _, lb := range m.lbCache[cacheKey].LbModelList {
+					sipPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+				}
+			}
+		}
+
+		m.lbCache[cacheKey].SecIPs = []string{}
+
+		for _, ingSecSvcPair := range ingSecSvcPairs {
+			m.lbCache[cacheKey].SecIPs = append(m.lbCache[cacheKey].SecIPs, ingSecSvcPair.IPString)
+		}
 	}
 
 	// Update endpoint list if the list has changed
@@ -359,13 +412,19 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	isFailed := false
 	defer func() {
 		if isFailed {
+			ipPool := m.ExternalIPPool
+			sipPools := m.ExtSecondaryIPPools
+			if addrType == "ipv6" || addrType == "ipv6to4" {
+				ipPool = m.ExternalIP6Pool
+				sipPools = m.ExtSecondaryIP6Pools
+			}
 			klog.Infof("deallocateOnFailure defer function called")
 			for _, sp := range ingSvcPairs {
 				klog.Infof("ip %s is newIP so retrieve pool", sp.IPString)
-				m.ExternalIPPool.ReturnIPAddr(sp.IPString, uint32(sp.Port), sp.Protocol)
+				ipPool.ReturnIPAddr(sp.IPString, uint32(sp.Port), sp.Protocol)
 				for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
-					if idx < len(m.ExtSecondaryIPPools) {
-						m.ExtSecondaryIPPools[idx].ReturnIPAddr(ingSecIP, uint32(sp.Port), sp.Protocol)
+					if idx < len(sipPools) {
+						sipPools[idx].ReturnIPAddr(ingSecIP, uint32(sp.Port), sp.Protocol)
 					}
 				}
 			}
@@ -445,6 +504,13 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 		return nil
 	}
 
+	ipPool := m.ExternalIPPool
+	sipPools := m.ExtSecondaryIPPools
+	if lbEntry.Addr == "ipv6" || lbEntry.Addr == "ipv6to4" {
+		ipPool = m.ExternalIP6Pool
+		sipPools = m.ExtSecondaryIP6Pools
+	}
+
 	for _, lb := range lbEntry.LbModelList {
 		var errChList []chan error
 		for _, loxiClient := range m.loxiClients {
@@ -468,10 +534,10 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 		if isError {
 			return fmt.Errorf("failed to delete loxiLB LoadBalancer")
 		}
-		m.ExternalIPPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
+		ipPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
 		for idx, ingSecIP := range lbEntry.SecIPs {
-			if idx < len(m.ExtSecondaryIPPools) {
-				m.ExtSecondaryIPPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+			if idx < len(sipPools) {
+				sipPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
 			}
 		}
 	}
@@ -480,24 +546,59 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 	return nil
 }
 
+func (m *Manager) DeleteAllLoadBalancer() {
+
+	klog.Infof("Len %d", len(m.lbCache))
+	for _, lbEntry := range m.lbCache {
+
+		ipPool := m.ExternalIPPool
+		sipPools := m.ExtSecondaryIPPools
+		if lbEntry.Addr == "ipv6" || lbEntry.Addr == "ipv6to4" {
+			ipPool = m.ExternalIP6Pool
+			sipPools = m.ExtSecondaryIP6Pools
+		}
+
+		for _, lb := range lbEntry.LbModelList {
+			var errChList []chan error
+			for _, loxiClient := range m.loxiClients {
+				ch := make(chan error)
+				errChList = append(errChList, ch)
+
+				klog.Infof("called loxilb API: delete lb rule %v", lb)
+				loxiClient.LoadBalancer().Delete(context.Background(), &lb)
+			}
+
+			ipPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
+			for idx, ingSecIP := range lbEntry.SecIPs {
+				if idx < len(sipPools) {
+					sipPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+				}
+			}
+		}
+	}
+	m.lbCache = nil
+
+	return
+}
+
 // getEndpoints return LB's endpoints IP list.
 // If podEP is true, return multus endpoints list.
 // If false, return worker nodes IP list.
-func (m *Manager) getEndpoints(svc *corev1.Service, podEP bool) ([]string, error) {
+func (m *Manager) getEndpoints(svc *corev1.Service, podEP bool, addrType string) ([]string, error) {
 	if podEP {
 		//klog.Infof("getEndpoints: Pod end-points")
-		return m.getMultusEndpoints(svc)
+		return m.getMultusEndpoints(svc, addrType)
 	}
 
 	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeLocal {
 		//klog.Infof("getEndpoints: Traffic Policy Local")
-		return k8s.GetServiceLocalEndpoints(m.kubeClient, svc)
+		return k8s.GetServiceLocalEndpoints(m.kubeClient, svc, addrType)
 	}
-	return m.getNodeEndpoints()
+	return m.getNodeEndpoints(addrType)
 }
 
 // getNodeEndpoints returns the IP list of nodes available as nodePort service.
-func (m *Manager) getNodeEndpoints() ([]string, error) {
+func (m *Manager) getNodeEndpoints(addrType string) ([]string, error) {
 	req, err := labels.NewRequirement("node.kubernetes.io/exclude-from-external-load-balancers", selection.DoesNotExist, []string{})
 	if err != nil {
 		klog.Infof("getEndpoints: failed to make label requirement. err: %v", err)
@@ -510,32 +611,32 @@ func (m *Manager) getNodeEndpoints() ([]string, error) {
 		return nil, err
 	}
 
-	return m.getEndpointsForLB(nodes), nil
+	return m.getEndpointsForLB(nodes, addrType), nil
 }
 
 // getLocalEndpoints returns the IP list of the Pods connected to the multus network.
-func (m *Manager) getLocalEndpoints(svc *corev1.Service) ([]string, error) {
+func (m *Manager) getLocalEndpoints(svc *corev1.Service, addrType string) ([]string, error) {
 	netListStr, ok := svc.Annotations[LoxiMultusServiceAnnotation]
 	if !ok {
 		return nil, errors.New("not found multus annotations")
 	}
 	netList := strings.Split(netListStr, ",")
 
-	return k8s.GetMultusEndpoints(m.kubeClient, svc, netList)
+	return k8s.GetMultusEndpoints(m.kubeClient, svc, netList, addrType)
 }
 
 // getMultusEndpoints returns the IP list of the Pods connected to the multus network.
-func (m *Manager) getMultusEndpoints(svc *corev1.Service) ([]string, error) {
+func (m *Manager) getMultusEndpoints(svc *corev1.Service, addrType string) ([]string, error) {
 	netListStr, ok := svc.Annotations[LoxiMultusServiceAnnotation]
 	if !ok {
 		return nil, errors.New("not found multus annotations")
 	}
 	netList := strings.Split(netListStr, ",")
 
-	return k8s.GetMultusEndpoints(m.kubeClient, svc, netList)
+	return k8s.GetMultusEndpoints(m.kubeClient, svc, netList, addrType)
 }
 
-func (m *Manager) getNodeAddress(node corev1.Node) (string, error) {
+func (m *Manager) getNodeAddress(node corev1.Node, addrType string) (string, error) {
 	addrs := node.Status.Addresses
 	if len(addrs) == 0 {
 		return "", errors.New("no address found for host")
@@ -543,17 +644,23 @@ func (m *Manager) getNodeAddress(node corev1.Node) (string, error) {
 
 	for _, addr := range addrs {
 		if addr.Type == corev1.NodeInternalIP {
-			return addr.Address, nil
+			if k8s.AddrInFamily(addrType, addr.Address) {
+				return addr.Address, nil
+			}
 		}
 	}
 
-	return addrs[0].Address, nil
+	if k8s.AddrInFamily(addrType, addrs[0].Address) {
+		return addrs[0].Address, nil
+	}
+
+	return "", errors.New("no address with family found for host")
 }
 
-func (m *Manager) getEndpointsForLB(nodes []*corev1.Node) []string {
+func (m *Manager) getEndpointsForLB(nodes []*corev1.Node, addrType string) []string {
 	var endpoints []string
 	for _, node := range nodes {
-		addr, err := m.getNodeAddress(*node)
+		addr, err := m.getNodeAddress(*node, addrType)
 		if err != nil {
 			klog.Errorf(err.Error())
 			continue
@@ -578,10 +685,15 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 
 // getIngressSvcPairs check validation if service have ingress IP already.
 // If service have no ingress IP, assign new IP in IP pool
-func (m *Manager) getIngressSvcPairs(service *corev1.Service) ([]SvcPair, error) {
+func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) ([]SvcPair, error) {
 	var sPairs []SvcPair
 	inSPairs := m.getLBIngressSvcPairs(service)
 	isHasLoxiExternalIP := false
+
+	ipPool := m.ExternalIPPool
+	if addrType == "ipv6" || addrType == "ipv6to4" {
+		ipPool = m.ExternalIP6Pool
+	}
 
 	// k8s service has ingress IP already
 	if len(inSPairs) >= 1 {
@@ -589,7 +701,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service) ([]SvcPair, error)
 			ident := inSPair.Port
 			proto := inSPair.Protocol
 
-			inRange, _ := m.ExternalIPPool.CheckAndReserveIP(inSPair.IPString, uint32(ident), proto)
+			inRange, _ := ipPool.CheckAndReserveIP(inSPair.IPString, uint32(ident), proto)
 			if inRange {
 				sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol}
 				sPairs = append(sPairs, sp)
@@ -606,7 +718,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service) ([]SvcPair, error)
 		for _, port := range service.Spec.Ports {
 			proto := strings.ToLower(string(port.Protocol))
 			portNum := port.Port
-			newIP := m.ExternalIPPool.GetNewIPAddr(uint32(portNum), proto)
+			newIP := ipPool.GetNewIPAddr(uint32(portNum), proto)
 			if newIP == nil {
 				// This is a safety code in case the service has the same port.
 				for _, s := range sPairs {
@@ -626,17 +738,22 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service) ([]SvcPair, error)
 }
 
 // getIngressSecSvcPairs returns a set of secondary IPs
-func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary int) ([]SvcPair, error) {
+func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary int, addrType string) ([]SvcPair, error) {
 	var sPairs []SvcPair
 
-	if len(m.ExtSecondaryIPPools) < numSecondary {
+	sipPools := m.ExtSecondaryIPPools
+	if addrType == "ipv6" {
+		sipPools = m.ExtSecondaryIP6Pools
+	}
+
+	if len(sipPools) < numSecondary {
 		klog.Errorf("failed to generate external secondary IP. No IP pools")
 		return sPairs, errors.New("failed to generate external secondary IP. No IP pools")
 	}
 
 	for i := 0; i < numSecondary; i++ {
 		for _, port := range service.Spec.Ports {
-			pool := m.ExtSecondaryIPPools[i]
+			pool := sipPools[i]
 			proto := strings.ToLower(string(port.Protocol))
 			portNum := port.Port
 			newIP := pool.GetNewIPAddr(uint32(portNum), proto)
@@ -648,7 +765,7 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 					}
 				}
 				for j := 0; j < i; j++ {
-					rpool := m.ExtSecondaryIPPools[j]
+					rpool := sipPools[j]
 					rpool.ReturnIPAddr(sPairs[j].IPString, uint32(portNum), proto)
 				}
 				klog.Errorf("failed to generate external secondary IP. IP Pool is full")

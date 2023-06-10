@@ -23,6 +23,7 @@ import (
 	"net"
 	"time"
 
+	tk "github.com/loxilb-io/loxilib"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -53,7 +54,7 @@ func GetNodeAddr(node *v1.Node) (net.IP, error) {
 }
 
 // GetServiceLocalEndpoints - Get HostIPs of pods belonging to the given service
-func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Service) ([]string, error) {
+func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Service, addrType string) ([]string, error) {
 	var epList []string
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
@@ -68,6 +69,9 @@ func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Servic
 	epMap := make(map[string]struct{})
 	for _, pod := range podList.Items {
 		if pod.Status.HostIP != "" {
+			if addrType == "ipv6" && !tk.IsNetIPv6(pod.Status.HostIP) {
+				continue
+			}
 			if _, found := epMap[pod.Status.HostIP]; !found {
 				epMap[pod.Status.HostIP] = struct{}{}
 				epList = append(epList, pod.Status.HostIP)

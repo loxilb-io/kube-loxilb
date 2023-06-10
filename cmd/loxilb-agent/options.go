@@ -23,13 +23,15 @@ import (
 	"os"
 	"strings"
 
+	lib "github.com/loxilb-io/loxilib"
 	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v2"
 )
 
 var (
-	loxiURLFlag    = ""
-	secondaryCIDRs = ""
+	loxiURLFlag     = ""
+	secondaryCIDRs  = ""
+	secondaryCIDRs6 = ""
 )
 
 type Options struct {
@@ -51,6 +53,8 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&loxiURLFlag, "loxiURL", loxiURLFlag, "loxilb API server URL(s)")
 	fs.StringVar(&o.config.ExternalCIDR, "externalCIDR", o.config.ExternalCIDR, "External CIDR Range")
 	fs.StringVar(&secondaryCIDRs, "externalSecondaryCIDRs", secondaryCIDRs, "External Secondary CIDR Range(s)")
+	fs.StringVar(&o.config.ExternalCIDR6, "externalCIDR6", o.config.ExternalCIDR6, "External CIDR6 Range")
+	fs.StringVar(&secondaryCIDRs6, "externalSecondaryCIDRs6", secondaryCIDRs6, "External Secondary CIDR6 Range(s)")
 	fs.StringVar(&o.config.LoxilbLoadBalancerClass, "loxilbLoadBalancerClass", o.config.LoxilbLoadBalancerClass, "Load-Balancer Class Name")
 	fs.BoolVar(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
 	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", o.config.ExclIPAM, "Use unique IPAM per service")
@@ -88,6 +92,9 @@ func (o *Options) validate(args []string) error {
 		if _, _, err := net.ParseCIDR(o.config.ExternalCIDR); err != nil {
 			return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDR)
 		}
+		if !lib.IsNetIPv4(o.config.ExternalCIDR) {
+			return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDR)
+		}
 	}
 
 	if len(o.config.ExternalSecondaryCIDRs) > 0 {
@@ -98,6 +105,33 @@ func (o *Options) validate(args []string) error {
 		for _, CIDR := range o.config.ExternalSecondaryCIDRs {
 			if _, _, err := net.ParseCIDR(CIDR); err != nil {
 				return fmt.Errorf("externalSecondaryCIDR %s config is invalid", CIDR)
+			}
+			if !lib.IsNetIPv4(CIDR) {
+				return fmt.Errorf("externalSecondaryCIDR %s config is invalid", CIDR)
+			}
+		}
+	}
+
+	if o.config.ExternalCIDR6 != "" {
+		if _, _, err := net.ParseCIDR(o.config.ExternalCIDR6); err != nil {
+			return fmt.Errorf("externalCIDR6 %s config is invalid", o.config.ExternalCIDR6)
+		}
+		if lib.IsNetIPv4(o.config.ExternalCIDR6) {
+			return fmt.Errorf("externalCIDR6 %s config is invalid", o.config.ExternalCIDR6)
+		}
+	}
+
+	if len(o.config.ExternalSecondaryCIDRs6) > 0 {
+		if len(o.config.ExternalSecondaryCIDRs6) > 4 {
+			return fmt.Errorf("externalSecondaryCIDR6 %v config is invalid", o.config.ExternalSecondaryCIDRs6)
+		}
+
+		for _, CIDR := range o.config.ExternalSecondaryCIDRs6 {
+			if _, _, err := net.ParseCIDR(CIDR); err != nil {
+				return fmt.Errorf("externalSecondaryCIDR6 %s config is invalid", CIDR)
+			}
+			if lib.IsNetIPv4(CIDR) {
+				return fmt.Errorf("externalSecondaryCIDR6 %s config is invalid", CIDR)
 			}
 		}
 	}
@@ -160,5 +194,11 @@ func (o *Options) setDefaults() {
 	}
 	if o.config.ExternalSecondaryCIDRs == nil {
 		o.config.ExternalSecondaryCIDRs = []string{}
+	}
+	if o.config.ExternalCIDR6 == "" {
+		o.config.ExternalCIDR6 = "3ffe:cafe::1/96"
+	}
+	if o.config.ExternalSecondaryCIDRs6 == nil {
+		o.config.ExternalSecondaryCIDRs6 = []string{}
 	}
 }

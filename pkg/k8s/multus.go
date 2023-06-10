@@ -21,13 +21,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
-
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	clientset "k8s.io/client-go/kubernetes"
+	"strings"
+	"time"
 )
 
 type dnsIf interface{}
@@ -70,7 +69,7 @@ func GetMultusNetworkStatus(ns, name string) (networkStatus, error) {
 	return networkStatus{}, fmt.Errorf("not found %s network", name)
 }
 
-func GetMultusEndpoints(kubeClient clientset.Interface, svc *corev1.Service, netList []string) ([]string, error) {
+func GetMultusEndpoints(kubeClient clientset.Interface, svc *corev1.Service, netList []string, addrType string) ([]string, error) {
 	var epList []string
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
@@ -117,7 +116,11 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svc *corev1.Service, net
 			for _, ns := range networkStatusList {
 				if ns.Name == netName {
 					if len(ns.Ips) > 0 {
-						epList = append(epList, ns.Ips...)
+						for _, ip := range ns.Ips {
+							if AddrInFamily(addrType, ip) {
+								epList = append(epList, ip)
+							}
+						}
 					}
 				}
 			}
