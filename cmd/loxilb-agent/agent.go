@@ -167,6 +167,8 @@ func run(o *Options) error {
 
 	<-stopCh
 
+	lbManager.DeleteAllLoadBalancer()
+
 	klog.Info("Stopping loxilb Agent")
 	return nil
 }

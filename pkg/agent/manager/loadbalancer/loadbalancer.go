@@ -57,7 +57,7 @@ const (
 	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
 	livenessAnnotation          = "loxilb.io/liveness"
 	lbModeAnnotation            = "loxilb.io/lbmode"
-	lbAddressAnnotation         = "loxilb.io/address"
+	lbAddressAnnotation         = "loxilb.io/ipam"
 )
 
 type Manager struct {
@@ -309,6 +309,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	// Check for loxilb specific annotation - Multus Networks
 	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
+
 	endpointIPs, err := m.getEndpoints(svc, needPodEP, addrType)
 	if err != nil {
 		return err
@@ -317,6 +318,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	_, added := m.lbCache[cacheKey]
 	if !added {
+		if len(endpointIPs) <= 0 {
+			return errors.New("no active endpoints")
+		}
+
 		//c.lbCache[cacheKey] = make([]api.LoadBalancerModel, 0)
 		m.lbCache[cacheKey] = &LbCacheEntry{
 			State:  "Added",
@@ -531,7 +536,7 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 		}
 		ipPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
 		for idx, ingSecIP := range lbEntry.SecIPs {
-			if idx < len(m.ExtSecondaryIPPools) {
+			if idx < len(sipPools) {
 				sipPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
 			}
 		}
@@ -539,6 +544,41 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 
 	delete(m.lbCache, cacheKey)
 	return nil
+}
+
+func (m *Manager) DeleteAllLoadBalancer() {
+
+	klog.Infof("Len %d", len(m.lbCache))
+	for _, lbEntry := range m.lbCache {
+
+		ipPool := m.ExternalIPPool
+		sipPools := m.ExtSecondaryIPPools
+		if lbEntry.Addr == "ipv6" || lbEntry.Addr == "ipv6to4" {
+			ipPool = m.ExternalIP6Pool
+			sipPools = m.ExtSecondaryIP6Pools
+		}
+
+		for _, lb := range lbEntry.LbModelList {
+			var errChList []chan error
+			for _, loxiClient := range m.loxiClients {
+				ch := make(chan error)
+				errChList = append(errChList, ch)
+
+				klog.Infof("called loxilb API: delete lb rule %v", lb)
+				loxiClient.LoadBalancer().Delete(context.Background(), &lb)
+			}
+
+			ipPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
+			for idx, ingSecIP := range lbEntry.SecIPs {
+				if idx < len(sipPools) {
+					sipPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+				}
+			}
+		}
+	}
+	m.lbCache = nil
+
+	return
 }
 
 // getEndpoints return LB's endpoints IP list.
