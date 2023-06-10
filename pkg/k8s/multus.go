@@ -21,14 +21,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
-
-	tk "github.com/loxilb-io/loxilib"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	clientset "k8s.io/client-go/kubernetes"
+	"strings"
+	"time"
 )
 
 type dnsIf interface{}
@@ -119,8 +117,7 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svc *corev1.Service, net
 				if ns.Name == netName {
 					if len(ns.Ips) > 0 {
 						for _, ip := range ns.Ips {
-							if ((addrType == "ipv4" || addrType == "ipv64") && tk.IsNetIPv4(ip)) ||
-								(addrType == "ipv6" && tk.IsNetIPv6(ip)) {
+							if AddrInFamily(addrType, ip) {
 								epList = append(epList, ip)
 							}
 						}

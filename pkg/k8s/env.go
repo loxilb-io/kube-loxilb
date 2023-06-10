@@ -19,6 +19,7 @@ package k8s
 import (
 	"os"
 
+	tk "github.com/loxilb-io/loxilib"
 	"k8s.io/klog/v2"
 )
 
@@ -46,4 +47,13 @@ func GetNodeName() (string, error) {
 		return "", err
 	}
 	return nodeName, nil
+}
+
+// Check address belongs to desired family
+func AddrInFamily(addrType string, addr string) bool {
+	if ((addrType == "ipv4" || addrType == "ipv64") && tk.IsNetIPv4(addr)) ||
+		(addrType == "ipv6" && tk.IsNetIPv6(addr)) {
+		return true
+	}
+	return false
 }

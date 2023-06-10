@@ -43,7 +43,6 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
-	tk "github.com/loxilb-io/loxilib"
 )
 
 const (
@@ -597,15 +596,13 @@ func (m *Manager) getNodeAddress(node corev1.Node, addrType string) (string, err
 
 	for _, addr := range addrs {
 		if addr.Type == corev1.NodeInternalIP {
-			if ((addrType == "ipv4" || addrType == "ipv64") && tk.IsNetIPv4(addr.Address)) ||
-				(addrType == "ipv6" && tk.IsNetIPv6(addr.Address)) {
+			if k8s.AddrInFamily(addrType, addr.Address) {
 				return addr.Address, nil
 			}
 		}
 	}
 
-	if ((addrType == "ipv4" || addrType == "ipv64") && tk.IsNetIPv4(addrs[0].Address)) ||
-		(addrType == "ipv6" && tk.IsNetIPv6(addrs[0].Address)) {
+	if k8s.AddrInFamily(addrType, addrs[0].Address) {
 		return addrs[0].Address, nil
 	}
 
