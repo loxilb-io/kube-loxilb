@@ -498,10 +498,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				livenessCheck: m.lbCache[cacheKey].ActCheck,
 				lbMode:        m.lbCache[cacheKey].LbMode,
 				timeout:       m.lbCache[cacheKey].Timeout,
-				secIPs:        m.lbCache[cacheKey].SecIPs,
-				endpointIPs:   endpointIPs,
 				needPodEP:     needPodEP,
 			}
+			lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
+			lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
+
 			lbModel, err := m.makeLoxiLoadBalancerModel(&lbArgs, svc, port)
 			if err != nil {
 				return err
