@@ -58,6 +58,7 @@ const (
 	livenessAnnotation          = "loxilb.io/liveness"
 	lbModeAnnotation            = "loxilb.io/lbmode"
 	lbAddressAnnotation         = "loxilb.io/ipam"
+	lbTimeoutAnnotation         = "loxilb.io/timeout"
 )
 
 type Manager struct {
@@ -79,7 +80,20 @@ type Manager struct {
 	lbCache LbCacheTable
 }
 
+type LbArgs struct {
+	externalIP    string
+	livenessCheck bool
+	lbMode        int
+	timeout       int
+	secIPs        []string
+	endpointIPs   []string
+	needPodEP     bool
+}
+
 type LbCacheEntry struct {
+	LbMode      int
+	Timeout     int
+	ActCheck    bool
 	Addr        string
 	State       string
 	SecIPs      []string
@@ -254,6 +268,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	livenessCheck := false
 	lbMode := -1
 	addrType := "ipv4"
+	timeout := 30 * 60
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
 		return nil
@@ -266,6 +281,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			numSecondarySvc = 0
 		} else {
 			numSecondarySvc = num
+		}
+	}
+
+	// Check for loxilb specific annotations - Timeout
+	if to := svc.Annotations[lbTimeoutAnnotation]; to != "" {
+		num, err := strconv.Atoi(to)
+		if err == nil {
+			timeout = num
 		}
 	}
 
@@ -324,9 +347,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 		//c.lbCache[cacheKey] = make([]api.LoadBalancerModel, 0)
 		m.lbCache[cacheKey] = &LbCacheEntry{
-			State:  "Added",
-			Addr:   addrType,
-			SecIPs: []string{},
+			LbMode:   lbMode,
+			ActCheck: livenessCheck,
+			Timeout:  timeout,
+			State:    "Added",
+			Addr:     addrType,
+			SecIPs:   []string{},
 		}
 	}
 
@@ -339,12 +365,41 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	update := false
+	delete := false
 	if len(m.lbCache[cacheKey].LbModelList) <= 0 {
 		update = true
 	}
 
 	if addrType != m.lbCache[cacheKey].Addr {
+		m.lbCache[cacheKey].Addr = addrType
 		update = true
+		if added {
+			delete = true
+		}
+	}
+
+	if timeout != m.lbCache[cacheKey].Timeout {
+		m.lbCache[cacheKey].Timeout = timeout
+		update = true
+		if added {
+			delete = true
+		}
+	}
+
+	if livenessCheck != m.lbCache[cacheKey].ActCheck {
+		m.lbCache[cacheKey].ActCheck = livenessCheck
+		update = true
+		if added {
+			delete = true
+		}
+	}
+
+	if lbMode != m.lbCache[cacheKey].LbMode {
+		m.lbCache[cacheKey].LbMode = lbMode
+		update = true
+		if added {
+			delete = true
+		}
 	}
 
 	if len(m.lbCache[cacheKey].SecIPs) != numSecondarySvc {
@@ -402,6 +457,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		ingSvcPairs = nil
 		return nil
 	} else {
+		if delete {
+			m.deleteLoadBalancer(svc.Namespace, svc.Name)
+		}
 		m.lbCache[cacheKey].LbModelList = nil
 		svc.Status.LoadBalancer.Ingress = nil
 		klog.Infof("Endpoint IP Pairs %v", endpointIPs)
@@ -435,7 +493,16 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		var errChList []chan error
 		var lbModelList []api.LoadBalancerModel
 		for _, port := range svc.Spec.Ports {
-			lbModel, err := m.makeLoxiLoadBalancerModel(ingSvcPair.IPString, livenessCheck, lbMode, m.lbCache[cacheKey].SecIPs, svc, port, endpointIPs, needPodEP)
+			lbArgs := LbArgs{
+				externalIP:    ingSvcPair.IPString,
+				livenessCheck: m.lbCache[cacheKey].ActCheck,
+				lbMode:        m.lbCache[cacheKey].LbMode,
+				timeout:       m.lbCache[cacheKey].Timeout,
+				secIPs:        m.lbCache[cacheKey].SecIPs,
+				endpointIPs:   endpointIPs,
+				needPodEP:     needPodEP,
+			}
+			lbModel, err := m.makeLoxiLoadBalancerModel(&lbArgs, svc, port)
 			if err != nil {
 				return err
 			}
@@ -788,16 +855,16 @@ func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []st
 	return ips
 }
 
-func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, livenessCheck bool, lbMode int, secIPs []string, svc *corev1.Service, port corev1.ServicePort, endpointIPs []string, needPodEP bool) (api.LoadBalancerModel, error) {
+func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service, port corev1.ServicePort) (api.LoadBalancerModel, error) {
 	loxiEndpointModelList := []api.LoadBalancerEndpoint{}
 	loxiSecIPModelList := []api.LoadBalancerSecIp{}
 	lbModeSvc := api.LbMode(m.networkConfig.SetLBMode)
 
-	if len(endpointIPs) > 0 {
-		endpointWeight := uint8(LoxiMaxWeight / len(endpointIPs))
-		remainderWeight := uint8(LoxiMaxWeight % len(endpointIPs))
+	if len(lbArgs.endpointIPs) > 0 {
+		endpointWeight := uint8(LoxiMaxWeight / len(lbArgs.endpointIPs))
+		remainderWeight := uint8(LoxiMaxWeight % len(lbArgs.endpointIPs))
 
-		for _, endpoint := range endpointIPs {
+		for _, endpoint := range lbArgs.endpointIPs {
 			weight := endpointWeight
 			if remainderWeight > 0 {
 				weight++
@@ -805,7 +872,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, livenessCheck boo
 			}
 
 			tport := uint16(port.NodePort)
-			if needPodEP {
+			if lbArgs.needPodEP {
 				portNum, err := k8s.GetServicePortIntValue(m.kubeClient, svc, port)
 				if err != nil {
 					return api.LoadBalancerModel{}, err
@@ -821,28 +888,29 @@ func (m *Manager) makeLoxiLoadBalancerModel(externalIP string, livenessCheck boo
 		}
 	}
 
-	if len(secIPs) > 0 {
-		for _, secIP := range secIPs {
+	if len(lbArgs.secIPs) > 0 {
+		for _, secIP := range lbArgs.secIPs {
 			loxiSecIPModelList = append(loxiSecIPModelList, api.LoadBalancerSecIp{SecondaryIP: secIP})
 		}
 	}
 
 	if m.networkConfig.Monitor {
-		livenessCheck = true
+		lbArgs.livenessCheck = true
 	}
 
-	if lbMode >= 0 {
-		lbModeSvc = api.LbMode(lbMode)
+	if lbArgs.lbMode >= 0 {
+		lbModeSvc = api.LbMode(lbArgs.lbMode)
 	}
 
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
-			ExternalIP: externalIP,
+			ExternalIP: lbArgs.externalIP,
 			Port:       uint16(port.Port),
 			Protocol:   strings.ToLower(string(port.Protocol)),
 			BGP:        m.networkConfig.SetBGP,
 			Mode:       lbModeSvc,
-			Monitor:    livenessCheck,
+			Monitor:    lbArgs.livenessCheck,
+			Timeout:    uint32(lbArgs.timeout),
 		},
 		SecondaryIPs: loxiSecIPModelList,
 		Endpoints:    loxiEndpointModelList,
