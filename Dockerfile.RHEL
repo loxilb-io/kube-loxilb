@@ -1,0 +1,26 @@
+FROM registry.access.redhat.com/ubi8-minimal:latest
+
+RUN microdnf upgrade -y && \
+    microdnf clean all
+
+LABEL name="kube-loxilb" \
+      vendor="loxilb.io" \
+      version="v0.8.3" \
+      release="v0.8.3" \
+      summary="implementl loxilb LoadBalancerClass for kubernetes" \
+      description="loxilb LoadBalancerClass" \
+      maintainer="backguyn@netlox.io"
+
+COPY ./bin/kube-loxilb /bin/kube-loxilb
+RUN chmod +x /bin/kube-loxilb
+
+RUN mkdir /licenses
+COPY ./LICENSE /licenses/
+
+USER 1000
+
+ENTRYPOINT [/bin/kube-loxilb]
+CMD [\
+    "--loxiURL=http://12.12.12.1:11111,http://14.14.14.1:11111", \
+    "--externalCIDR=123.123.123.1/24"\
+]
