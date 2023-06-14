@@ -58,8 +58,8 @@ kubectl get pods -A | grep kube-loxilb
 ```
 
 
-6. Finally to create service LB, we can use and apply the following template yaml 
-(<b>Note</b> -  Check *loadBalancerClass* and other *loxilb* specific annotation) :   
+6. Finally to create service LB, we can use and apply the following template yaml :   
+(<b>Note</b> -  Check *loadBalancerClass* and other *loxilb* specific annotation)   
 ```
 apiVersion: v1
 kind: Service
