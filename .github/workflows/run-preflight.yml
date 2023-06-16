@@ -1,0 +1,44 @@
+name: Run Preflight
+on: [push]
+jobs:
+  Run-Preflight:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '>=1.19.0'
+      - run: make
+      - run: docker build . --tag ghcr.io/loxilb-io/kube-loxilb-ubi8:preflight -f Dockerfile.RHEL
+      - uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: docker push ghcr.io/loxilb-io/kube-loxilb-ubi8:preflight
+      - run: mkdir -p /tmp/preflight-artifacts
+      - run: |-
+          docker run \
+          -i \
+          --rm \
+          --security-opt=label=disable \
+          --env PFLT_LOGLEVEL=info \
+          --env PFLT_ARTIFACTS=/artifacts \
+          -v /tmp/preflight-artifacts:/artifacts \
+          quay.io/opdev/preflight:stable check container ghcr.io/loxilb-io/kube-loxilb-ubi8:preflight
+      - name: get results.json
+        id: get_results_json
+        run: |
+          PASSED=$(cat /tmp/preflight-artifacts/results.json | jq '.passed')
+          echo $PASSED
+          echo "PASSED=$PASSED" >> $GITHUB_OUTPUT
+      - if: ${{ steps.get_results_json.outputs.PASSED == 'true' }}
+        run: |
+          echo "passed: true."
+      - if: ${{ steps.get_results_json.outputs.PASSED != 'true' }}
+        run: |
+          echo "passed: false."
+          cat /tmp/preflight-artifacts/results.json
+          exit 1
