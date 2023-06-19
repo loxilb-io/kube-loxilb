@@ -32,6 +32,8 @@ var (
 	loxiURLFlag     = ""
 	secondaryCIDRs  = ""
 	secondaryCIDRs6 = ""
+	Version         = "latest"
+	BuildInfo       = "master"
 )
 
 type Options struct {

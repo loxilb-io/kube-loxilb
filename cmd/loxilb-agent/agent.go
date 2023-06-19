@@ -18,16 +18,17 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	"k8s.io/client-go/informers"
 	"k8s.io/klog/v2"
@@ -48,6 +49,8 @@ var (
 // run starts kube-loxilb with the given options and waits for termination signal.
 func run(o *Options) error {
 	klog.Info("Starting kube-loxilb:")
+	klog.Infof("  Version: %s", Version)
+	klog.Infof("  Build: %s", BuildInfo)
 
 	// create k8s Clientset, CRD Clientset and SharedInformerFactory for the given config.
 	k8sClient, _, _, err := k8s.CreateClients(o.config.ClientConnection, "")
