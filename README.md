@@ -1,4 +1,4 @@
-![build workflow](https://github.com/loxilb-io/kube-loxilb/actions/workflows/docker-publish.yml/badge.svg)
+![build workflow](https://github.com/loxilb-io/kube-loxilb/actions/workflows/docker-publish.yml/badge.svg)  [![Build](https://github.com/loxilb-io/kube-loxilb/actions/workflows/build-check.yml/badge.svg)](https://github.com/loxilb-io/kube-loxilb/actions/workflows/build-check.yml)   
 
 ## What is kube-loxilb ?
 
