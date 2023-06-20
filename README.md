@@ -2,7 +2,7 @@
 
 ## What is kube-loxilb ?
 
-[kube-loxilb](https://github.com/loxilb-io/kube-loxilb) is loxilb's implementation of kubernetes service load-balancer spec which includes support for load-balancer class, advanced IPAM (shared or exclusive), lb services on multus pods etc. kube-loxilb runs as a deloyment set in kube-system namespace. 
+[kube-loxilb](https://github.com/loxilb-io/kube-loxilb) is [loxilb](https://github.com/loxilb-io/loxilb)'s implementation of kubernetes service load-balancer spec which includes support for load-balancer class, advanced IPAM (shared or exclusive), lb services on multus pods etc. kube-loxilb runs as a deloyment set in kube-system namespace. 
 
 ## How is kube-loxilb different from loxi-ccm ?
 
@@ -59,8 +59,8 @@ kubectl get pods -A | grep kube-loxilb
 
 
 6. Finally to create service LB, we can use and apply the following template yaml :   
-(<b>Note</b> -  Check *loadBalancerClass* and other *loxilb* specific annotation)   
-```
+(<b>Note</b> -  Check <b>*loadBalancerClass*</b> and other <b>*loxilb*</b> specific annotation)   
+```yaml
 apiVersion: v1
 kind: Service
 metadata:
