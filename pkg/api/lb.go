@@ -35,6 +35,7 @@ type LoadBalancerService struct {
 	Monitor    bool     `json:"Monitor"`
 	Timeout    uint32   `json:"inactiveTimeOut"`
 	Block      uint16   `json:"block" options:"block"`
+	Managed    bool     `json:"managed,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
