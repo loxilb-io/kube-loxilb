@@ -271,10 +271,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	timeout := 30 * 60
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
+		klog.V(4).Infof("kube-loxilb don't manage '%s' LoadBalancerClass.", *lbClassName)
 		return nil
 	}
 
 	// Check for loxilb specific annotations - Secondary IPs
+	klog.V(4).Info("check annotations...")
 	if na := svc.Annotations[numSecIPAnnotation]; na != "" {
 		num, err := strconv.Atoi(na)
 		if err != nil {
@@ -282,6 +284,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		} else {
 			numSecondarySvc = num
 		}
+		klog.V(4).Info("service %s have numSecIPAnnotation annotation: %s", svc.Name, na)
 	}
 
 	// Check for loxilb specific annotations - Timeout
@@ -290,6 +293,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if err == nil {
 			timeout = num
 		}
+		klog.V(4).Info("service %s have lbTimeoutAnnotation annotation: %s", svc.Name, to)
 	}
 
 	// Check for loxilb specific annotations - NAT LB Mode
@@ -303,13 +307,18 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		} else {
 			lbMode = -1
 		}
+		klog.V(4).Info("service %s have lbModeAnnotation annotation: %s", svc.Name, lbm)
 	}
+
+	klog.V(4).Info("service %s is created %s mode.", svc.Name, lbMode)
 
 	// Check for loxilb specific annotations - Liveness Check
 	if lchk := svc.Annotations[livenessAnnotation]; lchk != "" {
 		if lchk == "yes" {
 			livenessCheck = true
 		}
+
+		klog.V(4).Info("service %s have livenessAnnotation annotation: %s", svc.Name, lchk)
 	}
 
 	// Check for loxilb specific annotations - Addressing
@@ -323,6 +332,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		} else if lba == "nat64" {
 			addrType = "ipv6to4"
 		}
+
+		klog.V(4).Info("service %s have lbAddressAnnotation annotation: %s", svc.Name, lba)
 	}
 
 	if addrType != "ipv4" && numSecondarySvc != 0 {
@@ -337,6 +348,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	if err != nil {
 		return err
 	}
+
+	klog.V(4).Info("get endpointIPs: %v", endpointIPs)
 
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	_, added := m.lbCache[cacheKey]
@@ -354,6 +367,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			Addr:     addrType,
 			SecIPs:   []string{},
 		}
+
+		klog.V(4).Info("new %s LB entry is added to cache", svc.Name)
 	}
 
 	oldsvc := svc.DeepCopy()
