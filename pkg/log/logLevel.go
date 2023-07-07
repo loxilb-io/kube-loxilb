@@ -15,7 +15,7 @@
 package log
 
 import (
-	"flag"
+	"github.com/spf13/pflag"
 
 	"k8s.io/klog/v2"
 )
@@ -23,13 +23,13 @@ import (
 const logVerbosityFlag = "v"
 
 // GetCurrentLogLevel returns the current log verbosity level.
-func GetCurrentLogLevel() string {
-	return flag.Lookup(logVerbosityFlag).Value.String()
+func GetCurrentLogLevel(fs *pflag.FlagSet) string {
+	return fs.Lookup(logVerbosityFlag).Value.String()
 }
 
 // InitLogLevel sets the log verbosity level when init time
-func InitLogLevel() error {
-	level := GetCurrentLogLevel()
+func InitLogLevel(fs *pflag.FlagSet) error {
+	level := GetCurrentLogLevel(fs)
 
 	var l klog.Level
 	err := l.Set(level)
@@ -39,22 +39,4 @@ func InitLogLevel() error {
 
 	klog.Infof("Set log level to %s", level)
 	return nil
-}
-
-// SetLogLevel sets the log verbosity level. level must be a string
-// representation of a decimal integer.
-func SetLogLevel(level string) error {
-	oldLevel := GetCurrentLogLevel()
-	if oldLevel == level {
-		return nil
-	}
-
-	var l klog.Level
-	err := l.Set(level)
-	if err != nil {
-		return err
-	}
-	klog.Infof("Changed log level from %s to %s", oldLevel, level)
-	return nil
-
 }
