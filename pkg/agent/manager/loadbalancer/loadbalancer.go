@@ -59,6 +59,10 @@ const (
 	lbModeAnnotation            = "loxilb.io/lbmode"
 	lbAddressAnnotation         = "loxilb.io/ipam"
 	lbTimeoutAnnotation         = "loxilb.io/timeout"
+	probeTypeAnnotation         = "loxilb.io/probetype"
+	probePortAnnotation         = "loxilb.io/probeport"
+	probeReqAnnotation          = "loxilb.io/probereq"
+	probeRespAnnotation         = "loxilb.io/proberesp"
 )
 
 type Manager struct {
@@ -85,6 +89,10 @@ type LbArgs struct {
 	livenessCheck bool
 	lbMode        int
 	timeout       int
+	probeType     string
+	probePort     uint16
+	probeReq      string
+	probeResp     string
 	secIPs        []string
 	endpointIPs   []string
 	needPodEP     bool
@@ -96,6 +104,10 @@ type LbCacheEntry struct {
 	ActCheck    bool
 	Addr        string
 	State       string
+	ProbeType   string
+	ProbePort   uint16
+	ProbeReq    string
+	ProbeResp   string
 	SecIPs      []string
 	LbModelList []api.LoadBalancerModel
 }
@@ -269,6 +281,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	lbMode := -1
 	addrType := "ipv4"
 	timeout := 30 * 60
+	probeType := ""
+	probePort := 0
+	probeReq := ""
+	probeResp := ""
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
 		return nil
@@ -312,6 +328,48 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	// Check for loxilb specific annotations - Liveness Probe Type
+	if pt := svc.Annotations[probeTypeAnnotation]; pt != "" {
+		if pt != "none" &&
+			pt != "ping" &&
+			pt != "udp" &&
+			pt != "tcp" &&
+			pt != "http" &&
+			pt != "https" {
+			probeType = ""
+		} else {
+			probeType = pt
+		}
+	}
+
+	// Check for loxilb specific annotations - Liveness Probe Port
+	if pp := svc.Annotations[probePortAnnotation]; pp != "" {
+		num, err := strconv.Atoi(pp)
+		if err != nil || probeType == "icmp" || probeType == "none" || probeType == "" {
+			probePort = 0
+		} else {
+			probePort = num
+		}
+	}
+
+	// Check for loxilb specific annotations - Liveness Request message
+	if preq := svc.Annotations[probeReqAnnotation]; preq != "" {
+		if probeType == "icmp" || probeType == "none" || probeType == "" {
+			probeReq = ""
+		} else {
+			probeReq = preq
+		}
+	}
+
+	// Check for loxilb specific annotations - Liveness Response message
+	if pres := svc.Annotations[probeRespAnnotation]; pres != "" {
+		if probeType == "icmp" || probeType == "none" || probeType == "" {
+			probeResp = ""
+		} else {
+			probeResp = pres
+		}
+	}
+
 	// Check for loxilb specific annotations - Addressing
 	if lba := svc.Annotations[lbAddressAnnotation]; lba != "" {
 		if lba == "ipv4" || lba == "ipv6" || lba == "ipv6to4" {
@@ -332,7 +390,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	// Check for loxilb specific annotation - Multus Networks
 	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
-
 	endpointIPs, err := m.getEndpoints(svc, needPodEP, addrType)
 	if err != nil {
 		return err
@@ -347,12 +404,16 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 		//c.lbCache[cacheKey] = make([]api.LoadBalancerModel, 0)
 		m.lbCache[cacheKey] = &LbCacheEntry{
-			LbMode:   lbMode,
-			ActCheck: livenessCheck,
-			Timeout:  timeout,
-			State:    "Added",
-			Addr:     addrType,
-			SecIPs:   []string{},
+			LbMode:    lbMode,
+			ActCheck:  livenessCheck,
+			Timeout:   timeout,
+			State:     "Added",
+			ProbeType: probeType,
+			ProbePort: uint16(probePort),
+			ProbeReq:  probeReq,
+			ProbeResp: probeResp,
+			Addr:      addrType,
+			SecIPs:    []string{},
 		}
 	}
 
@@ -396,6 +457,38 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	if lbMode != m.lbCache[cacheKey].LbMode {
 		m.lbCache[cacheKey].LbMode = lbMode
+		update = true
+		if added {
+			delete = true
+		}
+	}
+
+	if probeType != m.lbCache[cacheKey].ProbeType {
+		m.lbCache[cacheKey].ProbeType = probeType
+		update = true
+		if added {
+			delete = true
+		}
+	}
+
+	if probePort != int(m.lbCache[cacheKey].ProbePort) {
+		m.lbCache[cacheKey].ProbePort = uint16(probePort)
+		update = true
+		if added {
+			delete = true
+		}
+	}
+
+	if probeReq != m.lbCache[cacheKey].ProbeReq {
+		m.lbCache[cacheKey].ProbeReq = probeReq
+		update = true
+		if added {
+			delete = true
+		}
+	}
+
+	if probeResp != m.lbCache[cacheKey].ProbeResp {
+		m.lbCache[cacheKey].ProbeResp = probeResp
 		update = true
 		if added {
 			delete = true
@@ -498,6 +591,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				livenessCheck: m.lbCache[cacheKey].ActCheck,
 				lbMode:        m.lbCache[cacheKey].LbMode,
 				timeout:       m.lbCache[cacheKey].Timeout,
+				probeType:     m.lbCache[cacheKey].ProbeType,
+				probePort:     m.lbCache[cacheKey].ProbePort,
+				probeReq:      m.lbCache[cacheKey].ProbeReq,
+				probeResp:     m.lbCache[cacheKey].ProbeResp,
 				needPodEP:     needPodEP,
 			}
 			lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
@@ -913,6 +1010,10 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			Monitor:    lbArgs.livenessCheck,
 			Timeout:    uint32(lbArgs.timeout),
 			Managed:    true,
+			ProbeType:  lbArgs.probeType,
+			ProbePort:  lbArgs.probePort,
+			ProbeReq:   lbArgs.probeReq,
+			ProbeResp:  lbArgs.probeResp,
 		},
 		SecondaryIPs: loxiSecIPModelList,
 		Endpoints:    loxiEndpointModelList,
