@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -16,6 +17,8 @@ type LoxiClient struct {
 	MasterLB    bool
 	PeeringOnly bool
 	Url         string
+	Host        string
+	Port        string
 	IsAlive     bool
 	Stop        chan struct{}
 }
@@ -37,11 +40,19 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, peerOnly bool) (*
 		return nil, err
 	}
 
+	host, port, err := net.SplitHostPort(base.Host)
+	if err != nil {
+		fmt.Printf("failed to parse host,port %s. err: %s", base.Host, err.Error())
+		return nil, err
+	}
+
 	stop := make(chan struct{})
 
 	lc := &LoxiClient{
 		RestClient:  restClient,
 		Url:         apiServer,
+		Host:        host,
+		Port:        port,
 		Stop:        stop,
 		PeeringOnly: peerOnly,
 	}

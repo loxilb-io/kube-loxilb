@@ -1048,6 +1048,21 @@ loop:
 			}
 		case aliveClient := <-loxiAliveCh:
 			isSuccess := false
+			if m.networkConfig.SetBGP != 0 {
+				var bgpPeers []string
+				for _, lc := range m.LoxiClients {
+					if aliveClient.Host != lc.Host {
+						bgpPeers = append(bgpPeers, lc.Host)
+					}
+				}
+				for _, lpc := range m.LoxiPeerClients {
+					if aliveClient.Host != lpc.Host {
+						bgpPeers = append(bgpPeers, lpc.Host)
+					}
+				}
+				klog.Infof("Set BGP Peer for %v : %v", aliveClient.Host, bgpPeers)
+			}
+
 			for _, value := range m.lbCache {
 				for _, lbModel := range value.LbModelList {
 					klog.Infof("reinstallLoxiLbRules: lbModel: %v", lbModel)
