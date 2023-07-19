@@ -18,20 +18,21 @@ package main
 
 import (
 	"fmt"
-	"net"
-	"net/url"
-	"os"
-	"strings"
-
 	lib "github.com/loxilb-io/loxilib"
 	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v2"
+	"net"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
 )
 
 var (
 	loxiURLFlag     = ""
 	secondaryCIDRs  = ""
 	secondaryCIDRs6 = ""
+	extBGPPeers     = ""
 	Version         = "latest"
 	BuildInfo       = "master"
 )
@@ -58,7 +59,8 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.config.ExternalCIDR6, "externalCIDR6", o.config.ExternalCIDR6, "External CIDR6 Range")
 	fs.StringVar(&secondaryCIDRs6, "externalSecondaryCIDRs6", secondaryCIDRs6, "External Secondary CIDR6 Range(s)")
 	fs.StringVar(&o.config.LoxilbLoadBalancerClass, "loxilbLoadBalancerClass", o.config.LoxilbLoadBalancerClass, "Load-Balancer Class Name")
-	fs.BoolVar(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
+	fs.Uint16Var(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
+	fs.StringVar(&extBGPPeers, "extBGPPeers", extBGPPeers, "External BGP Peer(s)")
 	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", o.config.ExclIPAM, "Use unique IPAM per service")
 	fs.Uint16Var(&o.config.SetLBMode, "setLBMode", o.config.SetLBMode, "LB mode to use")
 	fs.BoolVar(&o.config.Monitor, "monitor", o.config.Monitor, "Enable monitoring end-points of LB rule")
@@ -110,6 +112,28 @@ func (o *Options) validate(args []string) error {
 			}
 			if !lib.IsNetIPv4(CIDR) {
 				return fmt.Errorf("externalSecondaryCIDR %s config is invalid", CIDR)
+			}
+		}
+	}
+
+	if len(o.config.ExtBGPPeers) > 0 {
+		if o.config.SetBGP == 0 {
+			return fmt.Errorf("extBGPPeers %v config is invalid", o.config.ExtBGPPeers)
+		}
+
+		for _, bgpURL := range o.config.ExtBGPPeers {
+			bgpPeer := strings.Split(bgpURL, ":")
+			if len(bgpPeer) > 2 {
+				return fmt.Errorf("bgpURL %s is invalid. format err", bgpURL)
+			}
+
+			if net.ParseIP(bgpPeer[0]) == nil {
+				return fmt.Errorf("bgpURL %s is invalid. address err", bgpPeer[0])
+			}
+
+			asid, err := strconv.ParseInt(bgpPeer[1], 10, 0)
+			if err != nil || asid == 0 {
+				return fmt.Errorf("bgpURL %s is invalid. asid err", bgpPeer[1])
 			}
 		}
 	}
@@ -167,6 +191,9 @@ func (o *Options) updateConfigFromCommandLine() {
 	if secondaryCIDRs != "" {
 		o.config.ExternalSecondaryCIDRs = strings.Split(secondaryCIDRs, ",")
 	}
+	if extBGPPeers != "" {
+		o.config.ExtBGPPeers = strings.Split(extBGPPeers, ",")
+	}
 }
 
 const (
@@ -202,5 +229,8 @@ func (o *Options) setDefaults() {
 	}
 	if o.config.ExternalSecondaryCIDRs6 == nil {
 		o.config.ExternalSecondaryCIDRs6 = []string{}
+	}
+	if o.config.ExtBGPPeers == nil {
+		o.config.ExtBGPPeers = []string{}
 	}
 }

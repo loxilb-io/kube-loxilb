@@ -78,6 +78,7 @@ func run(o *Options) error {
 	klog.Infof("ExclIPAM: %v", o.config.ExclIPAM)
 	klog.Infof("Monitor: %v", o.config.Monitor)
 	klog.Infof("SecondaryCIDRs: %v", o.config.ExternalSecondaryCIDRs)
+	klog.Infof("ExtBGPPeers: %v", o.config.ExtBGPPeers)
 
 	networkConfig := &config.NetworkConfig{
 		LoxilbURLs:              o.config.LoxiURLs,
@@ -85,6 +86,7 @@ func run(o *Options) error {
 		ExternalCIDR:            o.config.ExternalCIDR,
 		ExternalCIDR6:           o.config.ExternalCIDR6,
 		SetBGP:                  o.config.SetBGP,
+		ExtBGPPeers:             o.config.ExtBGPPeers,
 		SetLBMode:               o.config.SetLBMode,
 		Monitor:                 o.config.Monitor,
 		ExternalSecondaryCIDRs:  o.config.ExternalSecondaryCIDRs,
@@ -148,6 +150,16 @@ func run(o *Options) error {
 	loxiLBLiveCh := make(chan *api.LoxiClient)
 	loxiLBSelMasterEvent := make(chan bool)
 
+	if len(networkConfig.LoxilbURLs) > 0 {
+		for _, lbURL := range networkConfig.LoxilbURLs {
+			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, false)
+			if err != nil {
+				return err
+			}
+			loxilbClients = append(loxilbClients, loxilbClient)
+		}
+	}
+
 	lbManager := loadbalancer.NewLoadBalancerManager(
 		k8sClient,
 		loxilbClients,
@@ -160,15 +172,7 @@ func run(o *Options) error {
 		informerFactory,
 	)
 
-	if len(networkConfig.LoxilbURLs) > 0 {
-		for _, lbURL := range networkConfig.LoxilbURLs {
-			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, false)
-			if err != nil {
-				return err
-			}
-			loxilbClients = append(loxilbClients, loxilbClient)
-		}
-	} else {
+	if len(networkConfig.LoxilbURLs) <= 0 {
 		go wait.Until(func() {
 			var tmploxilbClients []*api.LoxiClient
 			ips, err := net.LookupIP("loxilb-lb-service")

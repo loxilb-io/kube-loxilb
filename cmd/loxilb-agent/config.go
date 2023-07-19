@@ -46,8 +46,10 @@ type AgentConfig struct {
 	ExternalCIDR6 string `yaml:"externalCIDR6,omitempty"`
 	// support LoadBalancer external secondary IP6. This is a comma separated list
 	ExternalSecondaryCIDRs6 []string `yaml:"externalSecondaryCIDRs6,omitempty"`
+	// external BGP Peers. This is a comma separated list e.g. IP1:ASID1,IP2:ASID2
+	ExtBGPPeers []string `yaml:"extBGPPeers,omitempty"`
 	// support BGP protocol
-	SetBGP bool `yaml:"setBGP,omitempty"`
+	SetBGP uint16 `yaml:"setBGP,omitempty,default=0"`
 	// loxilb loadbalancer mode
 	SetLBMode uint16 `yaml:"setLBMode,omitempty"`
 	// Shared or exclusive IPAM

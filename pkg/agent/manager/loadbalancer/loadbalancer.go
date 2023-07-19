@@ -618,6 +618,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				var err error
 				for _, lbModel := range lbModelList {
 					if err = c.LoadBalancer().Create(ctx, &lbModel); err != nil {
+						klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 						break
 					}
 				}
@@ -1003,12 +1004,17 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 		lbModeSvc = api.LbMode(lbArgs.lbMode)
 	}
 
+	bgpMode := false
+	if m.networkConfig.SetBGP != 0 {
+		bgpMode = true
+	}
+
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
 			ExternalIP: lbArgs.externalIP,
 			Port:       uint16(port.Port),
 			Protocol:   strings.ToLower(string(port.Protocol)),
-			BGP:        m.networkConfig.SetBGP,
+			BGP:        bgpMode,
 			Mode:       lbModeSvc,
 			Monitor:    lbArgs.livenessCheck,
 			Timeout:    uint32(lbArgs.timeout),
