@@ -182,9 +182,9 @@ func (o *Options) setDefaults() {
 	if o.config.HostProcPathPrefix == "" {
 		o.config.HostProcPathPrefix = defaultHostProcPathPrefix
 	}
-	if o.config.LoxiURLs == nil {
-		o.config.LoxiURLs = []string{defaultLoxiURL}
-	}
+	//if o.config.LoxiURLs == nil {
+	//	o.config.LoxiURLs = []string{defaultLoxiURL}
+	//}
 	if o.config.NodePortServiceVirtIP == "" {
 		o.config.NodePortServiceVirtIP = defaultnodePortServiceVirtIP
 	}

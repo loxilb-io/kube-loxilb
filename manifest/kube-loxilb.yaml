@@ -92,6 +92,7 @@ spec:
         app: loxilb
     spec:
       hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       tolerations:
         - effect: NoSchedule
           operator: Exists

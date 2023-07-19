@@ -12,11 +12,15 @@ import (
 )
 
 type LoxiClient struct {
-	restClient *RESTClient
+	RestClient  *RESTClient
+	MasterLB    bool
+	PeeringOnly bool
+	Url         string
+	Stop        chan struct{}
 }
 
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
-func NewLoxiClient(apiServer string) (*LoxiClient, error) {
+func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, peerOnly bool) (*LoxiClient, error) {
 	fmt.Println("NewLoxiClient:")
 	client := &http.Client{}
 
@@ -32,28 +36,41 @@ func NewLoxiClient(apiServer string) (*LoxiClient, error) {
 		return nil, err
 	}
 
-	return &LoxiClient{
-		restClient: restClient,
-	}, nil
+	stop := make(chan struct{})
+
+	lc := &LoxiClient{
+		RestClient:  restClient,
+		Url:         apiServer,
+		Stop:        stop,
+		PeeringOnly: peerOnly,
+	}
+
+	lc.StartLoxiHealthCheckChan(aliveCh)
+
+	return lc, nil
 }
 
-func (l *LoxiClient) SetLoxiHealthCheckChan(stop <-chan struct{}, aliveCh chan *LoxiClient) {
+func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient) {
 	isLoxiAlive := true
 
 	go wait.Until(func() {
 		if _, err := l.HealthCheck().Get(context.Background(), ""); err != nil {
 			if isLoxiAlive {
-				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is down. isLoxiAlive is changed to 'false'", l.restClient.baseURL.String())
+				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is down", l.RestClient.baseURL.String())
 				isLoxiAlive = false
 			}
 		} else {
 			if !isLoxiAlive {
-				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is alive again. isLoxiAlive is set 'true'", l.restClient.baseURL.String())
+				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is alive", l.RestClient.baseURL.String())
 				isLoxiAlive = true
 				aliveCh <- l
 			}
 		}
-	}, time.Second*2, stop)
+	}, time.Second*2, l.Stop)
+}
+
+func (l *LoxiClient) StopLoxiHealthCheckChan() {
+	l.Stop <- struct{}{}
 }
 
 func (l *LoxiClient) LoadBalancer() *LoadBalancerAPI {
@@ -69,5 +86,5 @@ func (l *LoxiClient) GetRESTClient() *RESTClient {
 		return nil
 	}
 
-	return l.restClient
+	return l.RestClient
 }

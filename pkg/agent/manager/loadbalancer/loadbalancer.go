@@ -67,7 +67,8 @@ const (
 
 type Manager struct {
 	kubeClient           clientset.Interface
-	loxiClients          []*api.LoxiClient
+	LoxiClients          []*api.LoxiClient
+	LoxiPeerClients      []*api.LoxiClient
 	networkConfig        *config.NetworkConfig
 	serviceInformer      coreinformers.ServiceInformer
 	serviceLister        corelisters.ServiceLister
@@ -135,6 +136,7 @@ func GenKey(ns, name string) string {
 func NewLoadBalancerManager(
 	kubeClient clientset.Interface,
 	loxiClients []*api.LoxiClient,
+	loxiPeerClients []*api.LoxiClient,
 	externalIPPool *ippool.IPPool,
 	externalSecondaryIPPools []*ippool.IPPool,
 	externalIP6Pool *ippool.IPPool,
@@ -146,7 +148,8 @@ func NewLoadBalancerManager(
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	manager := &Manager{
 		kubeClient:           kubeClient,
-		loxiClients:          loxiClients,
+		LoxiClients:          loxiClients,
+		LoxiPeerClients:      loxiPeerClients,
 		ExternalIPPool:       externalIPPool,
 		ExtSecondaryIPPools:  externalSecondaryIPPools,
 		ExternalIP6Pool:      externalIP6Pool,
@@ -206,7 +209,7 @@ func (m *Manager) enqueueService(obj interface{}) {
 	m.queue.Add(key)
 }
 
-func (m *Manager) Run(stopCh <-chan struct{}, loxiAliveCh <-chan *api.LoxiClient) {
+func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh <-chan *api.LoxiClient) {
 	defer m.queue.ShutDown()
 
 	klog.Infof("Starting %s", mgrName)
@@ -220,7 +223,7 @@ func (m *Manager) Run(stopCh <-chan struct{}, loxiAliveCh <-chan *api.LoxiClient
 		return
 	}
 
-	go m.reinstallLoxiLbRules(stopCh, loxiAliveCh)
+	go m.reinstallLoxiLbRules(stopCh, loxiLBLiveCh)
 
 	for i := 0; i < defaultWorkers; i++ {
 		go wait.Until(m.worker, time.Second, stopCh)
@@ -609,7 +612,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
-		for _, client := range m.loxiClients {
+		for _, client := range m.LoxiClients {
 			ch := make(chan error)
 			go func(c *api.LoxiClient, h chan error) {
 				var err error
@@ -678,7 +681,7 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 
 	for _, lb := range lbEntry.LbModelList {
 		var errChList []chan error
-		for _, loxiClient := range m.loxiClients {
+		for _, loxiClient := range m.LoxiClients {
 			ch := make(chan error)
 			errChList = append(errChList, ch)
 
@@ -725,7 +728,7 @@ func (m *Manager) DeleteAllLoadBalancer() {
 
 		for _, lb := range lbEntry.LbModelList {
 			var errChList []chan error
-			for _, loxiClient := range m.loxiClients {
+			for _, loxiClient := range m.LoxiClients {
 				ch := make(chan error)
 				errChList = append(errChList, ch)
 
@@ -1047,7 +1050,7 @@ loop:
 						}
 					}
 					if !isSuccess {
-						klog.Exit("restart loxi-ccm")
+						klog.Exit("restart kube-loxilb")
 					}
 				}
 			}

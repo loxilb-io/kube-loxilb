@@ -18,18 +18,20 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
-
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
+	"net"
+	"os"
+	"os/signal"
+	"sort"
+	"syscall"
+	"time"
 
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	"k8s.io/klog/v2"
 
@@ -141,20 +143,14 @@ func run(o *Options) error {
 		}
 	}
 
-	loxiAliveCh := make(chan *api.LoxiClient)
-	var loxilbClients []*api.LoxiClient
-	for _, lbURL := range networkConfig.LoxilbURLs {
-		loxilbClient, err := api.NewLoxiClient(lbURL)
-		if err != nil {
-			return err
-		}
-		loxilbClient.SetLoxiHealthCheckChan(stopCh, loxiAliveCh)
-		loxilbClients = append(loxilbClients, loxilbClient)
-	}
+	loxilbClients := make([]*api.LoxiClient, 0)
+	loxilbPeerClients := make([]*api.LoxiClient, 0)
+	loxiLBLiveCh := make(chan *api.LoxiClient)
 
 	lbManager := loadbalancer.NewLoadBalancerManager(
 		k8sClient,
 		loxilbClients,
+		loxilbPeerClients,
 		ipPool,
 		sipPools,
 		ipPool6,
@@ -163,10 +159,92 @@ func run(o *Options) error {
 		informerFactory,
 	)
 
+	if len(networkConfig.LoxilbURLs) > 0 {
+		for _, lbURL := range networkConfig.LoxilbURLs {
+			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, false)
+			if err != nil {
+				return err
+			}
+			loxilbClients = append(loxilbClients, loxilbClient)
+		}
+	} else {
+		go wait.Until(func() {
+
+			klog.Infof("DNS lookup:")
+
+			var tmploxilbClients []*api.LoxiClient
+			ips, err := net.LookupIP("loxilb-lb-service")
+			if err == nil {
+				for _, ip := range ips {
+					client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBLiveCh, false)
+					if err2 != nil {
+						continue
+					}
+					tmploxilbClients = append(tmploxilbClients, client)
+				}
+				if len(tmploxilbClients) > 0 {
+					sort.Slice(tmploxilbClients, func(i, j int) bool {
+						return tmploxilbClients[i].Url < tmploxilbClients[j].Url
+					})
+					chg := false
+					if len(tmploxilbClients) != len(lbManager.LoxiClients) {
+						chg = true
+					} else {
+						for i, v := range lbManager.LoxiClients {
+							if v.Url != tmploxilbClients[i].Url {
+								chg = true
+							}
+						}
+					}
+					if chg == true {
+						for _, v := range lbManager.LoxiClients {
+							v.StopLoxiHealthCheckChan()
+						}
+						lbManager.LoxiClients = tmploxilbClients
+					}
+				}
+			}
+
+			var tmploxilbPeerClients []*api.LoxiClient
+			ips, err = net.LookupIP("loxilb-peer-service")
+			if err == nil {
+				for _, ip := range ips {
+					klog.Infof("loxilb-peer-service IN A %s\n", ip.String())
+					client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBLiveCh, true)
+					if err2 != nil {
+						continue
+					}
+					tmploxilbPeerClients = append(tmploxilbPeerClients, client)
+				}
+				if len(tmploxilbPeerClients) > 0 {
+					sort.Slice(tmploxilbPeerClients, func(i, j int) bool {
+						return tmploxilbPeerClients[i].Url < tmploxilbPeerClients[j].Url
+					})
+					chg := false
+					if len(tmploxilbPeerClients) != len(lbManager.LoxiPeerClients) {
+						chg = true
+					} else {
+						for i, v := range lbManager.LoxiPeerClients {
+							if v.Url != tmploxilbPeerClients[i].Url {
+								chg = true
+							}
+						}
+					}
+					if chg == true {
+						for _, v := range lbManager.LoxiPeerClients {
+							v.StopLoxiHealthCheckChan()
+						}
+						lbManager.LoxiPeerClients = tmploxilbPeerClients
+					}
+				}
+			}
+		}, time.Second*20, stopCh)
+	}
+
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
 
-	go lbManager.Run(stopCh, loxiAliveCh)
+	go lbManager.Run(stopCh, loxiLBLiveCh)
 
 	<-stopCh
 
