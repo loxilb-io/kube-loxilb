@@ -16,6 +16,7 @@ type LoxiClient struct {
 	MasterLB    bool
 	PeeringOnly bool
 	Url         string
+	IsAlive     bool
 	Stop        chan struct{}
 }
 
@@ -51,18 +52,18 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, peerOnly bool) (*
 }
 
 func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient) {
-	isLoxiAlive := true
+	l.IsAlive = true
 
 	go wait.Until(func() {
 		if _, err := l.HealthCheck().Get(context.Background(), ""); err != nil {
-			if isLoxiAlive {
+			if l.IsAlive {
 				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is down", l.RestClient.baseURL.String())
-				isLoxiAlive = false
+				l.IsAlive = false
 			}
 		} else {
-			if !isLoxiAlive {
+			if !l.IsAlive {
 				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is alive", l.RestClient.baseURL.String())
-				isLoxiAlive = true
+				l.IsAlive = true
 				aliveCh <- l
 			}
 		}

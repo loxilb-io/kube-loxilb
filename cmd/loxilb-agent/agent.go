@@ -146,6 +146,7 @@ func run(o *Options) error {
 	loxilbClients := make([]*api.LoxiClient, 0)
 	loxilbPeerClients := make([]*api.LoxiClient, 0)
 	loxiLBLiveCh := make(chan *api.LoxiClient)
+	loxiLBSelMasterEvent := make(chan bool)
 
 	lbManager := loadbalancer.NewLoadBalancerManager(
 		k8sClient,
@@ -169,9 +170,6 @@ func run(o *Options) error {
 		}
 	} else {
 		go wait.Until(func() {
-
-			klog.Infof("DNS lookup:")
-
 			var tmploxilbClients []*api.LoxiClient
 			ips, err := net.LookupIP("loxilb-lb-service")
 			if err == nil {
@@ -237,6 +235,35 @@ func run(o *Options) error {
 						lbManager.LoxiPeerClients = tmploxilbPeerClients
 					}
 				}
+
+				reElect := false
+				hasMaster := false
+				for i := range lbManager.LoxiClients {
+					v := lbManager.LoxiClients[i]
+					if v.MasterLB && !v.IsAlive {
+						v.MasterLB = false
+						reElect = true
+					} else if v.MasterLB {
+						hasMaster = true
+					}
+				}
+				if reElect || !hasMaster {
+					selMaster := false
+					for i := range lbManager.LoxiClients {
+						v := lbManager.LoxiClients[i]
+						if selMaster {
+							v.MasterLB = false
+							continue
+						}
+						if v.IsAlive {
+							v.MasterLB = true
+							selMaster = true
+						}
+					}
+					if selMaster {
+						loxiLBSelMasterEvent <- true
+					}
+				}
 			}
 		}, time.Second*20, stopCh)
 	}
@@ -244,7 +271,7 @@ func run(o *Options) error {
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
 
-	go lbManager.Run(stopCh, loxiLBLiveCh)
+	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBSelMasterEvent)
 
 	<-stopCh
 

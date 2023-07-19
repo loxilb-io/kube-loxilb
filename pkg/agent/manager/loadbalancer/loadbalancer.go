@@ -209,7 +209,7 @@ func (m *Manager) enqueueService(obj interface{}) {
 	m.queue.Add(key)
 }
 
-func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh <-chan *api.LoxiClient) {
+func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh <-chan *api.LoxiClient, masterEventCh <-chan bool) {
 	defer m.queue.ShutDown()
 
 	klog.Infof("Starting %s", mgrName)
@@ -223,7 +223,7 @@ func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh <-chan *api.LoxiClien
 		return
 	}
 
-	go m.reinstallLoxiLbRules(stopCh, loxiLBLiveCh)
+	go m.manageLoxiLbLifeCycle(stopCh, loxiLBLiveCh, masterEventCh)
 
 	for i := 0; i < defaultWorkers; i++ {
 		go wait.Until(m.worker, time.Second, stopCh)
@@ -1028,12 +1028,18 @@ func (m *Manager) addIngress(service *corev1.Service, newIP net.IP) {
 		append(service.Status.LoadBalancer.Ingress, corev1.LoadBalancerIngress{IP: newIP.String()})
 }
 
-func (m *Manager) reinstallLoxiLbRules(stopCh <-chan struct{}, loxiAliveCh <-chan *api.LoxiClient) {
+func (m *Manager) manageLoxiLbLifeCycle(stopCh <-chan struct{}, loxiAliveCh <-chan *api.LoxiClient, masterEventCh <-chan bool) {
 loop:
 	for {
 		select {
 		case <-stopCh:
 			break loop
+		case <-masterEventCh:
+			for _, value := range m.LoxiClients {
+				if value.MasterLB {
+					klog.Infof("loxilb %v is master", value.Url)
+				}
+			}
 		case aliveClient := <-loxiAliveCh:
 			isSuccess := false
 			for _, value := range m.lbCache {
