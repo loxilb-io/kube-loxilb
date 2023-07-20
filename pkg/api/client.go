@@ -93,6 +93,10 @@ func (l *LoxiClient) CIStatus() *CiStatusAPI {
 	return newCiStatusAPI(l.GetRESTClient())
 }
 
+func (l *LoxiClient) BGP() *BGPAPI {
+	return newBGPAPI(l.GetRESTClient())
+}
+
 func (l *LoxiClient) HealthCheck() *HealthCheckAPI {
 	return newHealthCheckAPI(l.GetRESTClient())
 }
