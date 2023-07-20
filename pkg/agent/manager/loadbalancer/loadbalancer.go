@@ -1085,7 +1085,7 @@ loop:
 				}
 			}
 		case aliveClient := <-loxiAliveCh:
-		  loop1:
+		loop1:
 			if m.networkConfig.SetRoles && m.ElectionRunOnce {
 				cisModel, err := m.makeLoxiLBCIStatusModel("default", aliveClient)
 				if err == nil {
