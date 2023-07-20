@@ -56,4 +56,6 @@ type AgentConfig struct {
 	ExclIPAM bool `yaml:"setExclIPAM"`
 	// Enable monitoring end-points of LB rule
 	Monitor bool `yaml:"monitor"`
+	// Set loxilb node roles
+	SetRoles bool `yaml:"setRoles"`
 }

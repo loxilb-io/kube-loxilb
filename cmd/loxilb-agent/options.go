@@ -64,9 +64,11 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", o.config.ExclIPAM, "Use unique IPAM per service")
 	fs.Uint16Var(&o.config.SetLBMode, "setLBMode", o.config.SetLBMode, "LB mode to use")
 	fs.BoolVar(&o.config.Monitor, "monitor", o.config.Monitor, "Enable monitoring end-points of LB rule")
+	fs.BoolVar(&o.config.SetRoles, "setRoles", o.config.SetRoles, "Set LoxiLB node roles")
 }
 
-// complete completes all the required options
+// complete completes all the required optionst
+
 func (o *Options) complete(args []string) error {
 	if len(o.configFile) > 0 {
 		if err := o.loadConfigFromFile(); err != nil {

@@ -20,13 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"path"
-	"reflect"
-	"strconv"
-	"strings"
-	"time"
-
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -39,6 +32,12 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"net"
+	"path"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -80,6 +79,7 @@ type Manager struct {
 	ExtSecondaryIPPools  []*ippool.IPPool
 	ExternalIP6Pool      *ippool.IPPool
 	ExtSecondaryIP6Pools []*ippool.IPPool
+	ElectionRunOnce      bool
 
 	queue   workqueue.RateLimitingInterface
 	lbCache LbCacheTable
@@ -1029,6 +1029,19 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 	}, nil
 }
 
+func (m *Manager) makeLoxiLBCIStatusModel(instance string, client *api.LoxiClient) (api.CIStatusModel, error) {
+
+	state := "BACKUP"
+	if client.MasterLB {
+		state = "MASTER"
+	}
+	return api.CIStatusModel{
+		Instance: instance,
+		State:    state,
+		Vip:      "0.0.0.0",
+	}, nil
+}
+
 func (m *Manager) addIngress(service *corev1.Service, newIP net.IP) {
 	service.Status.LoadBalancer.Ingress =
 		append(service.Status.LoadBalancer.Ingress, corev1.LoadBalancerIngress{IP: newIP.String()})
@@ -1041,13 +1054,39 @@ loop:
 		case <-stopCh:
 			break loop
 		case <-masterEventCh:
-			for _, value := range m.LoxiClients {
-				if value.MasterLB {
-					klog.Infof("loxilb %v is master", value.Url)
+			for _, lc := range m.LoxiClients {
+				cisModel, err := m.makeLoxiLBCIStatusModel("default", lc)
+				if err == nil {
+					for retry := 0; retry < 5; retry++ {
+						klog.Infof("%v set-role...count %d master %v", lc.Url, retry, lc.MasterLB)
+						if err := lc.CIStatus().Create(context.Background(), &cisModel); err == nil {
+							klog.Infof("set-role success")
+							break
+						} else {
+							time.Sleep(1 * time.Second)
+						}
+					}
 				}
 			}
 		case aliveClient := <-loxiAliveCh:
 			isSuccess := false
+			if m.networkConfig.SetRoles && m.ElectionRunOnce {
+				cisModel, err := m.makeLoxiLBCIStatusModel("default", aliveClient)
+				if err == nil {
+					for retry := 0; retry < 5; retry++ {
+						klog.Infof("set-role...count %d", retry)
+						if err := aliveClient.CIStatus().Create(context.Background(), &cisModel); err == nil {
+							klog.Infof("set-role success")
+							isSuccess = true
+							break
+						} else {
+							time.Sleep(1 * time.Second)
+						}
+					}
+				}
+			}
+
+			isSuccess = false
 			if m.networkConfig.SetBGP != 0 {
 				var bgpPeers []string
 				for _, lc := range m.LoxiClients {
@@ -1063,6 +1102,7 @@ loop:
 				klog.Infof("Set BGP Peer for %v : %v", aliveClient.Host, bgpPeers)
 			}
 
+			isSuccess = false
 			for _, value := range m.lbCache {
 				for _, lbModel := range value.LbModelList {
 					klog.Infof("reinstallLoxiLbRules: lbModel: %v", lbModel)

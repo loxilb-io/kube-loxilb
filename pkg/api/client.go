@@ -63,7 +63,7 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, peerOnly bool) (*
 }
 
 func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient) {
-	l.IsAlive = true
+	l.IsAlive = false
 
 	go wait.Until(func() {
 		if _, err := l.HealthCheck().Get(context.Background(), ""); err != nil {
@@ -87,6 +87,10 @@ func (l *LoxiClient) StopLoxiHealthCheckChan() {
 
 func (l *LoxiClient) LoadBalancer() *LoadBalancerAPI {
 	return newLoadBalancerAPI(l.GetRESTClient())
+}
+
+func (l *LoxiClient) CIStatus() *CiStatusAPI {
+	return newCiStatusAPI(l.GetRESTClient())
 }
 
 func (l *LoxiClient) HealthCheck() *HealthCheckAPI {

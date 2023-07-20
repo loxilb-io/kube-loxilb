@@ -79,6 +79,7 @@ func run(o *Options) error {
 	klog.Infof("Monitor: %v", o.config.Monitor)
 	klog.Infof("SecondaryCIDRs: %v", o.config.ExternalSecondaryCIDRs)
 	klog.Infof("ExtBGPPeers: %v", o.config.ExtBGPPeers)
+	klog.Infof("SetRoles: %v", o.config.SetRoles)
 
 	networkConfig := &config.NetworkConfig{
 		LoxilbURLs:              o.config.LoxiURLs,
@@ -86,6 +87,7 @@ func run(o *Options) error {
 		ExternalCIDR:            o.config.ExternalCIDR,
 		ExternalCIDR6:           o.config.ExternalCIDR6,
 		SetBGP:                  o.config.SetBGP,
+		SetRoles:                o.config.SetRoles,
 		ExtBGPPeers:             o.config.ExtBGPPeers,
 		SetLBMode:               o.config.SetLBMode,
 		Monitor:                 o.config.Monitor,
@@ -172,8 +174,8 @@ func run(o *Options) error {
 		informerFactory,
 	)
 
-	if len(networkConfig.LoxilbURLs) <= 0 {
-		go wait.Until(func() {
+	go wait.Until(func() {
+		if len(networkConfig.LoxilbURLs) <= 0 {
 			var tmploxilbClients []*api.LoxiClient
 			ips, err := net.LookupIP("loxilb-lb-service")
 			if err == nil {
@@ -239,38 +241,42 @@ func run(o *Options) error {
 						lbManager.LoxiPeerClients = tmploxilbPeerClients
 					}
 				}
+			}
+		}
 
-				reElect := false
-				hasMaster := false
-				for i := range lbManager.LoxiClients {
-					v := lbManager.LoxiClients[i]
-					if v.MasterLB && !v.IsAlive {
-						v.MasterLB = false
-						reElect = true
-					} else if v.MasterLB {
-						hasMaster = true
-					}
-				}
-				if reElect || !hasMaster {
-					selMaster := false
-					for i := range lbManager.LoxiClients {
-						v := lbManager.LoxiClients[i]
-						if selMaster {
-							v.MasterLB = false
-							continue
-						}
-						if v.IsAlive {
-							v.MasterLB = true
-							selMaster = true
-						}
-					}
-					if selMaster {
-						loxiLBSelMasterEvent <- true
-					}
+		if networkConfig.SetRoles {
+			reElect := false
+			hasMaster := false
+			for i := range lbManager.LoxiClients {
+				v := lbManager.LoxiClients[i]
+				if v.MasterLB && !v.IsAlive {
+					v.MasterLB = false
+					reElect = true
+				} else if v.MasterLB {
+					hasMaster = true
 				}
 			}
-		}, time.Second*20, stopCh)
-	}
+			if reElect || !hasMaster {
+				selMaster := false
+				for i := range lbManager.LoxiClients {
+					v := lbManager.LoxiClients[i]
+					if selMaster {
+						v.MasterLB = false
+						continue
+					}
+					if v.IsAlive {
+						v.MasterLB = true
+						selMaster = true
+						klog.Infof("loxilb-peer(%v) set-role master", v.Url)
+					}
+				}
+				if selMaster {
+					lbManager.ElectionRunOnce = true
+					loxiLBSelMasterEvent <- true
+				}
+			}
+		}
+	}, time.Second*20, stopCh)
 
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
