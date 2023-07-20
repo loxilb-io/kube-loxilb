@@ -149,7 +149,7 @@ func run(o *Options) error {
 
 	loxilbClients := make([]*api.LoxiClient, 0)
 	loxilbPeerClients := make([]*api.LoxiClient, 0)
-	loxiLBLiveCh := make(chan *api.LoxiClient)
+	loxiLBLiveCh := make(chan *api.LoxiClient, 2)
 	loxiLBSelMasterEvent := make(chan bool)
 
 	if len(networkConfig.LoxilbURLs) > 0 {

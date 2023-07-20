@@ -20,6 +20,7 @@ type LoxiClient struct {
 	Host        string
 	Port        string
 	IsAlive     bool
+	DoBGPCfg    bool
 	Stop        chan struct{}
 }
 
