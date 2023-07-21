@@ -28,17 +28,21 @@ args:
         #- --externalSecondaryCIDRs=124.124.124.1/24,125.125.125.1/24
         #- --externalCIDR6=3ffe::1/96
         #- --monitor
-        #- --setBGP=false
+        #- --setBGP=65100
+        #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
+        #- --setRoles
         #- --setLBMode=1
         #- --setUniqueIP=false
 ```
 
 The arguments have the following meaning :    
-- loxiURL : API server address of loxilb. This is the docker IP address loxilb docker of Step 1.   
+- loxiURL : API server address of loxilb. This is the docker IP address loxilb docker of Step 1. If unspecified, kube-loxilb assumes loxilb is running in-cluster mode and autoconfigures this.
 - externalCIDR : CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode)
 - externalCIDR6 : Ipv6 CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode)   
 - monitor : Enable liveness probe for the LB end-points (default : unset)    
-- setBGP : Use BGP to advertise this service (default :false). Please check [here](https://github.com/loxilb-io/loxilbdocs/blob/main/docs/integrate_bgp_eng.md) how it works.    
+- setBGP : Use specified BGP AS-ID to advertise this service. If not specified BGP will be disabled. Please check [here](https://github.com/loxilb-io/loxilbdocs/blob/main/docs/integrate_bgp_eng.md) how it works.
+- extBGPPeers : Specifies external BGP peers with appropriate remote AS
+- setRoles : If present, kube-loxilb arbitrates loxilb role(s) in cluster-mode
 - setLBMode : 0, 1, 2   
   0 - default (only DNAT, preserves source-IP)       
   1 - onearm (source IP is changed to load balancer’s interface IP)     

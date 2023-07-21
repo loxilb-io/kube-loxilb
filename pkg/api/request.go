@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,10 @@ type LoxiRequest struct {
 	contentType string
 	err         error
 	client      *RESTClient
+}
+
+type LoxiResult struct {
+	Result string `json:"result"`
 }
 
 func NewLoxiRequest(method, resource string, client *RESTClient) *LoxiRequest {
@@ -96,6 +101,7 @@ func (l *LoxiRequest) SubResource(subresources ...string) *LoxiRequest {
 }
 
 func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
+	result := LoxiResult{}
 	if l.err != nil {
 		return &LoxiResponse{err: l.err}
 	}
@@ -120,6 +126,16 @@ func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
 	respByte, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return &LoxiResponse{err: err}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		if err := json.Unmarshal(respByte, &result); err != nil {
+			return &LoxiResponse{err: err}
+		}
+
+		if result.Result != "Success" && !strings.Contains(result.Result, "exist") {
+			return &LoxiResponse{err: errors.New(result.Result)}
+		}
 	}
 
 	return &LoxiResponse{

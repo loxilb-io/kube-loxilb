@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -12,12 +13,21 @@ import (
 )
 
 type LoxiClient struct {
-	restClient *RESTClient
+	RestClient  *RESTClient
+	MasterLB    bool
+	PeeringOnly bool
+	Url         string
+	Host        string
+	Port        string
+	IsAlive     bool
+	DoBGPCfg    bool
+	Purge       bool
+	Stop        chan struct{}
 }
 
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
-func NewLoxiClient(apiServer string) (*LoxiClient, error) {
-	fmt.Println("NewLoxiClient:")
+func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, peerOnly bool) (*LoxiClient, error) {
+
 	client := &http.Client{}
 
 	base, err := url.Parse(apiServer)
@@ -32,32 +42,63 @@ func NewLoxiClient(apiServer string) (*LoxiClient, error) {
 		return nil, err
 	}
 
-	return &LoxiClient{
-		restClient: restClient,
-	}, nil
+	host, port, err := net.SplitHostPort(base.Host)
+	if err != nil {
+		fmt.Printf("failed to parse host,port %s. err: %s", base.Host, err.Error())
+		return nil, err
+	}
+
+	stop := make(chan struct{})
+
+	lc := &LoxiClient{
+		RestClient:  restClient,
+		Url:         apiServer,
+		Host:        host,
+		Port:        port,
+		Stop:        stop,
+		PeeringOnly: peerOnly,
+	}
+
+	lc.StartLoxiHealthCheckChan(aliveCh)
+
+	klog.Infof("NewLoxiClient Created: %s", apiServer)
+
+	return lc, nil
 }
 
-func (l *LoxiClient) SetLoxiHealthCheckChan(stop <-chan struct{}, aliveCh chan *LoxiClient) {
-	isLoxiAlive := true
+func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient) {
+	l.IsAlive = false
 
 	go wait.Until(func() {
 		if _, err := l.HealthCheck().Get(context.Background(), ""); err != nil {
-			if isLoxiAlive {
-				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is down. isLoxiAlive is changed to 'false'", l.restClient.baseURL.String())
-				isLoxiAlive = false
+			if l.IsAlive {
+				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is down", l.RestClient.baseURL.String())
+				l.IsAlive = false
 			}
 		} else {
-			if !isLoxiAlive {
-				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is alive again. isLoxiAlive is set 'true'", l.restClient.baseURL.String())
-				isLoxiAlive = true
+			if !l.IsAlive {
+				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is alive", l.RestClient.baseURL.String())
+				l.IsAlive = true
 				aliveCh <- l
 			}
 		}
-	}, time.Second*2, stop)
+	}, time.Second*2, l.Stop)
+}
+
+func (l *LoxiClient) StopLoxiHealthCheckChan() {
+	l.Stop <- struct{}{}
 }
 
 func (l *LoxiClient) LoadBalancer() *LoadBalancerAPI {
 	return newLoadBalancerAPI(l.GetRESTClient())
+}
+
+func (l *LoxiClient) CIStatus() *CiStatusAPI {
+	return newCiStatusAPI(l.GetRESTClient())
+}
+
+func (l *LoxiClient) BGP() *BGPAPI {
+	return newBGPAPI(l.GetRESTClient())
 }
 
 func (l *LoxiClient) HealthCheck() *HealthCheckAPI {
@@ -69,5 +110,5 @@ func (l *LoxiClient) GetRESTClient() *RESTClient {
 		return nil
 	}
 
-	return l.restClient
+	return l.RestClient
 }

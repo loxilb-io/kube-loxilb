@@ -92,6 +92,7 @@ spec:
         app: loxilb
     spec:
       hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       tolerations:
         - effect: NoSchedule
           operator: Exists
@@ -114,7 +115,9 @@ spec:
         - --externalCIDR=123.123.123.1/24
         #- --externalSecondaryCIDRs=124.124.124.1/24,125.125.125.1/24
         #- --monitor
-        #- --setBGP
+        #- --setBGP=64512
+        #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
+        #- --setRoles
         #- --setLBMode=1
         #- --config=/opt/loxilb/agent/kube-loxilb.conf
         resources:

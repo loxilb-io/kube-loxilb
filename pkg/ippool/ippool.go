@@ -83,6 +83,11 @@ func (i *IPPool) ReturnIPAddr(ip string, sIdent uint32, proto string) {
 		sIdent = 0
 	}
 
+	IP := net.ParseIP(ip)
+	if IP != nil || !i.NetCIDR.Contains(IP) {
+		return
+	}
+
 	klog.Infof("Release ServiceIP %s:%v", ip, sIdent)
 
 	i.IPAlloc.DeAllocateIP(tk.IPClusterDefault, i.CIDR, sIdent, ip, proto)
