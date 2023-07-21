@@ -24,10 +24,8 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
-	"net"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 	"time"
 
@@ -177,70 +175,93 @@ func run(o *Options) error {
 	go wait.Until(func() {
 		if len(networkConfig.LoxilbURLs) <= 0 {
 			var tmploxilbClients []*api.LoxiClient
-			ips, err := net.LookupIP("loxilb-lb-service")
+			// DNS lookup (not used now)
+			// ips, err := net.LookupIP("loxilb-lb-service")
+			ips, err := k8s.GetServiceEndPoints(k8sClient, "loxilb-lb-service", "kube-system")
+			klog.Infof("loxilb-service end-points:  %v", ips)
 			if err == nil {
-				for _, ip := range ips {
-					client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBLiveCh, false)
-					if err2 != nil {
-						continue
+				for _, v := range lbManager.LoxiClients {
+					v.Purge = true
+					for _, ip := range ips {
+						if v.Host == ip.String() {
+							v.Purge = false
+						}
 					}
-					tmploxilbClients = append(tmploxilbClients, client)
+				}
+
+				for _, ip := range ips {
+					found := false
+					for _, v := range lbManager.LoxiClients {
+						if v.Host == ip.String() {
+							found = true
+						}
+					}
+					if !found {
+						client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBLiveCh, false)
+						if err2 != nil {
+							continue
+						}
+						tmploxilbClients = append(tmploxilbClients, client)
+					}
 				}
 				if len(tmploxilbClients) > 0 {
-					sort.Slice(tmploxilbClients, func(i, j int) bool {
-						return tmploxilbClients[i].Url < tmploxilbClients[j].Url
-					})
-					chg := false
-					if len(tmploxilbClients) != len(lbManager.LoxiClients) {
-						chg = true
-					} else {
-						for i, v := range lbManager.LoxiClients {
-							if v.Url != tmploxilbClients[i].Url {
-								chg = true
-							}
-						}
-					}
-					if chg == true {
-						for _, v := range lbManager.LoxiClients {
-							v.StopLoxiHealthCheckChan()
-						}
-						lbManager.LoxiClients = tmploxilbClients
+					for _, v := range tmploxilbClients {
+						lbManager.LoxiClients = append(lbManager.LoxiClients, v)
 					}
 				}
+				tmp := lbManager.LoxiClients[:0]
+				for _, v := range lbManager.LoxiClients {
+					if !v.Purge {
+						tmp = append(tmp, v)
+					} else {
+						v.StopLoxiHealthCheckChan()
+					}
+				}
+				lbManager.LoxiClients = tmp
 			}
 
 			var tmploxilbPeerClients []*api.LoxiClient
-			ips, err = net.LookupIP("loxilb-peer-service")
+			ips, err = k8s.GetServiceEndPoints(k8sClient, "loxilb-peer-service", "kube-system")
+			klog.Infof("loxilb-peer-service end-points:  %v", ips)
 			if err == nil {
-				for _, ip := range ips {
-					klog.Infof("loxilb-peer-service IN A %s\n", ip.String())
-					client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBLiveCh, true)
-					if err2 != nil {
-						continue
+				for _, v := range lbManager.LoxiPeerClients {
+					v.Purge = true
+					for _, ip := range ips {
+						if v.Host == ip.String() {
+							v.Purge = false
+						}
 					}
-					tmploxilbPeerClients = append(tmploxilbPeerClients, client)
+				}
+
+				for _, ip := range ips {
+					found := false
+					for _, v := range lbManager.LoxiPeerClients {
+						if v.Host == ip.String() {
+							found = true
+						}
+					}
+					if !found {
+						client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBLiveCh, true)
+						if err2 != nil {
+							continue
+						}
+						tmploxilbPeerClients = append(tmploxilbPeerClients, client)
+					}
 				}
 				if len(tmploxilbPeerClients) > 0 {
-					sort.Slice(tmploxilbPeerClients, func(i, j int) bool {
-						return tmploxilbPeerClients[i].Url < tmploxilbPeerClients[j].Url
-					})
-					chg := false
-					if len(tmploxilbPeerClients) != len(lbManager.LoxiPeerClients) {
-						chg = true
-					} else {
-						for i, v := range lbManager.LoxiPeerClients {
-							if v.Url != tmploxilbPeerClients[i].Url {
-								chg = true
-							}
-						}
-					}
-					if chg == true {
-						for _, v := range lbManager.LoxiPeerClients {
-							v.StopLoxiHealthCheckChan()
-						}
-						lbManager.LoxiPeerClients = tmploxilbPeerClients
+					for _, v := range tmploxilbPeerClients {
+						lbManager.LoxiPeerClients = append(lbManager.LoxiPeerClients, v)
 					}
 				}
+				tmp := lbManager.LoxiPeerClients[:0]
+				for _, v := range lbManager.LoxiPeerClients {
+					if !v.Purge {
+						tmp = append(tmp, v)
+					} else {
+						v.StopLoxiHealthCheckChan()
+					}
+				}
+				lbManager.LoxiPeerClients = tmp
 			}
 		}
 

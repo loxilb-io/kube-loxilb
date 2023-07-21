@@ -1084,7 +1084,7 @@ loop:
 				cisModel, err := m.makeLoxiLBCIStatusModel("default", lc)
 				if err == nil {
 					for retry := 0; retry < 5; retry++ {
-						klog.Infof("%v set-role...count %d master %v", lc.Url, retry, lc.MasterLB)
+						klog.Infof("%v : set-role %d master %v retry(%d)", lc.Url, lc.MasterLB, retry)
 						if err := lc.CIStatus().Create(context.Background(), &cisModel); err == nil {
 							klog.Infof("set-role success")
 							break
