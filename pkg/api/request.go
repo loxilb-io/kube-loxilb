@@ -130,11 +130,11 @@ func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
 
 	if resp.StatusCode == http.StatusOK {
 		if err := json.Unmarshal(respByte, &result); err != nil {
-			return &LoxiResponse{err: err}
+			return &LoxiResponse{statusCode: resp.StatusCode, err: err}
 		}
 
 		if result.Result != "Success" && !strings.Contains(result.Result, "exist") {
-			return &LoxiResponse{err: errors.New(result.Result)}
+			return &LoxiResponse{statusCode: resp.StatusCode, err: errors.New(result.Result)}
 		}
 	}
 

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
 )
 
 type EpSelect uint
@@ -128,8 +129,10 @@ func (l *LoadBalancerAPI) Delete(ctx context.Context, lbModel LoxiModel) error {
 	}
 
 	resp := l.client.DELETE(l.resource).SubResource(subresources).Query(queryParam).Body(lbModel).Do(ctx)
-	if resp.err != nil {
-		return resp.err
+	if resp.statusCode != http.StatusOK {
+		if resp.err != nil {
+			return resp.err
+		}
 	}
 
 	return nil
