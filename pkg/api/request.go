@@ -133,7 +133,7 @@ func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
 			return &LoxiResponse{err: err}
 		}
 
-		if result.Result != "Success" && !strings.Contains(result.Result, "exist") {
+		if result.Result != "Success" {
 			return &LoxiResponse{err: errors.New(result.Result)}
 		}
 	}

@@ -621,8 +621,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				var err error
 				for _, lbModel := range lbModelList {
 					if err = c.LoadBalancer().Create(ctx, &lbModel); err != nil {
-						klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
-						break
+						if !strings.Contains(err.Error(), "exist") {
+							klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+							break
+						} else {
+							err = nil
+						}
 					}
 				}
 				h <- err
@@ -1196,8 +1200,13 @@ loop:
 							isSuccess = true
 							break
 						} else {
-							klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lbModel, retry)
-							time.Sleep(1 * time.Second)
+							if !strings.Contains(err.Error(), "exist") {
+								klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lbModel, retry)
+								time.Sleep(1 * time.Second)
+							} else {
+								isSuccess = true
+								break
+							}
 						}
 					}
 					if !isSuccess {
