@@ -84,7 +84,7 @@ func (i *IPPool) ReturnIPAddr(ip string, sIdent uint32, proto string) {
 	}
 
 	IP := net.ParseIP(ip)
-	if IP != nil || !i.NetCIDR.Contains(IP) {
+	if IP == nil || !i.NetCIDR.Contains(IP) {
 		return
 	}
 
