@@ -1197,26 +1197,28 @@ loop:
 				}
 			}
 
-			isSuccess := false
-			for _, value := range m.lbCache {
-				for _, lbModel := range value.LbModelList {
-					for retry := 0; retry < 5; retry++ {
-						if err := aliveClient.LoadBalancer().Create(context.Background(), &lbModel); err == nil {
-							klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lbModel)
-							isSuccess = true
-							break
-						} else {
-							if !strings.Contains(err.Error(), "exist") {
-								klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lbModel, retry)
-								time.Sleep(1 * time.Second)
-							} else {
+			if !aliveClient.PeeringOnly {
+				isSuccess := false
+				for _, value := range m.lbCache {
+					for _, lbModel := range value.LbModelList {
+						for retry := 0; retry < 5; retry++ {
+							if err := aliveClient.LoadBalancer().Create(context.Background(), &lbModel); err == nil {
+								klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lbModel)
 								isSuccess = true
 								break
+							} else {
+								if !strings.Contains(err.Error(), "exist") {
+									klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lbModel, retry)
+									time.Sleep(1 * time.Second)
+								} else {
+									isSuccess = true
+									break
+								}
 							}
 						}
-					}
-					if !isSuccess {
-						klog.Exit("restart kube-loxilb")
+						if !isSuccess {
+							klog.Exit("restart kube-loxilb")
+						}
 					}
 				}
 			}
