@@ -18,16 +18,17 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -148,6 +149,7 @@ func run(o *Options) error {
 	loxilbClients := make([]*api.LoxiClient, 0)
 	loxilbPeerClients := make([]*api.LoxiClient, 0)
 	loxiLBLiveCh := make(chan *api.LoxiClient, 2)
+	loxiLBPurgeCh := make(chan *api.LoxiClient, 5)
 	loxiLBSelMasterEvent := make(chan bool)
 
 	if len(networkConfig.LoxilbURLs) > 0 {
@@ -174,135 +176,18 @@ func run(o *Options) error {
 
 	go wait.Until(func() {
 		if len(networkConfig.LoxilbURLs) <= 0 {
-			var tmploxilbClients []*api.LoxiClient
-			// DNS lookup (not used now)
-			// ips, err := net.LookupIP("loxilb-lb-service")
-			ips, err := k8s.GetServiceEndPoints(k8sClient, "loxilb-lb-service", "kube-system")
-			klog.Infof("loxilb-service end-points:  %v", ips)
-			if err == nil {
-				for _, v := range lbManager.LoxiClients {
-					v.Purge = true
-					for _, ip := range ips {
-						if v.Host == ip.String() {
-							v.Purge = false
-						}
-					}
-				}
-
-				for _, ip := range ips {
-					found := false
-					for _, v := range lbManager.LoxiClients {
-						if v.Host == ip.String() {
-							found = true
-						}
-					}
-					if !found {
-						client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBLiveCh, false)
-						if err2 != nil {
-							continue
-						}
-						tmploxilbClients = append(tmploxilbClients, client)
-					}
-				}
-				if len(tmploxilbClients) > 0 {
-					for _, v := range tmploxilbClients {
-						lbManager.LoxiClients = append(lbManager.LoxiClients, v)
-					}
-				}
-				tmp := lbManager.LoxiClients[:0]
-				for _, v := range lbManager.LoxiClients {
-					if !v.Purge {
-						tmp = append(tmp, v)
-					} else {
-						v.StopLoxiHealthCheckChan()
-					}
-				}
-				lbManager.LoxiClients = tmp
-			}
-
-			var tmploxilbPeerClients []*api.LoxiClient
-			ips, err = k8s.GetServiceEndPoints(k8sClient, "loxilb-peer-service", "kube-system")
-			klog.Infof("loxilb-peer-service end-points:  %v", ips)
-			if err == nil {
-				for _, v := range lbManager.LoxiPeerClients {
-					v.Purge = true
-					for _, ip := range ips {
-						if v.Host == ip.String() {
-							v.Purge = false
-						}
-					}
-				}
-
-				for _, ip := range ips {
-					found := false
-					for _, v := range lbManager.LoxiPeerClients {
-						if v.Host == ip.String() {
-							found = true
-						}
-					}
-					if !found {
-						client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBLiveCh, true)
-						if err2 != nil {
-							continue
-						}
-						tmploxilbPeerClients = append(tmploxilbPeerClients, client)
-					}
-				}
-				if len(tmploxilbPeerClients) > 0 {
-					for _, v := range tmploxilbPeerClients {
-						lbManager.LoxiPeerClients = append(lbManager.LoxiPeerClients, v)
-					}
-				}
-				tmp := lbManager.LoxiPeerClients[:0]
-				for _, v := range lbManager.LoxiPeerClients {
-					if !v.Purge {
-						tmp = append(tmp, v)
-					} else {
-						v.StopLoxiHealthCheckChan()
-					}
-				}
-				lbManager.LoxiPeerClients = tmp
-			}
+			lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBPurgeCh)
 		}
 
 		if networkConfig.SetRoles {
-			reElect := false
-			hasMaster := false
-			for i := range lbManager.LoxiClients {
-				v := lbManager.LoxiClients[i]
-				if v.MasterLB && !v.IsAlive {
-					v.MasterLB = false
-					reElect = true
-				} else if v.MasterLB {
-					hasMaster = true
-				}
-			}
-			if reElect || !hasMaster {
-				selMaster := false
-				for i := range lbManager.LoxiClients {
-					v := lbManager.LoxiClients[i]
-					if selMaster {
-						v.MasterLB = false
-						continue
-					}
-					if v.IsAlive {
-						v.MasterLB = true
-						selMaster = true
-						klog.Infof("loxilb-peer(%v) set-role master", v.Url)
-					}
-				}
-				if selMaster {
-					lbManager.ElectionRunOnce = true
-					loxiLBSelMasterEvent <- true
-				}
-			}
+			lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
 		}
 	}, time.Second*20, stopCh)
 
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
 
-	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBSelMasterEvent)
+	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 
 	<-stopCh
 

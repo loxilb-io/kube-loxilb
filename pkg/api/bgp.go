@@ -16,6 +16,8 @@ type BGPGlobalConfig struct {
 	LocalAs int64 `json:"localAs,omitempty"`
 	// BGP Router ID
 	RouterID string `json:"routerId,omitempty"`
+	// Set Next hop self option
+	SetNHSelf bool `json:"setNextHopSelf,omitempty"`
 }
 
 type BGPAPI struct {
