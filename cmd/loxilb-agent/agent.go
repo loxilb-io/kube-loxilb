@@ -175,6 +175,7 @@ func run(o *Options) error {
 	go wait.Until(func() {
 		if len(networkConfig.LoxilbURLs) <= 0 {
 			var tmploxilbClients []*api.LoxiClient
+			chg := false
 			// DNS lookup (not used now)
 			// ips, err := net.LookupIP("loxilb-lb-service")
 			ips, err := k8s.GetServiceEndPoints(k8sClient, "loxilb-lb-service", "kube-system")
@@ -201,6 +202,7 @@ func run(o *Options) error {
 						if err2 != nil {
 							continue
 						}
+						chg = true
 						tmploxilbClients = append(tmploxilbClients, client)
 					}
 				}
@@ -214,6 +216,7 @@ func run(o *Options) error {
 					if !v.Purge {
 						tmp = append(tmp, v)
 					} else {
+						chg = true
 						v.StopLoxiHealthCheckChan()
 					}
 				}
@@ -245,6 +248,7 @@ func run(o *Options) error {
 						if err2 != nil {
 							continue
 						}
+						chg = true
 						tmploxilbPeerClients = append(tmploxilbPeerClients, client)
 					}
 				}
@@ -258,10 +262,20 @@ func run(o *Options) error {
 					if !v.Purge {
 						tmp = append(tmp, v)
 					} else {
+						chg = true
 						v.StopLoxiHealthCheckChan()
 					}
 				}
 				lbManager.LoxiPeerClients = tmp
+			}
+
+			if chg {
+				for _, vc := range lbManager.LoxiClients {
+					vc.IsAlive = false
+				}
+				for _, vpc := range lbManager.LoxiPeerClients {
+					vpc.IsAlive = false
+				}
 			}
 		}
 

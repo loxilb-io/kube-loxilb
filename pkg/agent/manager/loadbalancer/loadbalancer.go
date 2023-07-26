@@ -1056,11 +1056,12 @@ func (m *Manager) makeLoxiLBCIStatusModel(instance string, client *api.LoxiClien
 	}, nil
 }
 
-func (m *Manager) makeLoxiLBBGPGlobalModel(localAS int, selfID string) (api.BGPGlobalConfig, error) {
+func (m *Manager) makeLoxiLBBGPGlobalModel(localAS int, selfID string, setNHSelf bool) (api.BGPGlobalConfig, error) {
 
 	return api.BGPGlobalConfig{
-		LocalAs:  int64(localAS),
-		RouterID: selfID,
+		LocalAs:   int64(localAS),
+		RouterID:  selfID,
+		SetNHSelf: setNHSelf,
 	}, nil
 }
 
@@ -1088,7 +1089,7 @@ loop:
 				cisModel, err := m.makeLoxiLBCIStatusModel("default", lc)
 				if err == nil {
 					for retry := 0; retry < 5; retry++ {
-						klog.Infof("%v : set-role %d master %v retry(%d)", lc.Url, lc.MasterLB, retry)
+						klog.Infof("%v : set-role master %v retry(%d)", lc.Url, lc.MasterLB, retry)
 						if err := lc.CIStatus().Create(context.Background(), &cisModel); err == nil {
 							klog.Infof("set-role success")
 							break
@@ -1128,7 +1129,12 @@ loop:
 					}
 				}
 				klog.Infof("Set BGP Peer(s) for %v : %v", aliveClient.Host, bgpPeers)
-				bgpGlobalCfg, _ := m.makeLoxiLBBGPGlobalModel(int(m.networkConfig.SetBGP), aliveClient.Host)
+				var bgpGlobalCfg api.BGPGlobalConfig
+				if aliveClient.PeeringOnly {
+					bgpGlobalCfg, _ = m.makeLoxiLBBGPGlobalModel(int(m.networkConfig.SetBGP), aliveClient.Host, false)
+				} else {
+					bgpGlobalCfg, _ = m.makeLoxiLBBGPGlobalModel(int(m.networkConfig.SetBGP), aliveClient.Host, true)
+				}
 				if err := aliveClient.BGP().CreateGlobalConfig(context.Background(), &bgpGlobalCfg); err == nil {
 					klog.Infof("set-bgp-global success")
 				} else {
