@@ -210,7 +210,7 @@ func (m *Manager) enqueueService(obj interface{}) {
 	m.queue.Add(key)
 }
 
-func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient, masterEventCh <-chan bool) {
+func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient, loxiLBPurgeCh chan *api.LoxiClient, masterEventCh <-chan bool) {
 	defer m.queue.ShutDown()
 
 	klog.Infof("Starting %s", mgrName)
@@ -224,7 +224,7 @@ func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient,
 		return
 	}
 
-	go m.manageLoxiLbLifeCycle(stopCh, loxiLBLiveCh, masterEventCh)
+	go m.manageLoxiLbLifeCycle(stopCh, loxiLBLiveCh, loxiLBPurgeCh, masterEventCh)
 
 	for i := 0; i < defaultWorkers; i++ {
 		go wait.Until(m.worker, time.Second, stopCh)
@@ -653,7 +653,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			retIngress.Ports = append(retIngress.Ports, corev1.PortStatus{Port: ingSvcPair.Port, Protocol: corev1.Protocol(strings.ToUpper(ingSvcPair.Protocol))})
 			svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
 		}
-		klog.Infof("added load-balancer")
+		klog.Infof("load-balancer (%v) added", lbModelList)
 	}
 
 	// Update service.Status.LoadBalancer.Ingress
@@ -1078,7 +1078,144 @@ func (m *Manager) addIngress(service *corev1.Service, newIP net.IP) {
 		append(service.Status.LoadBalancer.Ingress, corev1.LoadBalancerIngress{IP: newIP.String()})
 }
 
-func (m *Manager) manageLoxiLbLifeCycle(stopCh <-chan struct{}, loxiAliveCh chan *api.LoxiClient, masterEventCh <-chan bool) {
+func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBPurgeCh chan *api.LoxiClient) {
+	var tmploxilbClients []*api.LoxiClient
+	// DNS lookup (not used now)
+	// ips, err := net.LookupIP("loxilb-lb-service")
+	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-lb-service", "kube-system")
+	klog.Infof("loxilb-service end-points:  %v", ips)
+	if err != nil {
+		ips = []net.IP{}
+	}
+
+	for _, v := range m.LoxiClients {
+		v.Purge = true
+		for _, ip := range ips {
+			if v.Host == ip.String() {
+				v.Purge = false
+			}
+		}
+	}
+
+	for _, ip := range ips {
+		found := false
+		for _, v := range m.LoxiClients {
+			if v.Host == ip.String() {
+				found = true
+			}
+		}
+		if !found {
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, false)
+			if err2 != nil {
+				continue
+			}
+			tmploxilbClients = append(tmploxilbClients, client)
+		}
+	}
+	if len(tmploxilbClients) > 0 {
+		for _, v := range tmploxilbClients {
+			m.LoxiClients = append(m.LoxiClients, v)
+		}
+	}
+	tmp := m.LoxiClients[:0]
+	for _, v := range m.LoxiClients {
+		if !v.Purge {
+			tmp = append(tmp, v)
+		} else {
+			v.StopLoxiHealthCheckChan()
+			klog.Infof("loxilb-service(%v) removed", v.Host)
+			loxiLBPurgeCh <- v
+		}
+	}
+	m.LoxiClients = tmp
+
+	var tmploxilbPeerClients []*api.LoxiClient
+	ips, err = k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "kube-system")
+	klog.Infof("loxilb-peer-service end-points:  %v", ips)
+	if err != nil {
+		ips = []net.IP{}
+	}
+
+	for _, v := range m.LoxiPeerClients {
+		v.Purge = true
+		for _, ip := range ips {
+			if v.Host == ip.String() {
+				v.Purge = false
+			}
+		}
+	}
+
+	for _, ip := range ips {
+		found := false
+		for _, v := range m.LoxiPeerClients {
+			if v.Host == ip.String() {
+				found = true
+			}
+		}
+		if !found {
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, true)
+			if err2 != nil {
+				continue
+			}
+			tmploxilbPeerClients = append(tmploxilbPeerClients, client)
+		}
+	}
+	if len(tmploxilbPeerClients) > 0 {
+		for _, v := range tmploxilbPeerClients {
+			m.LoxiPeerClients = append(m.LoxiPeerClients, v)
+		}
+	}
+	tmp1 := m.LoxiPeerClients[:0]
+	for _, v := range m.LoxiPeerClients {
+		if !v.Purge {
+			tmp1 = append(tmp1, v)
+		} else {
+			klog.Infof("loxilb-peer-service(%v) removed", v.Host)
+			v.StopLoxiHealthCheckChan()
+			loxiLBPurgeCh <- v
+		}
+	}
+	m.LoxiPeerClients = tmp1
+}
+
+func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bool) {
+	if m.networkConfig.SetRoles {
+		reElect := false
+		hasMaster := false
+		for i := range m.LoxiClients {
+			v := m.LoxiClients[i]
+			if v.MasterLB && !v.IsAlive {
+				v.MasterLB = false
+				reElect = true
+			} else if v.MasterLB {
+				hasMaster = true
+			}
+		}
+		if reElect || !hasMaster {
+			selMaster := false
+			for i := range m.LoxiClients {
+				v := m.LoxiClients[i]
+				if selMaster {
+					v.MasterLB = false
+					continue
+				}
+				if v.IsAlive {
+					v.MasterLB = true
+					selMaster = true
+					klog.Infof("loxilb-peer(%v) set-role master", v.Url)
+				}
+			}
+			if selMaster {
+				m.ElectionRunOnce = true
+				if sendSigCh {
+					loxiLBSelMasterEvent <- true
+				}
+			}
+		}
+	}
+}
+
+func (m *Manager) manageLoxiLbLifeCycle(stopCh <-chan struct{}, loxiAliveCh chan *api.LoxiClient, loxiPurgeCh chan *api.LoxiClient, masterEventCh <-chan bool) {
 loop:
 	for {
 		select {
@@ -1089,27 +1226,34 @@ loop:
 				cisModel, err := m.makeLoxiLBCIStatusModel("default", lc)
 				if err == nil {
 					for retry := 0; retry < 5; retry++ {
-						klog.Infof("%v : set-role master %v retry(%d)", lc.Url, lc.MasterLB, retry)
 						if err := lc.CIStatus().Create(context.Background(), &cisModel); err == nil {
-							klog.Infof("set-role success")
+							klog.Infof("%v : set-role-master(%v) OK", lc.Url, lc.MasterLB)
 							break
 						} else {
+							klog.Infof("%v : set-role-master(%v) failed(%d)", lc.Url, lc.MasterLB, retry)
 							time.Sleep(1 * time.Second)
 						}
 					}
 				}
 			}
+		case purgedClient := <-loxiPurgeCh:
+			klog.Infof("loxilb-client (%s) : purged", purgedClient.Host)
 		case aliveClient := <-loxiAliveCh:
 			aliveClient.DoBGPCfg = false
-			if m.networkConfig.SetRoles && m.ElectionRunOnce {
+			if m.networkConfig.SetRoles && !aliveClient.PeeringOnly {
+
+				if !m.ElectionRunOnce {
+					m.SelectLoxiLBRoles(false, nil)
+				}
+
 				cisModel, err := m.makeLoxiLBCIStatusModel("default", aliveClient)
 				if err == nil {
 					for retry := 0; retry < 5; retry++ {
-						klog.Infof("set-role - count %d", retry)
 						if err := aliveClient.CIStatus().Create(context.Background(), &cisModel); err == nil {
-							klog.Infof("set-role success")
+							klog.Infof("%v: set-role-master(%v) - OK", aliveClient.Host, aliveClient.MasterLB)
 							break
 						} else {
+							klog.Infof("%v: set-role-master(%v) - failed(%d)", aliveClient.Host, aliveClient.MasterLB, retry)
 							time.Sleep(1 * time.Second)
 						}
 					}
@@ -1117,18 +1261,17 @@ loop:
 			}
 
 			if m.networkConfig.SetBGP != 0 {
-				var bgpPeers []string
+				var bgpPeers []*api.LoxiClient
 				for _, lc := range m.LoxiClients {
 					if aliveClient.Host != lc.Host {
-						bgpPeers = append(bgpPeers, lc.Host)
+						bgpPeers = append(bgpPeers, lc)
 					}
 				}
 				for _, lpc := range m.LoxiPeerClients {
 					if aliveClient.Host != lpc.Host {
-						bgpPeers = append(bgpPeers, lpc.Host)
+						bgpPeers = append(bgpPeers, lpc)
 					}
 				}
-				klog.Infof("Set BGP Peer(s) for %v : %v", aliveClient.Host, bgpPeers)
 				var bgpGlobalCfg api.BGPGlobalConfig
 				if aliveClient.PeeringOnly {
 					bgpGlobalCfg, _ = m.makeLoxiLBBGPGlobalModel(int(m.networkConfig.SetBGP), aliveClient.Host, false)
@@ -1138,27 +1281,44 @@ loop:
 				if err := aliveClient.BGP().CreateGlobalConfig(context.Background(), &bgpGlobalCfg); err == nil {
 					klog.Infof("set-bgp-global success")
 				} else {
-					klog.Infof("set-bgp-global cfg - failed")
+					klog.Infof("set-bgp-global failed(%s)", err)
 					if strings.Contains(err.Error(), "connection refused") {
 						time.Sleep(2 * time.Second)
 						if !aliveClient.DoBGPCfg {
-							loxiAliveCh <- aliveClient
+							klog.Infof(" client (%s) requeued ", aliveClient.Host)
 							aliveClient.DoBGPCfg = true
+							loxiAliveCh <- aliveClient
 						}
 					}
 				}
 
 				for _, bgpPeer := range bgpPeers {
-					bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), bgpPeer)
+					bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), bgpPeer.Host)
 					if err := aliveClient.BGP().CreateNeigh(context.Background(), &bgpNeighCfg); err == nil {
-						klog.Infof("set-bgp-neigh(%s) success", bgpPeer)
+						klog.Infof("set-bgp-neigh(%s->%s) success", aliveClient.Host, bgpPeer.Host)
 					} else {
-						klog.Infof("set-bgp-neigh(%s) cfg - failed", bgpPeer)
+						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", aliveClient.Host, bgpPeer.Host, err)
 						if strings.Contains(err.Error(), "connection refused") {
 							time.Sleep(2 * time.Second)
 							if !aliveClient.DoBGPCfg {
-								loxiAliveCh <- aliveClient
+								klog.Infof(" client (%s) requeued ", aliveClient.Host)
 								aliveClient.DoBGPCfg = true
+								loxiAliveCh <- aliveClient
+							}
+						}
+					}
+
+					bgpNeighCfg1, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), aliveClient.Host)
+					if err := bgpPeer.BGP().CreateNeigh(context.Background(), &bgpNeighCfg1); err == nil {
+						klog.Infof("set-bgp-neigh(%s->%s) success", bgpPeer.Host, aliveClient.Host)
+					} else {
+						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", bgpPeer.Host, aliveClient.Host, err)
+						if strings.Contains(err.Error(), "connection refused") {
+							time.Sleep(2 * time.Second)
+							if !bgpPeer.DoBGPCfg {
+								klog.Infof(" client (%s) requeued ", bgpPeer.Host)
+								bgpPeer.DoBGPCfg = true
+								loxiAliveCh <- bgpPeer
 							}
 						}
 					}
@@ -1184,9 +1344,9 @@ loop:
 					if err := aliveClient.BGP().CreateNeigh(context.Background(), &bgpNeighCfg); err == nil {
 						klog.Infof("set-ebgp-neigh(%s:%v) cfg success", bgpRemoteIP.String(), asid)
 					} else {
-						klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed", bgpRemoteIP.String(), asid)
-						time.Sleep(1 * time.Second)
+						klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed (%s)", bgpRemoteIP.String(), asid, err)
 						if strings.Contains(err.Error(), "connection refused") {
+							klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed", bgpRemoteIP.String(), asid)
 							time.Sleep(2 * time.Second)
 							if !aliveClient.DoBGPCfg {
 								loxiAliveCh <- aliveClient
