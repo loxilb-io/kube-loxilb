@@ -1056,12 +1056,18 @@ func (m *Manager) makeLoxiLBCIStatusModel(instance string, client *api.LoxiClien
 	}, nil
 }
 
-func (m *Manager) makeLoxiLBBGPGlobalModel(localAS int, selfID string, setNHSelf bool) (api.BGPGlobalConfig, error) {
+func (m *Manager) makeLoxiLBBGPGlobalModel(localAS int, selfID string, setNHSelf bool, lPort uint16) (api.BGPGlobalConfig, error) {
+
+	port := lPort
+	if lPort == 0 {
+		port = 179
+	}
 
 	return api.BGPGlobalConfig{
-		LocalAs:   int64(localAS),
-		RouterID:  selfID,
-		SetNHSelf: setNHSelf,
+		LocalAs:    int64(localAS),
+		RouterID:   selfID,
+		SetNHSelf:  setNHSelf,
+		ListenPort: port,
 	}, nil
 }
 
@@ -1274,9 +1280,9 @@ loop:
 				}
 				var bgpGlobalCfg api.BGPGlobalConfig
 				if aliveClient.PeeringOnly {
-					bgpGlobalCfg, _ = m.makeLoxiLBBGPGlobalModel(int(m.networkConfig.SetBGP), aliveClient.Host, false)
+					bgpGlobalCfg, _ = m.makeLoxiLBBGPGlobalModel(int(m.networkConfig.SetBGP), aliveClient.Host, false, m.networkConfig.ListenBGPPort)
 				} else {
-					bgpGlobalCfg, _ = m.makeLoxiLBBGPGlobalModel(int(m.networkConfig.SetBGP), aliveClient.Host, true)
+					bgpGlobalCfg, _ = m.makeLoxiLBBGPGlobalModel(int(m.networkConfig.SetBGP), aliveClient.Host, true, m.networkConfig.ListenBGPPort)
 				}
 				if err := aliveClient.BGP().CreateGlobalConfig(context.Background(), &bgpGlobalCfg); err == nil {
 					klog.Infof("set-bgp-global success")

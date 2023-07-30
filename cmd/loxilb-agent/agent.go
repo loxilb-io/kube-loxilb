@@ -73,6 +73,7 @@ func run(o *Options) error {
 	klog.Infof("LB Class: %s", o.config.LoxilbLoadBalancerClass)
 	klog.Infof("CIDR: %s", o.config.ExternalCIDR)
 	klog.Infof("SetBGP: %v", o.config.SetBGP)
+	klog.Infof("ListenBGPPort: %v", o.config.ListenBGPPort)
 	klog.Infof("SetLBMode: %v", o.config.SetLBMode)
 	klog.Infof("ExclIPAM: %v", o.config.ExclIPAM)
 	klog.Infof("Monitor: %v", o.config.Monitor)
@@ -86,6 +87,7 @@ func run(o *Options) error {
 		ExternalCIDR:            o.config.ExternalCIDR,
 		ExternalCIDR6:           o.config.ExternalCIDR6,
 		SetBGP:                  o.config.SetBGP,
+		ListenBGPPort:           o.config.ListenBGPPort,
 		SetRoles:                o.config.SetRoles,
 		ExtBGPPeers:             o.config.ExtBGPPeers,
 		SetLBMode:               o.config.SetLBMode,

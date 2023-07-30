@@ -50,6 +50,8 @@ type AgentConfig struct {
 	ExtBGPPeers []string `yaml:"extBGPPeers,omitempty"`
 	// support BGP protocol
 	SetBGP uint16 `yaml:"setBGP,omitempty,default=0"`
+	// Custom BGP Port
+	ListenBGPPort uint16 `yaml:"listenBGPPort,omitempty,default=179"`
 	// loxilb loadbalancer mode
 	SetLBMode uint16 `yaml:"setLBMode,omitempty"`
 	// Shared or exclusive IPAM
