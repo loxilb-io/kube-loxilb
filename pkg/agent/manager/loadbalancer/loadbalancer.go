@@ -1330,33 +1330,35 @@ loop:
 					}
 				}
 
-				for _, bgpPeerURL := range m.networkConfig.ExtBGPPeers {
-					bgpPeer := strings.Split(bgpPeerURL, ":")
-					if len(bgpPeer) > 2 {
-						continue
-					}
+				if !aliveClient.PeeringOnly {
+					for _, bgpPeerURL := range m.networkConfig.ExtBGPPeers {
+						bgpPeer := strings.Split(bgpPeerURL, ":")
+						if len(bgpPeer) > 2 {
+							continue
+						}
 
-					bgpRemoteIP := net.ParseIP(bgpPeer[0])
-					if bgpRemoteIP == nil {
-						continue
-					}
+						bgpRemoteIP := net.ParseIP(bgpPeer[0])
+						if bgpRemoteIP == nil {
+							continue
+						}
 
-					asid, err := strconv.ParseInt(bgpPeer[1], 10, 0)
-					if err != nil || asid == 0 {
-						continue
-					}
+						asid, err := strconv.ParseInt(bgpPeer[1], 10, 0)
+						if err != nil || asid == 0 {
+							continue
+						}
 
-					bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(asid), bgpRemoteIP.String())
-					if err := aliveClient.BGP().CreateNeigh(context.Background(), &bgpNeighCfg); err == nil {
-						klog.Infof("set-ebgp-neigh(%s:%v) cfg success", bgpRemoteIP.String(), asid)
-					} else {
-						klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed (%s)", bgpRemoteIP.String(), asid, err)
-						if strings.Contains(err.Error(), "connection refused") {
-							klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed", bgpRemoteIP.String(), asid)
-							time.Sleep(2 * time.Second)
-							if !aliveClient.DoBGPCfg {
-								loxiAliveCh <- aliveClient
-								aliveClient.DoBGPCfg = true
+						bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(asid), bgpRemoteIP.String())
+						if err := aliveClient.BGP().CreateNeigh(context.Background(), &bgpNeighCfg); err == nil {
+							klog.Infof("set-ebgp-neigh(%s:%v) cfg success", bgpRemoteIP.String(), asid)
+						} else {
+							klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed (%s)", bgpRemoteIP.String(), asid, err)
+							if strings.Contains(err.Error(), "connection refused") {
+								klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed", bgpRemoteIP.String(), asid)
+								time.Sleep(2 * time.Second)
+								if !aliveClient.DoBGPCfg {
+									loxiAliveCh <- aliveClient
+									aliveClient.DoBGPCfg = true
+								}
 							}
 						}
 					}
