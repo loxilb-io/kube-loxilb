@@ -60,6 +60,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&secondaryCIDRs6, "externalSecondaryCIDRs6", secondaryCIDRs6, "External Secondary CIDR6 Range(s)")
 	fs.StringVar(&o.config.LoxilbLoadBalancerClass, "loxilbLoadBalancerClass", o.config.LoxilbLoadBalancerClass, "Load-Balancer Class Name")
 	fs.Uint16Var(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
+	fs.Uint16Var(&o.config.ListenBGPPort, "listenBGPPort", o.config.ListenBGPPort, "Custom BGP listen port")
 	fs.StringVar(&extBGPPeers, "extBGPPeers", extBGPPeers, "External BGP Peer(s)")
 	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", o.config.ExclIPAM, "Use unique IPAM per service")
 	fs.Uint16Var(&o.config.SetLBMode, "setLBMode", o.config.SetLBMode, "LB mode to use")
