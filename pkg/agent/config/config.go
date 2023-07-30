@@ -24,6 +24,7 @@ type NetworkConfig struct {
 	ExternalCIDR6           string
 	ExternalSecondaryCIDRs6 []string
 	SetBGP                  uint16
+	ListenBGPPort           uint16
 	ExtBGPPeers             []string
 	SetLBMode               uint16
 	Monitor                 bool

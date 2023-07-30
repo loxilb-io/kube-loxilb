@@ -18,6 +18,8 @@ type BGPGlobalConfig struct {
 	RouterID string `json:"routerId,omitempty"`
 	// Set Next hop self option
 	SetNHSelf bool `json:"setNextHopSelf,omitempty"`
+	// Listen Port
+	ListenPort uint16 `json:"listenPort,omitempty"`
 }
 
 type BGPAPI struct {
