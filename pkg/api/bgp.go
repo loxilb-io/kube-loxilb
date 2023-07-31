@@ -9,6 +9,8 @@ type BGPNeigh struct {
 	IPAddress string `json:"ipAddress,omitempty"`
 	// Remote AS number
 	RemoteAs int64 `json:"remoteAs,omitempty"`
+	// Remote Connect Port (default 179)
+	RemotePort int64 `json:"remotePort,omitempty"`
 }
 
 type BGPGlobalConfig struct {
