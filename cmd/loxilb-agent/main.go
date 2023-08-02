@@ -73,6 +73,7 @@ func newAgentCommand() *cobra.Command {
 		Long: "The loxilb agent runs on each node.",
 		Run: func(cmd *cobra.Command, args []string) {
 			log.InitLogFileLimits(cmd.Flags())
+			log.InitLogLevel(cmd.Flags())
 			if err := opts.complete(args); err != nil {
 				klog.Errorf("Failed to options complete. err: %v", err)
 				os.Exit(255)
