@@ -35,6 +35,7 @@ const (
 	logFileFlag     = "log_file"
 	maxSizeFlag     = "log_file_max_size"
 	maxNumFlag      = "log_file_max_num"
+	verboseFlag     = "v"
 
 	// Check log file number every 10 mins.
 	logFileCheckInterval = time.Minute * 10
@@ -46,6 +47,7 @@ var (
 	maxNumArg     = uint16(0)
 	logFileMaxNum = uint16(0)
 	logDir        = ""
+	verbose       = "0"
 
 	executableName = filepath.Base(os.Args[0])
 )
@@ -53,6 +55,7 @@ var (
 func AddFlags(fs *pflag.FlagSet) {
 	fs.Uint16Var(&maxNumArg, maxNumFlag, maxNumArg, "Maximum number of log files per severity level to be kept. Value 0 means unlimited.")
 	fs.StringVar(&logDir, logDirFlag, logDir, "log file directory")
+	fs.StringVar(&verbose, verboseFlag, verbose, "verbose level")
 }
 
 // InitLogFileLimits initializes log file maximum size and maximum number limits based on the
