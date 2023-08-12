@@ -1266,8 +1266,6 @@ loop:
 			klog.Infof("loxilb-client (%s) : purged", purgedClient.Host)
 		case aliveClient := <-loxiAliveCh:
 			aliveClient.DoBGPCfg = false
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-			defer cancel()
 			if m.networkConfig.SetRoles && !aliveClient.PeeringOnly {
 
 				if !m.ElectionRunOnce {
@@ -1277,7 +1275,12 @@ loop:
 				cisModel, err := m.makeLoxiLBCIStatusModel("default", aliveClient)
 				if err == nil {
 					for retry := 0; retry < 5; retry++ {
-						if err := aliveClient.CIStatus().Create(ctx, &cisModel); err == nil {
+						err = func(cisModel *api.CIStatusModel) error {
+							ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+							defer cancel()
+							return aliveClient.CIStatus().Create(ctx, cisModel)
+						}(&cisModel)
+						if err == nil {
 							klog.Infof("%v: set-role-master(%v) - OK", aliveClient.Host, aliveClient.MasterLB)
 							break
 						} else {
@@ -1306,7 +1309,13 @@ loop:
 				} else {
 					bgpGlobalCfg, _ = m.makeLoxiLBBGPGlobalModel(int(m.networkConfig.SetBGP), aliveClient.Host, true, m.networkConfig.ListenBGPPort)
 				}
-				if err := aliveClient.BGP().CreateGlobalConfig(ctx, &bgpGlobalCfg); err == nil {
+				err := func(bgpGlobalCfg *api.BGPGlobalConfig) error {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+					defer cancel()
+					return aliveClient.BGP().CreateGlobalConfig(ctx, bgpGlobalCfg)
+				}(&bgpGlobalCfg)
+
+				if err == nil {
 					klog.Infof("set-bgp-global success")
 				} else {
 					klog.Infof("set-bgp-global failed(%s)", err)
@@ -1315,7 +1324,12 @@ loop:
 
 				for _, bgpPeer := range bgpPeers {
 					bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), bgpPeer.Host, m.networkConfig.ListenBGPPort)
-					if err := aliveClient.BGP().CreateNeigh(ctx, &bgpNeighCfg); err == nil {
+					err := func(bgpNeighCfg *api.BGPNeigh) error {
+						ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+						defer cancel()
+						return aliveClient.BGP().CreateNeigh(ctx, bgpNeighCfg)
+					}(&bgpNeighCfg)
+					if err == nil {
 						klog.Infof("set-bgp-neigh(%s->%s) success", aliveClient.Host, bgpPeer.Host)
 					} else {
 						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", aliveClient.Host, bgpPeer.Host, err)
@@ -1323,7 +1337,12 @@ loop:
 					}
 
 					bgpNeighCfg1, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), aliveClient.Host, m.networkConfig.ListenBGPPort)
-					if err := bgpPeer.BGP().CreateNeigh(ctx, &bgpNeighCfg1); err == nil {
+					err = func(bgpNeighCfg1 *api.BGPNeigh) error {
+						ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+						defer cancel()
+						return bgpPeer.BGP().CreateNeigh(ctx, bgpNeighCfg1)
+					}(&bgpNeighCfg1)
+					if err == nil {
 						klog.Infof("set-bgp-neigh(%s->%s) success", bgpPeer.Host, aliveClient.Host)
 					} else {
 						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", bgpPeer.Host, aliveClient.Host, err)
@@ -1349,7 +1368,12 @@ loop:
 						}
 
 						bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(asid), bgpRemoteIP.String(), 0)
-						if err := aliveClient.BGP().CreateNeigh(ctx, &bgpNeighCfg); err == nil {
+						err = func(bgpNeighCfg *api.BGPNeigh) error {
+							ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+							defer cancel()
+							return aliveClient.BGP().CreateNeigh(ctx, bgpNeighCfg)
+						}(&bgpNeighCfg)
+						if err == nil {
 							klog.Infof("set-ebgp-neigh(%s:%v) cfg success", bgpRemoteIP.String(), asid)
 						} else {
 							klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed (%s)", bgpRemoteIP.String(), asid, err)
@@ -1364,7 +1388,12 @@ loop:
 				for _, value := range m.lbCache {
 					for _, lbModel := range value.LbModelList {
 						for retry := 0; retry < 5; retry++ {
-							if err := aliveClient.LoadBalancer().Create(ctx, &lbModel); err == nil {
+							err := func(lbModel *api.LoadBalancerModel) error {
+								ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+								defer cancel()
+								return aliveClient.LoadBalancer().Create(ctx, lbModel)
+							}(&lbModel)
+							if err == nil {
 								klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lbModel)
 								isSuccess = true
 								break
