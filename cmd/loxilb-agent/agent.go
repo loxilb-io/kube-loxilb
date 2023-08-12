@@ -150,7 +150,7 @@ func run(o *Options) error {
 
 	loxilbClients := make([]*api.LoxiClient, 0)
 	loxilbPeerClients := make([]*api.LoxiClient, 0)
-	loxiLBLiveCh := make(chan *api.LoxiClient, 2)
+	loxiLBLiveCh := make(chan *api.LoxiClient, 50)
 	loxiLBPurgeCh := make(chan *api.LoxiClient, 5)
 	loxiLBSelMasterEvent := make(chan bool)
 
