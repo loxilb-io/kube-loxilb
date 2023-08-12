@@ -1227,6 +1227,18 @@ func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bo
 	}
 }
 
+func (m *Manager) checkHandleBGPCfgErrors(loxiAliveCh chan *api.LoxiClient, peer *api.LoxiClient, err error) {
+	if strings.Contains(err.Error(), "connection refused") ||
+		strings.Contains(err.Error(), "deadline") {
+		time.Sleep(2 * time.Second)
+		if !peer.DoBGPCfg {
+			klog.Infof(" client (%s) requeued ", peer.Host)
+			peer.DoBGPCfg = true
+			loxiAliveCh <- peer
+		}
+	}
+}
+
 func (m *Manager) manageLoxiLbLifeCycle(stopCh <-chan struct{}, loxiAliveCh chan *api.LoxiClient, loxiPurgeCh chan *api.LoxiClient, masterEventCh <-chan bool) {
 loop:
 	for {
@@ -1298,14 +1310,7 @@ loop:
 					klog.Infof("set-bgp-global success")
 				} else {
 					klog.Infof("set-bgp-global failed(%s)", err)
-					if strings.Contains(err.Error(), "connection refused") {
-						time.Sleep(2 * time.Second)
-						if !aliveClient.DoBGPCfg {
-							klog.Infof(" client (%s) requeued ", aliveClient.Host)
-							aliveClient.DoBGPCfg = true
-							loxiAliveCh <- aliveClient
-						}
-					}
+					m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
 				}
 
 				for _, bgpPeer := range bgpPeers {
@@ -1314,14 +1319,7 @@ loop:
 						klog.Infof("set-bgp-neigh(%s->%s) success", aliveClient.Host, bgpPeer.Host)
 					} else {
 						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", aliveClient.Host, bgpPeer.Host, err)
-						if strings.Contains(err.Error(), "connection refused") {
-							time.Sleep(2 * time.Second)
-							if !aliveClient.DoBGPCfg {
-								klog.Infof(" client (%s) requeued ", aliveClient.Host)
-								aliveClient.DoBGPCfg = true
-								loxiAliveCh <- aliveClient
-							}
-						}
+						m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
 					}
 
 					bgpNeighCfg1, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), aliveClient.Host, m.networkConfig.ListenBGPPort)
@@ -1329,14 +1327,7 @@ loop:
 						klog.Infof("set-bgp-neigh(%s->%s) success", bgpPeer.Host, aliveClient.Host)
 					} else {
 						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", bgpPeer.Host, aliveClient.Host, err)
-						if strings.Contains(err.Error(), "connection refused") {
-							time.Sleep(2 * time.Second)
-							if !bgpPeer.DoBGPCfg {
-								klog.Infof(" client (%s) requeued ", bgpPeer.Host)
-								bgpPeer.DoBGPCfg = true
-								loxiAliveCh <- bgpPeer
-							}
-						}
+						m.checkHandleBGPCfgErrors(loxiAliveCh, bgpPeer, err)
 					}
 				}
 
@@ -1362,14 +1353,7 @@ loop:
 							klog.Infof("set-ebgp-neigh(%s:%v) cfg success", bgpRemoteIP.String(), asid)
 						} else {
 							klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed (%s)", bgpRemoteIP.String(), asid, err)
-							if strings.Contains(err.Error(), "connection refused") {
-								klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed", bgpRemoteIP.String(), asid)
-								time.Sleep(2 * time.Second)
-								if !aliveClient.DoBGPCfg {
-									loxiAliveCh <- aliveClient
-									aliveClient.DoBGPCfg = true
-								}
-							}
+							m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
 						}
 					}
 				}
