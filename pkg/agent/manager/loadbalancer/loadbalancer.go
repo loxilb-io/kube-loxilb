@@ -1246,17 +1246,23 @@ loop:
 		case <-stopCh:
 			break loop
 		case <-masterEventCh:
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-			defer cancel()
 			for _, lc := range m.LoxiClients {
+				if !lc.IsAlive {
+					continue
+				}
 				cisModel, err := m.makeLoxiLBCIStatusModel("default", lc)
 				if err == nil {
 					for retry := 0; retry < 5; retry++ {
-						if err := lc.CIStatus().Create(ctx, &cisModel); err == nil {
-							klog.Infof("%v : set-role-master(%v) OK", lc.Url, lc.MasterLB)
+						err = func(cisModel *api.CIStatusModel) error {
+							ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+							defer cancel()
+							return lc.CIStatus().Create(ctx, cisModel)
+						}(&cisModel)
+						if err == nil {
+							klog.Infof("%v: set-role-master(%v) - OK", lc.Host, lc.MasterLB)
 							break
 						} else {
-							klog.Infof("%v : set-role-master(%v) failed(%d)", lc.Url, lc.MasterLB, retry)
+							klog.Infof("%v: set-role-master(%v) - failed(%d)", lc.Host, lc.MasterLB, retry)
 							time.Sleep(1 * time.Second)
 						}
 					}
@@ -1322,62 +1328,65 @@ loop:
 					m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
 				}
 
-				for _, bgpPeer := range bgpPeers {
-					bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), bgpPeer.Host, m.networkConfig.ListenBGPPort)
-					err := func(bgpNeighCfg *api.BGPNeigh) error {
-						ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-						defer cancel()
-						return aliveClient.BGP().CreateNeigh(ctx, bgpNeighCfg)
-					}(&bgpNeighCfg)
-					if err == nil {
-						klog.Infof("set-bgp-neigh(%s->%s) success", aliveClient.Host, bgpPeer.Host)
-					} else {
-						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", aliveClient.Host, bgpPeer.Host, err)
-						m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
-					}
+				if len(m.networkConfig.LoxilbURLs) <= 0 {
 
-					bgpNeighCfg1, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), aliveClient.Host, m.networkConfig.ListenBGPPort)
-					err = func(bgpNeighCfg1 *api.BGPNeigh) error {
-						ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-						defer cancel()
-						return bgpPeer.BGP().CreateNeigh(ctx, bgpNeighCfg1)
-					}(&bgpNeighCfg1)
-					if err == nil {
-						klog.Infof("set-bgp-neigh(%s->%s) success", bgpPeer.Host, aliveClient.Host)
-					} else {
-						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", bgpPeer.Host, aliveClient.Host, err)
-						m.checkHandleBGPCfgErrors(loxiAliveCh, bgpPeer, err)
-					}
-				}
-
-				if !aliveClient.PeeringOnly {
-					for _, bgpPeerURL := range m.networkConfig.ExtBGPPeers {
-						bgpPeer := strings.Split(bgpPeerURL, ":")
-						if len(bgpPeer) > 2 {
-							continue
-						}
-
-						bgpRemoteIP := net.ParseIP(bgpPeer[0])
-						if bgpRemoteIP == nil {
-							continue
-						}
-
-						asid, err := strconv.ParseInt(bgpPeer[1], 10, 0)
-						if err != nil || asid == 0 {
-							continue
-						}
-
-						bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(asid), bgpRemoteIP.String(), 0)
-						err = func(bgpNeighCfg *api.BGPNeigh) error {
+					for _, bgpPeer := range bgpPeers {
+						bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), bgpPeer.Host, m.networkConfig.ListenBGPPort)
+						err := func(bgpNeighCfg *api.BGPNeigh) error {
 							ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 							defer cancel()
 							return aliveClient.BGP().CreateNeigh(ctx, bgpNeighCfg)
 						}(&bgpNeighCfg)
 						if err == nil {
-							klog.Infof("set-ebgp-neigh(%s:%v) cfg success", bgpRemoteIP.String(), asid)
+							klog.Infof("set-bgp-neigh(%s->%s) success", aliveClient.Host, bgpPeer.Host)
 						} else {
-							klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed (%s)", bgpRemoteIP.String(), asid, err)
+							klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", aliveClient.Host, bgpPeer.Host, err)
 							m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
+						}
+
+						bgpNeighCfg1, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), aliveClient.Host, m.networkConfig.ListenBGPPort)
+						err = func(bgpNeighCfg1 *api.BGPNeigh) error {
+							ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+							defer cancel()
+							return bgpPeer.BGP().CreateNeigh(ctx, bgpNeighCfg1)
+						}(&bgpNeighCfg1)
+						if err == nil {
+							klog.Infof("set-bgp-neigh(%s->%s) success", bgpPeer.Host, aliveClient.Host)
+						} else {
+							klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", bgpPeer.Host, aliveClient.Host, err)
+							m.checkHandleBGPCfgErrors(loxiAliveCh, bgpPeer, err)
+						}
+					}
+
+					if !aliveClient.PeeringOnly {
+						for _, bgpPeerURL := range m.networkConfig.ExtBGPPeers {
+							bgpPeer := strings.Split(bgpPeerURL, ":")
+							if len(bgpPeer) > 2 {
+								continue
+							}
+
+							bgpRemoteIP := net.ParseIP(bgpPeer[0])
+							if bgpRemoteIP == nil {
+								continue
+							}
+
+							asid, err := strconv.ParseInt(bgpPeer[1], 10, 0)
+							if err != nil || asid == 0 {
+								continue
+							}
+
+							bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(asid), bgpRemoteIP.String(), 0)
+							err = func(bgpNeighCfg *api.BGPNeigh) error {
+								ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+								defer cancel()
+								return aliveClient.BGP().CreateNeigh(ctx, bgpNeighCfg)
+							}(&bgpNeighCfg)
+							if err == nil {
+								klog.Infof("set-ebgp-neigh(%s:%v) cfg success", bgpRemoteIP.String(), asid)
+							} else {
+								klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed (%s)", bgpRemoteIP.String(), asid, err)
+								m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
+							}
 						}
 					}
 				}
@@ -1407,7 +1416,7 @@ loop:
 								}
 							}
 						}
-						if !isSuccess {
+						if !isSuccess && aliveClient.IsAlive {
 							klog.Exit("restart kube-loxilb")
 						}
 					}
