@@ -59,5 +59,5 @@ type AgentConfig struct {
 	// Enable monitoring end-points of LB rule
 	Monitor bool `yaml:"monitor"`
 	// Set loxilb node roles
-	SetRoles bool `yaml:"setRoles"`
+	SetRoles string `yaml:"setRoles,omitempty"`
 }

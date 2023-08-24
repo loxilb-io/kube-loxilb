@@ -20,6 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"path"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -32,12 +39,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-	"net"
-	"path"
-	"reflect"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -1043,16 +1044,20 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 	}, nil
 }
 
-func (m *Manager) makeLoxiLBCIStatusModel(instance string, client *api.LoxiClient) (api.CIStatusModel, error) {
+func (m *Manager) makeLoxiLBCIStatusModel(instance, vip string, client *api.LoxiClient) (api.CIStatusModel, error) {
 
 	state := "BACKUP"
 	if client.MasterLB {
 		state = "MASTER"
 	}
+	if vip == "" {
+		vip = "0.0.0.0"
+	}
+	klog.Infof("what the hell: vip: %s", vip)
 	return api.CIStatusModel{
 		Instance: instance,
 		State:    state,
-		Vip:      "0.0.0.0",
+		Vip:      vip,
 	}, nil
 }
 
@@ -1191,7 +1196,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 }
 
 func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bool) {
-	if m.networkConfig.SetRoles {
+	if m.networkConfig.SetRoles != "" {
 		reElect := false
 		hasMaster := false
 		for i := range m.LoxiClients {
@@ -1250,7 +1255,7 @@ loop:
 				if !lc.IsAlive {
 					continue
 				}
-				cisModel, err := m.makeLoxiLBCIStatusModel("default", lc)
+				cisModel, err := m.makeLoxiLBCIStatusModel("default", m.networkConfig.SetRoles, lc)
 				if err == nil {
 					for retry := 0; retry < 5; retry++ {
 						err = func(cisModel *api.CIStatusModel) error {
@@ -1272,13 +1277,13 @@ loop:
 			klog.Infof("loxilb-client (%s) : purged", purgedClient.Host)
 		case aliveClient := <-loxiAliveCh:
 			aliveClient.DoBGPCfg = false
-			if m.networkConfig.SetRoles && !aliveClient.PeeringOnly {
+			if m.networkConfig.SetRoles != "" && !aliveClient.PeeringOnly {
 
 				if !m.ElectionRunOnce {
 					m.SelectLoxiLBRoles(false, nil)
 				}
 
-				cisModel, err := m.makeLoxiLBCIStatusModel("default", aliveClient)
+				cisModel, err := m.makeLoxiLBCIStatusModel("default", m.networkConfig.SetRoles, aliveClient)
 				if err == nil {
 					for retry := 0; retry < 5; retry++ {
 						err = func(cisModel *api.CIStatusModel) error {
