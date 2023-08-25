@@ -28,5 +28,5 @@ type NetworkConfig struct {
 	ExtBGPPeers             []string
 	SetLBMode               uint16
 	Monitor                 bool
-	SetRoles                bool
+	SetRoles                string
 }
