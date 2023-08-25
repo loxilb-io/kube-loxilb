@@ -18,14 +18,15 @@ package main
 
 import (
 	"fmt"
-	lib "github.com/loxilb-io/loxilib"
-	"github.com/spf13/pflag"
-	"gopkg.in/yaml.v2"
 	"net"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+
+	lib "github.com/loxilb-io/loxilib"
+	"github.com/spf13/pflag"
+	"gopkg.in/yaml.v2"
 )
 
 var (
@@ -65,7 +66,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", o.config.ExclIPAM, "Use unique IPAM per service")
 	fs.Uint16Var(&o.config.SetLBMode, "setLBMode", o.config.SetLBMode, "LB mode to use")
 	fs.BoolVar(&o.config.Monitor, "monitor", o.config.Monitor, "Enable monitoring end-points of LB rule")
-	fs.BoolVar(&o.config.SetRoles, "setRoles", o.config.SetRoles, "Set LoxiLB node roles")
+	fs.StringVar(&o.config.SetRoles, "setRoles", o.config.SetRoles, "Set LoxiLB node roles")
 }
 
 // complete completes all the required optionst
@@ -168,6 +169,12 @@ func (o *Options) validate(args []string) error {
 	if o.config.LoxilbLoadBalancerClass != "" {
 		if ok := strings.Contains(o.config.LoxilbLoadBalancerClass, "/"); !ok {
 			return fmt.Errorf("loxilbLoadBalancerClass must be a label-style identifier")
+		}
+	}
+
+	if o.config.SetRoles != "" {
+		if net.ParseIP(o.config.SetRoles) == nil {
+			return fmt.Errorf("SetRoles %s config is invalid", o.config.SetRoles)
 		}
 	}
 

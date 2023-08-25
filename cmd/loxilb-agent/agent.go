@@ -79,7 +79,7 @@ func run(o *Options) error {
 	klog.Infof("Monitor: %v", o.config.Monitor)
 	klog.Infof("SecondaryCIDRs: %v", o.config.ExternalSecondaryCIDRs)
 	klog.Infof("ExtBGPPeers: %v", o.config.ExtBGPPeers)
-	klog.Infof("SetRoles: %v", o.config.SetRoles)
+	klog.Infof("SetRoles: %s", o.config.SetRoles)
 
 	networkConfig := &config.NetworkConfig{
 		LoxilbURLs:              o.config.LoxiURLs,
@@ -181,7 +181,7 @@ func run(o *Options) error {
 			lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBPurgeCh)
 		}
 
-		if networkConfig.SetRoles {
+		if networkConfig.SetRoles != "" {
 			lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
 		}
 	}, time.Second*20, stopCh)
