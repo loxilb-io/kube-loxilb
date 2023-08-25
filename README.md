@@ -47,7 +47,7 @@ args:
         #- --monitor
         #- --setBGP=65100
         #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
-        #- --setRoles
+        #- --setRoles=0.0.0.0
         #- --setLBMode=1
         #- --setUniqueIP=false
 ```
@@ -59,7 +59,7 @@ The arguments have the following meaning :
 - monitor : Enable liveness probe for the LB end-points (default : unset)    
 - setBGP : Use specified BGP AS-ID to advertise this service. If not specified BGP will be disabled. Please check [here](https://github.com/loxilb-io/loxilbdocs/blob/main/docs/integrate_bgp_eng.md) how it works.    
 - extBGPPeers : Specifies external BGP peers with appropriate remote AS    
-- setRoles : If present, kube-loxilb arbitrates loxilb role(s) in cluster-mode    
+- setRoles : If present, kube-loxilb arbitrates loxilb role(s) in cluster-mode. Further, it sets a special VIP (selected as sourceIP) to communicate with end-points in full-nat mode.   
 - setLBMode : 0, 1, 2   
   0 - default (only DNAT, preserves source-IP)       
   1 - onearm (source IP is changed to load balancer’s interface IP)     
