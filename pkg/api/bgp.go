@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"strconv"
 )
 
 type BGPNeigh struct {
@@ -62,5 +63,16 @@ func (b *BGPAPI) CreateNeigh(ctx context.Context, Model LoxiModel) error {
 	if resp.err != nil {
 		return resp.err
 	}
+	return nil
+}
+
+func (b *BGPAPI) DeleteNeigh(ctx context.Context, neighIP string, remoteAs int) error {
+	resp := b.client.DELETE(b.resource + "/neigh/" + neighIP).
+		Query(map[string]string{"remoteAs": strconv.Itoa(remoteAs)}).Do(ctx)
+
+	if resp.err != nil {
+		return resp.err
+	}
+
 	return nil
 }
