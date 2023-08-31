@@ -80,16 +80,16 @@ metadata:
   name: kube-loxilb
   namespace: kube-system
   labels:
-    app: loxilb
+    app: kube-loxilb-app
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: loxilb
+      app: kube-loxilb-app
   template:
     metadata:
       labels:
-        app: loxilb
+        app: kube-loxilb-app
     spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
