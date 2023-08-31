@@ -10,7 +10,7 @@ clean:
 	go clean ./cmd
 
 docker: build
-	docker build -t ghcr.io/loxilb-io/${bin}:${TAG} .
+	sudo docker build -t ghcr.io/loxilb-io/${bin}:${TAG} .
 
 docker-rhel: build
-	docker build -t ghcr.io/loxilb-io/${bin}-ubi8:${TAG} -f Dockerfile.RHEL .
+	sudo docker build -t ghcr.io/loxilb-io/${bin}-ubi8:${TAG} -f Dockerfile.RHEL .

@@ -1053,7 +1053,6 @@ func (m *Manager) makeLoxiLBCIStatusModel(instance, vip string, client *api.Loxi
 	if vip == "" {
 		vip = "0.0.0.0"
 	}
-	klog.Infof("what the hell: vip: %s", vip)
 	return api.CIStatusModel{
 		Instance: instance,
 		State:    state,
@@ -1275,6 +1274,25 @@ loop:
 			}
 		case purgedClient := <-loxiPurgeCh:
 			klog.Infof("loxilb-client (%s) : purged", purgedClient.Host)
+			if m.networkConfig.SetBGP != 0 {
+				deleteNeigh := func(client *api.LoxiClient, neighIP string, remoteAs int) error {
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+					defer cancel()
+					return client.BGP().DeleteNeigh(ctx, neighIP, remoteAs)
+				}
+
+				for _, otherClient := range m.LoxiClients {
+					if purgedClient.Host == otherClient.Host {
+						continue
+					}
+
+					err := deleteNeigh(otherClient, purgedClient.Host, int(m.networkConfig.SetBGP))
+					klog.Infof("loxilb(%s) call delete neigh API: peer %s", otherClient.Host, purgedClient.Host)
+					if err != nil {
+						klog.Errorf("loxilb(%s) delete neigh API return error: %v", otherClient.Host, err)
+					}
+				}
+			}
 		case aliveClient := <-loxiAliveCh:
 			aliveClient.DoBGPCfg = false
 			if m.networkConfig.SetRoles != "" && !aliveClient.PeeringOnly {
