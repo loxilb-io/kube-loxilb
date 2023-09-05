@@ -122,10 +122,11 @@ type LbCacheKey struct {
 }
 
 type SvcPair struct {
-	IPString string
-	Port     int32
-	Protocol string
-	InRange  bool
+	IPString   string
+	Port       int32
+	Protocol   string
+	InRange    bool
+	K8sSvcPort corev1.ServicePort
 }
 
 // GenKey generate key for cache
@@ -592,27 +593,25 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	for _, ingSvcPair := range ingSvcPairs {
 		var errChList []chan error
 		var lbModelList []api.LoadBalancerModel
-		for _, port := range svc.Spec.Ports {
-			lbArgs := LbArgs{
-				externalIP:    ingSvcPair.IPString,
-				livenessCheck: m.lbCache[cacheKey].ActCheck,
-				lbMode:        m.lbCache[cacheKey].LbMode,
-				timeout:       m.lbCache[cacheKey].Timeout,
-				probeType:     m.lbCache[cacheKey].ProbeType,
-				probePort:     m.lbCache[cacheKey].ProbePort,
-				probeReq:      m.lbCache[cacheKey].ProbeReq,
-				probeResp:     m.lbCache[cacheKey].ProbeResp,
-				needPodEP:     needPodEP,
-			}
-			lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
-			lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
-
-			lbModel, err := m.makeLoxiLoadBalancerModel(&lbArgs, svc, port)
-			if err != nil {
-				return err
-			}
-			lbModelList = append(lbModelList, lbModel)
+		lbArgs := LbArgs{
+			externalIP:    ingSvcPair.IPString,
+			livenessCheck: m.lbCache[cacheKey].ActCheck,
+			lbMode:        m.lbCache[cacheKey].LbMode,
+			timeout:       m.lbCache[cacheKey].Timeout,
+			probeType:     m.lbCache[cacheKey].ProbeType,
+			probePort:     m.lbCache[cacheKey].ProbePort,
+			probeReq:      m.lbCache[cacheKey].ProbeReq,
+			probeResp:     m.lbCache[cacheKey].ProbeResp,
+			needPodEP:     needPodEP,
 		}
+		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
+		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
+
+		lbModel, err := m.makeLoxiLoadBalancerModel(&lbArgs, svc, ingSvcPair.K8sSvcPort)
+		if err != nil {
+			return err
+		}
+		lbModelList = append(lbModelList, lbModel)
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
@@ -854,14 +853,14 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 	var spairs []SvcPair
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
 		for _, port := range service.Spec.Ports {
-			sp := SvcPair{ingress.IP, port.Port, strings.ToLower(string(port.Protocol)), false}
+			sp := SvcPair{ingress.IP, port.Port, strings.ToLower(string(port.Protocol)), false, port}
 			spairs = append(spairs, sp)
 		}
 	}
 
 	for _, extIP := range service.Spec.ExternalIPs {
 		for _, port := range service.Spec.Ports {
-			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false}
+			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false, port}
 			spairs = append(spairs, sp)
 		}
 	}
@@ -879,6 +878,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 
 	ipPool := m.ExternalIPPool
 	if addrType == "ipv6" || addrType == "ipv6to4" {
+
 		ipPool = m.ExternalIP6Pool
 	}
 	//klog.Infof("inSpairs: %v", inSPairs)
@@ -890,7 +890,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 			proto := inSPair.Protocol
 
 			inRange, _ = ipPool.CheckAndReserveIP(inSPair.IPString, uint32(ident), proto)
-			sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol, inRange}
+			sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol, inRange, inSPair.K8sSvcPort}
 			sPairs = append(sPairs, sp)
 			isHasLoxiExternalIP = true
 		}
@@ -913,7 +913,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 				klog.Errorf("failed to generate external IP. IP Pool is full")
 				return nil, errors.New("failed to generate external IP. IP Pool is full")
 			}
-			sp := SvcPair{newIP.String(), portNum, proto, true}
+			sp := SvcPair{newIP.String(), portNum, proto, true, port}
 			sPairs = append(sPairs, sp)
 		}
 	}
@@ -955,7 +955,7 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 				klog.Errorf("failed to generate external secondary IP. IP Pool is full")
 				return nil, errors.New("failed to generate external secondary IP. IP Pool is full")
 			}
-			sp := SvcPair{newIP.String(), portNum, proto, true}
+			sp := SvcPair{newIP.String(), portNum, proto, true, port}
 			sPairs = append(sPairs, sp)
 		}
 	}
