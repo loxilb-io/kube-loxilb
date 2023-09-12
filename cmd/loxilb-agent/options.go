@@ -63,7 +63,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.Uint16Var(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
 	fs.Uint16Var(&o.config.ListenBGPPort, "listenBGPPort", o.config.ListenBGPPort, "Custom BGP listen port")
 	fs.StringVar(&extBGPPeers, "extBGPPeers", extBGPPeers, "External BGP Peer(s)")
-	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", o.config.ExclIPAM, "Use unique IPAM per service")
+	fs.BoolVar(&o.config.ExclIPAM, "setUniqueIP", false, "Use unique IPAM per service")
 	fs.Uint16Var(&o.config.SetLBMode, "setLBMode", o.config.SetLBMode, "LB mode to use")
 	fs.BoolVar(&o.config.Monitor, "monitor", o.config.Monitor, "Enable monitoring end-points of LB rule")
 	fs.StringVar(&o.config.SetRoles, "setRoles", o.config.SetRoles, "Set LoxiLB node roles")
@@ -214,7 +214,6 @@ const (
 
 func (o *Options) setDefaults() {
 	o.config.WithNamespace = true
-	o.config.ExclIPAM = false
 
 	if o.config.HostProcPathPrefix == "" {
 		o.config.HostProcPathPrefix = defaultHostProcPathPrefix
