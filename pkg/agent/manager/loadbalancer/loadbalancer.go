@@ -815,6 +815,14 @@ func (m *Manager) getMultusEndpoints(svc *corev1.Service, addrType string) ([]st
 }
 
 func (m *Manager) getNodeAddress(node corev1.Node, addrType string) (string, error) {
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			if condition.Status != corev1.ConditionTrue {
+				return "", fmt.Errorf("node %s %sstatus = %s", node.Name, string(condition.Type), string(condition.Status))
+			}
+		}
+	}
+
 	addrs := node.Status.Addresses
 	if len(addrs) == 0 {
 		return "", errors.New("no address found for host")
