@@ -100,6 +100,11 @@ type LbArgs struct {
 	needPodEP     bool
 }
 
+type LbModelEnt struct {
+	IdentIPAM string
+	LbModel   api.LoadBalancerModel
+}
+
 type LbCacheEntry struct {
 	LbMode      int
 	Timeout     int
@@ -111,7 +116,7 @@ type LbCacheEntry struct {
 	ProbeReq    string
 	ProbeResp   string
 	SecIPs      []string
-	LbModelList []api.LoadBalancerModel
+	LbModelList []LbModelEnt
 }
 
 type LbCacheTable map[string]*LbCacheEntry
@@ -126,6 +131,7 @@ type SvcPair struct {
 	Port       int32
 	Protocol   string
 	InRange    bool
+	IdentIPAM  string
 	K8sSvcPort corev1.ServicePort
 }
 
@@ -515,7 +521,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
 			if idx < len(sipPools) {
 				for _, lb := range m.lbCache[cacheKey].LbModelList {
-					sipPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+					sipPools[idx].ReturnIPAddr(ingSecIP, lb.IdentIPAM)
 				}
 			}
 		}
@@ -528,12 +534,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	// Update endpoint list if the list has changed
-	for _, lbModel := range m.lbCache[cacheKey].LbModelList {
-		if len(endpointIPs) == len(lbModel.Endpoints) {
+	for _, lb := range m.lbCache[cacheKey].LbModelList {
+		if len(endpointIPs) == len(lb.LbModel.Endpoints) {
 			nEps := 0
 			for _, ep := range endpointIPs {
 				found := false
-				for _, oldEp := range lbModel.Endpoints {
+				for _, oldEp := range lb.LbModel.Endpoints {
 					if ep == oldEp.EndpointIP {
 						found = true
 						nEps++
@@ -579,11 +585,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			for _, sp := range ingSvcPairs {
 				if sp.InRange {
 					klog.Infof("Returning ip %s to free pool", sp.IPString)
-					ipPool.ReturnIPAddr(sp.IPString, uint32(sp.Port), sp.Protocol)
+					ipPool.ReturnIPAddr(sp.IPString, sp.IdentIPAM)
 				}
 				for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
 					if idx < len(sipPools) {
-						sipPools[idx].ReturnIPAddr(ingSecIP, uint32(sp.Port), sp.Protocol)
+						sipPools[idx].ReturnIPAddr(ingSecIP, sp.IdentIPAM)
 					}
 				}
 			}
@@ -592,7 +598,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	for _, ingSvcPair := range ingSvcPairs {
 		var errChList []chan error
-		var lbModelList []api.LoadBalancerModel
+		var lbModelList []LbModelEnt
 		lbArgs := LbArgs{
 			externalIP:    ingSvcPair.IPString,
 			livenessCheck: m.lbCache[cacheKey].ActCheck,
@@ -611,7 +617,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if err != nil {
 			return err
 		}
-		lbModelList = append(lbModelList, lbModel)
+		lbModelList = append(lbModelList, LbModelEnt{ingSvcPair.IdentIPAM, lbModel})
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
@@ -619,8 +625,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			ch := make(chan error)
 			go func(c *api.LoxiClient, h chan error) {
 				var err error
-				for _, lbModel := range lbModelList {
-					if err = c.LoadBalancer().Create(ctx, &lbModel); err != nil {
+				for _, lb := range lbModelList {
+					if err = c.LoadBalancer().Create(ctx, &lb.LbModel); err != nil {
 						if !strings.Contains(err.Error(), "exist") {
 							klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 							break
@@ -697,7 +703,7 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 
 			go func(client *api.LoxiClient, ch chan error) {
 				klog.Infof("called loxilb API: delete lb rule %v", lb)
-				ch <- client.LoadBalancer().Delete(context.Background(), &lb)
+				ch <- client.LoadBalancer().Delete(context.Background(), &lb.LbModel)
 			}(loxiClient, ch)
 		}
 
@@ -712,10 +718,10 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 		if isError {
 			return fmt.Errorf("failed to delete loxiLB LoadBalancer")
 		}
-		ipPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
+		ipPool.ReturnIPAddr(lb.LbModel.Service.ExternalIP, lb.IdentIPAM)
 		for idx, ingSecIP := range lbEntry.SecIPs {
 			if idx < len(sipPools) {
-				sipPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+				sipPools[idx].ReturnIPAddr(ingSecIP, lb.IdentIPAM)
 			}
 		}
 	}
@@ -743,13 +749,13 @@ func (m *Manager) DeleteAllLoadBalancer() {
 				errChList = append(errChList, ch)
 
 				klog.Infof("called loxilb API: delete lb rule %v", lb)
-				loxiClient.LoadBalancer().Delete(context.Background(), &lb)
+				loxiClient.LoadBalancer().Delete(context.Background(), &lb.LbModel)
 			}
 
-			ipPool.ReturnIPAddr(lb.Service.ExternalIP, uint32(lb.Service.Port), lb.Service.Protocol)
+			ipPool.ReturnIPAddr(lb.LbModel.Service.ExternalIP, lb.IdentIPAM)
 			for idx, ingSecIP := range lbEntry.SecIPs {
 				if idx < len(sipPools) {
-					sipPools[idx].ReturnIPAddr(ingSecIP, uint32(lb.Service.Port), lb.Service.Protocol)
+					sipPools[idx].ReturnIPAddr(ingSecIP, lb.IdentIPAM)
 				}
 			}
 		}
@@ -861,14 +867,14 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 	var spairs []SvcPair
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
 		for _, port := range service.Spec.Ports {
-			sp := SvcPair{ingress.IP, port.Port, strings.ToLower(string(port.Protocol)), false, port}
+			sp := SvcPair{ingress.IP, port.Port, strings.ToLower(string(port.Protocol)), false, "", port}
 			spairs = append(spairs, sp)
 		}
 	}
 
 	for _, extIP := range service.Spec.ExternalIPs {
 		for _, port := range service.Spec.Ports {
-			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false, port}
+			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false, "", port}
 			spairs = append(spairs, sp)
 		}
 	}
@@ -882,7 +888,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 	var sPairs []SvcPair
 	inSPairs := m.getLBIngressSvcPairs(service)
 	isHasLoxiExternalIP := false
-	inRange := false
+	cacheKey := GenKey(service.Namespace, service.Name)
 
 	ipPool := m.ExternalIPPool
 	if addrType == "ipv6" || addrType == "ipv6to4" {
@@ -897,20 +903,20 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 			ident := inSPair.Port
 			proto := inSPair.Protocol
 
-			inRange, _ = ipPool.CheckAndReserveIP(inSPair.IPString, uint32(ident), proto)
-			sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol, inRange, inSPair.K8sSvcPort}
+			inRange, _, identStr := ipPool.CheckAndReserveIP(inSPair.IPString, cacheKey, uint32(ident), proto)
+			sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol, inRange, identStr, inSPair.K8sSvcPort}
 			sPairs = append(sPairs, sp)
 			isHasLoxiExternalIP = true
 		}
 	}
 
-	// If isHasLoxiExternalIP is false, that means:
+	// If isHasLoxvscode-file://vscode-app/c:/Users/dipjy/AppData/Local/Programs/Microsoft%20VS%20Code/resources/app/out/vs/code/electron-sandbox/workbench/workbench.htmliExternalIP is false, that means:
 	//    1. k8s service has no ingress IP
 	if !isHasLoxiExternalIP {
 		for _, port := range service.Spec.Ports {
 			proto := strings.ToLower(string(port.Protocol))
 			portNum := port.Port
-			newIP := ipPool.GetNewIPAddr(uint32(portNum), proto)
+			newIP, identIPAM := ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 			if newIP == nil {
 				// This is a safety code in case the service has the same port.
 				for _, s := range sPairs {
@@ -921,7 +927,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 				klog.Errorf("failed to generate external IP. IP Pool is full")
 				return nil, errors.New("failed to generate external IP. IP Pool is full")
 			}
-			sp := SvcPair{newIP.String(), portNum, proto, true, port}
+			sp := SvcPair{newIP.String(), portNum, proto, true, identIPAM, port}
 			sPairs = append(sPairs, sp)
 		}
 	}
@@ -943,12 +949,14 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 		return sPairs, errors.New("failed to generate external secondary IP. No IP pools")
 	}
 
+	cacheKey := GenKey(service.Namespace, service.Name)
+
 	for i := 0; i < numSecondary; i++ {
 		for _, port := range service.Spec.Ports {
 			pool := sipPools[i]
 			proto := strings.ToLower(string(port.Protocol))
 			portNum := port.Port
-			newIP := pool.GetNewIPAddr(uint32(portNum), proto)
+			newIP, identIPAM := pool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 			if newIP == nil {
 				// This is a safety code in case the service has the same port.
 				for _, s := range sPairs {
@@ -958,12 +966,12 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 				}
 				for j := 0; j < i; j++ {
 					rpool := sipPools[j]
-					rpool.ReturnIPAddr(sPairs[j].IPString, uint32(portNum), proto)
+					rpool.ReturnIPAddr(sPairs[j].IPString, sPairs[j].IdentIPAM)
 				}
 				klog.Errorf("failed to generate external secondary IP. IP Pool is full")
 				return nil, errors.New("failed to generate external secondary IP. IP Pool is full")
 			}
-			sp := SvcPair{newIP.String(), portNum, proto, true, port}
+			sp := SvcPair{newIP.String(), portNum, proto, true, identIPAM, port}
 			sPairs = append(sPairs, sp)
 		}
 	}
@@ -1426,20 +1434,20 @@ loop:
 			if !aliveClient.PeeringOnly {
 				isSuccess := false
 				for _, value := range m.lbCache {
-					for _, lbModel := range value.LbModelList {
+					for _, lb := range value.LbModelList {
 						for retry := 0; retry < 5; retry++ {
 							err := func(lbModel *api.LoadBalancerModel) error {
 								ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 								defer cancel()
 								return aliveClient.LoadBalancer().Create(ctx, lbModel)
-							}(&lbModel)
+							}(&lb.LbModel)
 							if err == nil {
-								klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lbModel)
+								klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lb)
 								isSuccess = true
 								break
 							} else {
 								if !strings.Contains(err.Error(), "exist") {
-									klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lbModel, retry)
+									klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lb, retry)
 									time.Sleep(1 * time.Second)
 								} else {
 									isSuccess = true

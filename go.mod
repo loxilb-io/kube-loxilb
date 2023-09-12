@@ -3,7 +3,7 @@ module github.com/loxilb-io/kube-loxilb
 go 1.19
 
 require (
-	github.com/loxilb-io/loxilib v0.8.8-0.20230515061719-1b8e69d35274
+	github.com/loxilb-io/loxilib v0.8.9-0.20230912152221-ce487be25ba1
 	github.com/spf13/cobra v1.6.1
 	github.com/spf13/pflag v1.0.5
 	gopkg.in/yaml.v2 v2.4.0
@@ -35,7 +35,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.0.1 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/loxilb-io/sctp v0.0.0-20230512152123-70e9c76eb88a // indirect
+	github.com/loxilb-io/sctp v0.0.0-20230519081703-6d1baec82fd4 // indirect
 	github.com/mailru/easyjson v0.7.6 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -45,11 +45,11 @@ require (
 	github.com/prometheus/client_model v0.3.0 // indirect
 	github.com/prometheus/common v0.37.0 // indirect
 	github.com/prometheus/procfs v0.8.0 // indirect
-	golang.org/x/net v0.7.0 // indirect
+	golang.org/x/net v0.10.0 // indirect
 	golang.org/x/oauth2 v0.0.0-20220223155221-ee480838109b // indirect
-	golang.org/x/sys v0.5.0 // indirect
-	golang.org/x/term v0.5.0 // indirect
-	golang.org/x/text v0.7.0 // indirect
+	golang.org/x/sys v0.8.0 // indirect
+	golang.org/x/term v0.8.0 // indirect
+	golang.org/x/text v0.9.0 // indirect
 	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/protobuf v1.28.1 // indirect
