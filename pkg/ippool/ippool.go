@@ -54,68 +54,83 @@ func NewIPPool(ipa *tk.IPAllocator, CIDR string, Shared bool) (*IPPool, error) {
 // GetNewIPAddr generate new IP and add key(IP) in IP Pool.
 // If IP is already in pool, try to generate next IP.
 // Returns nil If all IPs in the subnet are already in the pool.
-func (i *IPPool) GetNewIPAddr(sIdent uint32, proto string) net.IP {
+func (i *IPPool) GetNewIPAddr(name string, sIdent uint32, proto string) (net.IP, string) {
 
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 
-	if !i.Shared {
-		sIdent = 0
+	ipamIdent := tk.IPAMNoIdent
+	if i.Shared {
+		ipamIdent = tk.MakeIPAMIdent("", sIdent, proto)
 	}
 
-	newIP, err := i.IPAlloc.AllocateNewIP(tk.IPClusterDefault, i.CIDR, sIdent, proto)
+	newIP, err := i.IPAlloc.AllocateNewIP(tk.IPClusterDefault, i.CIDR, ipamIdent)
 	if err != nil {
+		if ipamIdent != tk.IPAMNoIdent {
+			ipamIdent = tk.IPAMNoIdent
+			newIP, err := i.IPAlloc.AllocateNewIP(tk.IPClusterDefault, i.CIDR, ipamIdent)
+			if err != nil {
+				return nil, ipamIdent
+			}
+			return newIP, ipamIdent
+		}
 		klog.Error(err.Error())
-		return nil
+		return nil, ipamIdent
 	}
 
 	klog.Infof("Allocate ServiceIP %s:%v (%s)", newIP.String(), sIdent, proto)
 
-	return newIP
+	return newIP, ipamIdent
 }
 
 // ReturnIPAddr return IPaddress in IP Pool
-func (i *IPPool) ReturnIPAddr(ip string, sIdent uint32, proto string) {
+func (i *IPPool) ReturnIPAddr(ip string, identStr string) {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
-
-	if !i.Shared {
-		sIdent = 0
-	}
 
 	IP := net.ParseIP(ip)
 	if IP == nil || !i.NetCIDR.Contains(IP) {
 		return
 	}
 
-	klog.Infof("Release ServiceIP %s:%v", ip, sIdent)
+	klog.Infof("Release ServiceIP %s:%v", ip, identStr)
 
-	i.IPAlloc.DeAllocateIP(tk.IPClusterDefault, i.CIDR, sIdent, ip, proto)
+	i.IPAlloc.DeAllocateIP(tk.IPClusterDefault, i.CIDR, identStr, ip)
 }
 
 // ReserveIPAddr reserve this IPaddress in IP Pool
-func (i *IPPool) ReserveIPAddr(ip string, sIdent uint32, proto string) error {
+func (i *IPPool) ReserveIPAddr(ip string, name string, sIdent uint32, proto string) (error, string) {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 
-	if !i.Shared {
-		sIdent = 0
+	ipamIdent := tk.IPAMNoIdent
+	if i.Shared {
+		ipamIdent = tk.MakeIPAMIdent("", sIdent, proto)
 	}
 
 	klog.V(2).Infof("Reserve ServiceIP %s:%v", ip, sIdent)
 
-	return i.IPAlloc.ReserveIP(tk.IPClusterDefault, i.CIDR, sIdent, ip, proto)
+	if err := i.IPAlloc.ReserveIP(tk.IPClusterDefault, i.CIDR, ipamIdent, ip); err != nil {
+		if ipamIdent != tk.IPAMNoIdent {
+			ipamIdent = tk.IPAMNoIdent
+			err := i.IPAlloc.ReserveIP(tk.IPClusterDefault, i.CIDR, ipamIdent, ip)
+			return err, ipamIdent
+		}
+	}
+	return nil, ipamIdent
+
 }
 
 // CheckAndReserveIP check and reserve this IPaddress in IP Pool
-func (i *IPPool) CheckAndReserveIP(ip string, sIdent uint32, proto string) (bool, bool) {
+func (i *IPPool) CheckAndReserveIP(ip string, name string, sIdent uint32, proto string) (bool, bool, string) {
 	IP := net.ParseIP(ip)
 	if IP != nil && i.NetCIDR.Contains(IP) {
-		if err := i.ReserveIPAddr(ip, sIdent, proto); err != nil {
-			return true, false
+		err, idStr := i.ReserveIPAddr(ip, name, sIdent, proto)
+		if err != nil {
+			return true, false, idStr
 		}
-		return true, true
+		return true, true, idStr
 	}
 
-	return false, false
+	return false, false, ""
 }
