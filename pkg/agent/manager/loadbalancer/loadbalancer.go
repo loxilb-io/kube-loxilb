@@ -131,6 +131,7 @@ type SvcPair struct {
 	Port       int32
 	Protocol   string
 	InRange    bool
+	staticIP   bool
 	IdentIPAM  string
 	K8sSvcPort corev1.ServicePort
 }
@@ -654,7 +655,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			return fmt.Errorf("failed to add loxiLB loadBalancer")
 		}
 		m.lbCache[cacheKey].LbModelList = append(m.lbCache[cacheKey].LbModelList, lbModelList...)
-		if ingSvcPair.InRange {
+		if ingSvcPair.InRange && !ingSvcPair.staticIP {
 			retIngress := corev1.LoadBalancerIngress{Hostname: "llb-" + ingSvcPair.IPString}
 			retIngress.Ports = append(retIngress.Ports, corev1.PortStatus{Port: ingSvcPair.Port, Protocol: corev1.Protocol(strings.ToUpper(ingSvcPair.Protocol))})
 			svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
@@ -867,14 +868,14 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 	var spairs []SvcPair
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
 		for _, port := range service.Spec.Ports {
-			sp := SvcPair{ingress.IP, port.Port, strings.ToLower(string(port.Protocol)), false, "", port}
+			sp := SvcPair{ingress.IP, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
 			spairs = append(spairs, sp)
 		}
 	}
 
 	for _, extIP := range service.Spec.ExternalIPs {
 		for _, port := range service.Spec.Ports {
-			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false, "", port}
+			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
 			spairs = append(spairs, sp)
 		}
 	}
@@ -904,7 +905,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 			proto := inSPair.Protocol
 
 			inRange, _, identStr := ipPool.CheckAndReserveIP(inSPair.IPString, cacheKey, uint32(ident), proto)
-			sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol, inRange, identStr, inSPair.K8sSvcPort}
+			sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol, inRange, true, identStr, inSPair.K8sSvcPort}
 			sPairs = append(sPairs, sp)
 			isHasLoxiExternalIP = true
 		}
@@ -927,7 +928,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 				klog.Errorf("failed to generate external IP. IP Pool is full")
 				return nil, errors.New("failed to generate external IP. IP Pool is full")
 			}
-			sp := SvcPair{newIP.String(), portNum, proto, true, identIPAM, port}
+			sp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, port}
 			sPairs = append(sPairs, sp)
 		}
 	}
@@ -971,7 +972,7 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 				klog.Errorf("failed to generate external secondary IP. IP Pool is full")
 				return nil, errors.New("failed to generate external secondary IP. IP Pool is full")
 			}
-			sp := SvcPair{newIP.String(), portNum, proto, true, identIPAM, port}
+			sp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, port}
 			sPairs = append(sPairs, sp)
 		}
 	}
