@@ -655,7 +655,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 		m.lbCache[cacheKey].LbModelList = append(m.lbCache[cacheKey].LbModelList, lbModelList...)
 		if ingSvcPair.InRange {
-			retIngress := corev1.LoadBalancerIngress{IP: ingSvcPair.IPString}
+			retIngress := corev1.LoadBalancerIngress{Hostname: "llb-" + ingSvcPair.IPString}
 			retIngress.Ports = append(retIngress.Ports, corev1.PortStatus{Port: ingSvcPair.Port, Protocol: corev1.Protocol(strings.ToUpper(ingSvcPair.Protocol))})
 			svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
 		}
