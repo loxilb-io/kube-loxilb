@@ -3,7 +3,7 @@ module github.com/loxilb-io/kube-loxilb
 go 1.19
 
 require (
-	github.com/loxilb-io/loxilib v0.8.9-0.20230912152221-ce487be25ba1
+	github.com/loxilb-io/loxilib v0.8.9-0.20230917073555-122edd7e0df4
 	github.com/spf13/cobra v1.6.1
 	github.com/spf13/pflag v1.0.5
 	gopkg.in/yaml.v2 v2.4.0
