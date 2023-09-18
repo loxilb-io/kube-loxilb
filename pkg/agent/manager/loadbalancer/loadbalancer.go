@@ -1358,15 +1358,17 @@ loop:
 
 			if m.networkConfig.SetBGP != 0 {
 				var bgpPeers []*api.LoxiClient
-				for _, lpc := range m.LoxiPeerClients {
-					if aliveClient.Host != lpc.Host {
-						bgpPeers = append(bgpPeers, lpc)
+
+				if aliveClient.PeeringOnly {
+					for _, lc := range m.LoxiClients {
+						if aliveClient.Host != lc.Host {
+							bgpPeers = append(bgpPeers, lc)
+						}
 					}
-					if aliveClient.PeeringOnly {
-						for _, lc := range m.LoxiClients {
-							if aliveClient.Host != lc.Host {
-								bgpPeers = append(bgpPeers, lc)
-							}
+				} else {
+					for _, lpc := range m.LoxiPeerClients {
+						if aliveClient.Host != lpc.Host {
+							bgpPeers = append(bgpPeers, lpc)
 						}
 					}
 				}
