@@ -609,7 +609,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			m.deleteLoadBalancer(svc.Namespace, svc.Name)
 		}
 		m.lbCache[cacheKey].LbModelList = nil
-		svc.Status.LoadBalancer.Ingress = nil
+		if !hasExistingEIP {
+			svc.Status.LoadBalancer.Ingress = nil
+		}
 		klog.Infof("Endpoint IP Pairs %v", endpointIPs)
 		klog.Infof("Secondary IP Pairs %v", m.lbCache[cacheKey].SecIPs)
 	}
@@ -884,7 +886,26 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 	var spairs []SvcPair
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
 		for _, port := range service.Spec.Ports {
-			sp := SvcPair{ingress.IP, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
+			var sp SvcPair
+			if ingress.IP != "" {
+				//klog.Errorf("Ingress IP %s", ingress.IP)
+				sp = SvcPair{ingress.IP, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
+			} else if ingress.Hostname != "" {
+				llbHost := strings.Split(ingress.Hostname, "-")
+				if len(llbHost) != 2 {
+					//klog.Errorf("Ingress host1 %s", llbHost[0])
+					if net.ParseIP(llbHost[0]) != nil {
+						sp = SvcPair{llbHost[0], port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
+					}
+				} else {
+					if llbHost[0] == "llb" {
+						if net.ParseIP(llbHost[1]) != nil {
+							//klog.Errorf("Ingress llb host %s", llbHost[1])
+							sp = SvcPair{llbHost[1], port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
+						}
+					}
+				}
+			}
 			spairs = append(spairs, sp)
 		}
 	}
@@ -909,9 +930,9 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 
 	ipPool := m.ExternalIPPool
 	if addrType == "ipv6" || addrType == "ipv6to4" {
-
 		ipPool = m.ExternalIP6Pool
 	}
+
 	//klog.Infof("inSpairs: %v", inSPairs)
 
 	// k8s service has ingress IP already
@@ -930,8 +951,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 	var newIP net.IP = nil
 	identIPAM := ""
 
-	// If isHasLoxiExternalIP is false, that means:
-	//    1. k8s service has no ingress IP
+	// If hasExtIPAllocated is false, that means k8s service has no ingress IP
 	if !hasExtIPAllocated {
 		var sp SvcPair
 		for _, port := range service.Spec.Ports {
