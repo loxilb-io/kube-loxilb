@@ -432,16 +432,20 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	retIPAMOnErr := false
+
 	oldsvc := svc.DeepCopy()
 
 	// Check if service has ingress IP already allocated
-	ingSvcPairs, err := m.getIngressSvcPairs(svc, addrType)
+	ingSvcPairs, err, hasExistingEIP := m.getIngressSvcPairs(svc, addrType)
+
 	if err != nil {
-		return err
+		if !hasExistingEIP {
+			retIPAMOnErr = true
+		}
 	}
 
 	// set defer for deallocating IP on error
-	retIPAMOnErr := false
 	defer func() {
 		if retIPAMOnErr {
 			ipPool := m.ExternalIPPool
@@ -467,6 +471,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			}
 		}
 	}()
+
+	if err != nil {
+		return err
+	}
 
 	update := false
 	delete := false
@@ -591,7 +599,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	if !update {
-		retIPAMOnErr = true
+		if !hasExistingEIP {
+			retIPAMOnErr = true
+		}
+		ingSvcPairs = nil
 		return nil
 	} else {
 		if delete {
@@ -753,11 +764,7 @@ func (m *Manager) DeleteAllLoadBalancer() {
 		}
 
 		for _, lb := range lbEntry.LbModelList {
-			var errChList []chan error
 			for _, loxiClient := range m.LoxiClients {
-				ch := make(chan error)
-				errChList = append(errChList, ch)
-
 				klog.Infof("called loxilb API: delete lb rule %v", lb)
 				loxiClient.LoadBalancer().Delete(context.Background(), &lb.LbModel)
 			}
@@ -773,8 +780,6 @@ func (m *Manager) DeleteAllLoadBalancer() {
 		}
 	}
 	m.lbCache = nil
-
-	return
 }
 
 // getEndpoints return LB's endpoints IP list.
@@ -896,10 +901,10 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 
 // getIngressSvcPairs check validation if service have ingress IP already.
 // If service have no ingress IP, assign new IP in IP pool
-func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) ([]SvcPair, error) {
+func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) ([]SvcPair, error, bool) {
 	var sPairs []SvcPair
 	inSPairs := m.getLBIngressSvcPairs(service)
-	isHasLoxiExternalIP := false
+	hasExtIPAllocated := false
 	cacheKey := GenKey(service.Namespace, service.Name)
 
 	ipPool := m.ExternalIPPool
@@ -918,7 +923,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 			inRange, _, identStr := ipPool.CheckAndReserveIP(inSPair.IPString, cacheKey, uint32(ident), proto)
 			sp := SvcPair{inSPair.IPString, ident, inSPair.Protocol, inRange, true, identStr, inSPair.K8sSvcPort}
 			sPairs = append(sPairs, sp)
-			isHasLoxiExternalIP = true
+			hasExtIPAllocated = true
 		}
 	}
 
@@ -927,7 +932,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 
 	// If isHasLoxiExternalIP is false, that means:
 	//    1. k8s service has no ingress IP
-	if !isHasLoxiExternalIP {
+	if !hasExtIPAllocated {
 		var sp SvcPair
 		for _, port := range service.Spec.Ports {
 			proto := strings.ToLower(string(port.Protocol))
@@ -942,7 +947,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 						}
 					}
 					klog.Errorf("failed to generate external IP. IP Pool is full")
-					return nil, errors.New("failed to generate external IP. IP Pool is full")
+					return nil, errors.New("failed to generate external IP. IP Pool is full"), hasExtIPAllocated
 				}
 				sp = SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, port}
 			} else {
@@ -952,7 +957,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 		}
 	}
 	//klog.Infof("Spairs: %v", sPairs)
-	return sPairs, nil
+	return sPairs, nil, hasExtIPAllocated
 }
 
 // getIngressSecSvcPairs returns a set of secondary IPs
@@ -1165,9 +1170,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 		}
 	}
 	if len(tmploxilbClients) > 0 {
-		for _, v := range tmploxilbClients {
-			m.LoxiClients = append(m.LoxiClients, v)
-		}
+		m.LoxiClients = append(m.LoxiClients, tmploxilbClients...)
 	}
 	tmp := m.LoxiClients[:0]
 	for _, v := range m.LoxiClients {
@@ -1213,9 +1216,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 		}
 	}
 	if len(tmploxilbPeerClients) > 0 {
-		for _, v := range tmploxilbPeerClients {
-			m.LoxiPeerClients = append(m.LoxiPeerClients, v)
-		}
+		m.LoxiClients = append(m.LoxiClients, tmploxilbClients...)
 	}
 	tmp1 := m.LoxiPeerClients[:0]
 	for _, v := range m.LoxiPeerClients {
