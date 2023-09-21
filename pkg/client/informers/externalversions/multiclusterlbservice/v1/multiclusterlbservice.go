@@ -25,7 +25,7 @@ import (
 	v1 "github.com/loxilb-io/kube-loxilb/pkg/client/listers/multiclusterlbservice/v1"
 	time "time"
 
-	multiclusterlbservicev1 "github.com/loxilb-io/kube-loxilb/pkg/apis/multiclusterlbservice/v1"
+	multiclusterlbservicev1 "github.com/loxilb-io/kube-loxilb/pkg/crds/multiclusterlbservice/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"

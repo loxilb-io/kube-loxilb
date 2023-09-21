@@ -21,7 +21,7 @@ package v1
 import (
 	"github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/scheme"
 
-	v1 "github.com/loxilb-io/kube-loxilb/pkg/apis/multiclusterlbservice/v1"
+	v1 "github.com/loxilb-io/kube-loxilb/pkg/crds/multiclusterlbservice/v1"
 	rest "k8s.io/client-go/rest"
 )
 

@@ -19,7 +19,7 @@ limitations under the License.
 package scheme
 
 import (
-	multiclusterv1 "github.com/loxilb-io/kube-loxilb/pkg/apis/multiclusterlbservice/v1"
+	multiclusterv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/multiclusterlbservice/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"

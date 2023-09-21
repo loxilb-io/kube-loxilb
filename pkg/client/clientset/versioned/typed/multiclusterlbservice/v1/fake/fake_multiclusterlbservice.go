@@ -21,7 +21,7 @@ package fake
 import (
 	"context"
 
-	multiclusterlbservicev1 "github.com/loxilb-io/kube-loxilb/pkg/apis/multiclusterlbservice/v1"
+	multiclusterlbservicev1 "github.com/loxilb-io/kube-loxilb/pkg/crds/multiclusterlbservice/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
