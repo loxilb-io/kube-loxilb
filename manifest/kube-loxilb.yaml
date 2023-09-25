@@ -60,6 +60,17 @@ rules:
       - subjectaccessreviews
     verbs:
       - create
+  - apiGroups:
+      - multicluster.loxilb.io
+    resources:
+      - multiclusterlbservices
+    verbs:
+      - get
+      - watch
+      - list
+      - create
+      - update
+      - delete
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
