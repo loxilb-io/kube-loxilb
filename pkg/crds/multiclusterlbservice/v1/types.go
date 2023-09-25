@@ -17,6 +17,7 @@
 package v1
 
 import (
+	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -46,22 +47,22 @@ type LoadBalancerService struct {
 	Protocol   string   `json:"protocol" key:"protocol"`
 	Sel        EpSelect `json:"sel"`
 	Mode       LbMode   `json:"mode"`
-	BGP        bool     `json:"BGP" options:"bgp"`
-	Monitor    bool     `json:"Monitor"`
+	BGP        bool     `json:"BGP,omitempty" options:"bgp"`
+	Monitor    bool     `json:"Monitor,omitempty"`
 	Timeout    uint32   `json:"inactiveTimeOut"`
 	Block      uint16   `json:"block" options:"block"`
 	Managed    bool     `json:"managed,omitempty"`
-	ProbeType  string   `json:"probetype"`
-	ProbePort  uint16   `json:"probeport"`
-	ProbeReq   string   `json:"probereq"`
-	ProbeResp  string   `json:"proberesp"`
+	ProbeType  string   `json:"probetype,omitempty"`
+	ProbePort  uint16   `json:"probeport,omitempty"`
+	ProbeReq   string   `json:"probereq,omitempty"`
+	ProbeResp  string   `json:"proberesp,omitempty"`
 }
 
 type LoadBalancerEndpoint struct {
 	EndpointIP string `json:"endpointIP"`
 	TargetPort uint16 `json:"targetPort"`
 	Weight     uint8  `json:"weight"`
-	State      string `json:"state"`
+	State      string `json:"state,omitempty"`
 }
 
 type LoadBalancerSecIp struct {
@@ -72,8 +73,17 @@ type LoadBalancerSecIp struct {
 type MultiClusterLBServiceSpec struct {
 	Model LoadBalancerModel `json:"lbModel"`
 }
+
 type LoadBalancerModel struct {
 	Service      LoadBalancerService    `json:"serviceArguments"`
-	SecondaryIPs []LoadBalancerSecIp    `json:"secondaryIPs"`
+	SecondaryIPs []LoadBalancerSecIp    `json:"secondaryIPs,omitempty"`
 	Endpoints    []LoadBalancerEndpoint `json:"endpoints"`
+}
+
+func (l *LoadBalancerModel) GetKeyStruct() api.LoxiModel {
+	return &l.Service
+}
+
+func (lbService *LoadBalancerService) GetKeyStruct() api.LoxiModel {
+	return lbService
 }

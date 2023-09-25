@@ -50,7 +50,6 @@ spec:
                           type: integer
                       required:
                       - endpointIP
-                      - state
                       - targetPort
                       - weight
                       type: object
@@ -100,23 +99,15 @@ spec:
                           add must have json tags for the fields to be serialized.'
                         type: integer
                     required:
-                    - BGP
-                    - Monitor
                     - block
                     - externalIP
                     - inactiveTimeOut
                     - mode
                     - port
-                    - probeport
-                    - probereq
-                    - proberesp
-                    - probetype
-                    - protocol
                     - sel
                     type: object
                 required:
                 - endpoints
-                - secondaryIPs
                 - serviceArguments
                 type: object
             required:

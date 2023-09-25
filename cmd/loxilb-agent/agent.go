@@ -25,6 +25,9 @@ import (
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/multicluster"
+	crdinformers "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions"
+
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
@@ -54,12 +57,14 @@ func run(o *Options) error {
 	klog.Infof("  Build: %s", BuildInfo)
 
 	// create k8s Clientset, CRD Clientset and SharedInformerFactory for the given config.
-	k8sClient, _, _, err := k8s.CreateClients(o.config.ClientConnection, "")
+	k8sClient, _, crdClient, _, err := k8s.CreateClients(o.config.ClientConnection, "")
 	if err != nil {
 		return fmt.Errorf("error creating k8s clients: %v", err)
 	}
 
 	informerFactory := informers.NewSharedInformerFactory(k8sClient, informerDefaultResync)
+	crdInformerFactory := crdinformers.NewSharedInformerFactory(crdClient, informerDefaultResync)
+	multiclusterLBInformer := crdInformerFactory.Multicluster().V1().MultiClusterLBServices()
 
 	// networkReadyCh is used to notify that the Node's network is ready.
 	// Functions that rely on the Node's network should wait for the channel to close.
@@ -176,6 +181,13 @@ func run(o *Options) error {
 		informerFactory,
 	)
 
+	multiClusterLBManager := multicluster.NewMulticlusterLBManager(
+		crdClient,
+		loxilbClients,
+		networkConfig,
+		multiclusterLBInformer,
+	)
+
 	go wait.Until(func() {
 		if len(networkConfig.LoxilbURLs) <= 0 {
 			lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBPurgeCh)
@@ -188,8 +200,10 @@ func run(o *Options) error {
 
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
+	crdInformerFactory.Start(stopCh)
 
 	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+	go multiClusterLBManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 
 	<-stopCh
 
