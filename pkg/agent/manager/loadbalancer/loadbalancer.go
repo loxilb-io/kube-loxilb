@@ -1236,7 +1236,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 		}
 	}
 	if len(tmploxilbPeerClients) > 0 {
-		m.LoxiClients = append(m.LoxiClients, tmploxilbClients...)
+		m.LoxiPeerClients = append(m.LoxiPeerClients, tmploxilbPeerClients...)
 	}
 	tmp1 := m.LoxiPeerClients[:0]
 	for _, v := range m.LoxiPeerClients {
