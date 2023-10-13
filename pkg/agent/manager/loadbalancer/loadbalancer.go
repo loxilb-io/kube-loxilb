@@ -42,6 +42,8 @@ import (
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
+	"github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned"
+	v1 "github.com/loxilb-io/kube-loxilb/pkg/crds/multiclusterlbservice/v1"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 )
@@ -67,6 +69,8 @@ const (
 
 type Manager struct {
 	kubeClient           clientset.Interface
+	masterK8sClient      clientset.Interface
+	masterCrdClient      versioned.Interface
 	LoxiClients          []*api.LoxiClient
 	LoxiPeerClients      []*api.LoxiClient
 	networkConfig        *config.NetworkConfig
@@ -147,6 +151,8 @@ func GenKey(ns, name string) string {
 // Manager is called by kube-loxilb when k8s service is created & updated.
 func NewLoadBalancerManager(
 	kubeClient clientset.Interface,
+	masterK8sClient clientset.Interface,
+	masterCrdClient versioned.Interface,
 	loxiClients []*api.LoxiClient,
 	loxiPeerClients []*api.LoxiClient,
 	externalIPPool *ippool.IPPool,
@@ -160,6 +166,8 @@ func NewLoadBalancerManager(
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	manager := &Manager{
 		kubeClient:           kubeClient,
+		masterK8sClient:      masterK8sClient,
+		masterCrdClient:      masterCrdClient,
 		LoxiClients:          loxiClients,
 		LoxiPeerClients:      loxiPeerClients,
 		ExternalIPPool:       externalIPPool,
@@ -642,38 +650,60 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
-		for _, client := range m.LoxiClients {
-			ch := make(chan error)
-			go func(c *api.LoxiClient, h chan error) {
-				var err error
-				for _, lb := range lbModelList {
-					if err = c.LoadBalancer().Create(ctx, &lb.LbModel); err != nil {
-						if !strings.Contains(err.Error(), "exist") {
-							klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
-							break
-						} else {
-							err = nil
+
+		if m.masterCrdClient != nil {
+			for _, lb := range lbModelList {
+				// TODO: Need to review to make sure there are no duplicate names.
+				// TODO: Who manages the external IP in multicluster mode?
+				var what *v1.MultiClusterLBService
+
+				crdName := fmt.Sprintf("%s-%s:%d", lb.LbModel.Service.Protocol, lb.LbModel.Service.ExternalIP, lb.LbModel.Service.Port)
+				what.Name = crdName
+				what.Labels["loxilb.io/cluster"] = m.networkConfig.ClusterName
+				what.Spec = v1.MultiClusterLBServiceSpec{Model: v1.MultiClusterLBModel(lbModel)}
+
+				_, err := m.masterCrdClient.MulticlusterV1().MultiClusterLBServices().Create(ctx, what, metav1.CreateOptions{})
+				if err != nil {
+					retIPAMOnErr = true
+					klog.Errorf("failed to add load-balancer CRD to main cluster")
+					return fmt.Errorf("failed to add multicluterLBService CRD to main cluster")
+				}
+			}
+		} else {
+			for _, client := range m.LoxiClients {
+				ch := make(chan error)
+				go func(c *api.LoxiClient, h chan error) {
+					var err error
+					for _, lb := range lbModelList {
+						if err = c.LoadBalancer().Create(ctx, &lb.LbModel); err != nil {
+							if !strings.Contains(err.Error(), "exist") {
+								klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+								break
+							} else {
+								err = nil
+							}
 						}
 					}
+					h <- err
+				}(client, ch)
+
+				errChList = append(errChList, ch)
+			}
+
+			isError := true
+			for _, errCh := range errChList {
+				err := <-errCh
+				if err == nil {
+					isError = false
 				}
-				h <- err
-			}(client, ch)
-
-			errChList = append(errChList, ch)
-		}
-
-		isError := true
-		for _, errCh := range errChList {
-			err := <-errCh
-			if err == nil {
-				isError = false
+			}
+			if isError {
+				retIPAMOnErr = isError
+				klog.Errorf("failed to add load-balancer")
+				return fmt.Errorf("failed to add loxiLB loadBalancer")
 			}
 		}
-		if isError {
-			retIPAMOnErr = isError
-			klog.Errorf("failed to add load-balancer")
-			return fmt.Errorf("failed to add loxiLB loadBalancer")
-		}
+
 		m.lbCache[cacheKey].LbModelList = append(m.lbCache[cacheKey].LbModelList, lbModelList...)
 		if ingSvcPair.InRange && !ingSvcPair.StaticIP {
 			retIngress := corev1.LoadBalancerIngress{Hostname: "llb-" + ingSvcPair.IPString}

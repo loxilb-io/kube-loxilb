@@ -67,6 +67,8 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.Uint16Var(&o.config.SetLBMode, "setLBMode", o.config.SetLBMode, "LB mode to use")
 	fs.BoolVar(&o.config.Monitor, "monitor", o.config.Monitor, "Enable monitoring end-points of LB rule")
 	fs.StringVar(&o.config.SetRoles, "setRoles", o.config.SetRoles, "Set LoxiLB node roles")
+	fs.StringVar(&o.config.MasterKubeconfigFilePath, "masterKubeconfigFilePath", o.config.MasterKubeconfigFilePath, "Path to the kubeconfig file on the master cluster K8s.")
+	fs.StringVar(&o.config.ClusterName, "clusterName", o.config.ClusterName, "Cluster name using multi cluster mode")
 }
 
 // complete completes all the required optionst
@@ -174,7 +176,13 @@ func (o *Options) validate(args []string) error {
 
 	if o.config.SetRoles != "" {
 		if net.ParseIP(o.config.SetRoles) == nil {
-			return fmt.Errorf("SetRoles %s config is invalid", o.config.SetRoles)
+			return fmt.Errorf("setRoles %s config is invalid", o.config.SetRoles)
+		}
+	}
+
+	if o.config.MasterKubeconfigFilePath != "" {
+		if _, err := os.Stat(o.config.MasterKubeconfigFilePath); err != nil {
+			return fmt.Errorf("failed to read kubeconfig file of master cluster (%s)", o.config.MasterKubeconfigFilePath)
 		}
 	}
 
@@ -241,5 +249,8 @@ func (o *Options) setDefaults() {
 	}
 	if o.config.ExtBGPPeers == nil {
 		o.config.ExtBGPPeers = []string{}
+	}
+	if o.config.ClusterName == "" {
+		o.config.ClusterName = "default"
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/multicluster"
+	"github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned"
 	crdinformers "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -35,6 +36,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	componentbaseconfig "k8s.io/component-base/config"
 	"k8s.io/klog/v2"
 
 	tk "github.com/loxilb-io/loxilib"
@@ -65,6 +68,17 @@ func run(o *Options) error {
 	informerFactory := informers.NewSharedInformerFactory(k8sClient, informerDefaultResync)
 	crdInformerFactory := crdinformers.NewSharedInformerFactory(crdClient, informerDefaultResync)
 	multiclusterLBInformer := crdInformerFactory.Multicluster().V1().MultiClusterLBServices()
+
+	// If kube-loxilb has MasterKubeconfigFilePath, create master K8s Clientset.
+	var masterK8sClient kubernetes.Interface
+	var masterCrdClient versioned.Interface
+	if len(o.config.MasterKubeconfigFilePath) > 0 {
+		masterClientConnection := componentbaseconfig.ClientConnectionConfiguration{Kubeconfig: o.config.MasterKubeconfigFilePath}
+		masterK8sClient, _, masterCrdClient, _, err = k8s.CreateClients(masterClientConnection, "")
+		if err != nil {
+			return fmt.Errorf("error creating master k8s clients: %v", err)
+		}
+	}
 
 	// networkReadyCh is used to notify that the Node's network is ready.
 	// Functions that rely on the Node's network should wait for the channel to close.
@@ -99,6 +113,7 @@ func run(o *Options) error {
 		Monitor:                 o.config.Monitor,
 		ExternalSecondaryCIDRs:  o.config.ExternalSecondaryCIDRs,
 		ExternalSecondaryCIDRs6: o.config.ExternalSecondaryCIDRs6,
+		ClusterName:             o.config.ClusterName,
 	}
 
 	ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), networkConfig.ExternalCIDR, !o.config.ExclIPAM)
@@ -171,6 +186,8 @@ func run(o *Options) error {
 
 	lbManager := loadbalancer.NewLoadBalancerManager(
 		k8sClient,
+		masterK8sClient,
+		masterCrdClient,
 		loxilbClients,
 		loxilbPeerClients,
 		ipPool,
