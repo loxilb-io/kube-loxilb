@@ -29,11 +29,11 @@ jobs:
           --env PFLT_LOGLEVEL=info \
           --env PFLT_ARTIFACTS=/artifacts \
           -v /tmp/preflight-artifacts:/artifacts \
-          quay.io/opdev/preflight:stable check container ghcr.io/loxilb-io/kube-loxilb-ubi8:preflight
+          quay.io/opdev/preflight:stable check container ghcr.io/loxilb-io/kube-loxilb-ubi8:preflight > results.json
       - name: get results.json
         id: get_results_json
         run: |
-          PASSED=$(cat /tmp/preflight-artifacts/results.json | jq '.passed')
+          PASSED=$(cat results.json | jq '.passed')
           echo $PASSED
           echo "PASSED=$PASSED" >> $GITHUB_OUTPUT
       - if: ${{ steps.get_results_json.outputs.PASSED == 'true' }}
@@ -42,5 +42,5 @@ jobs:
       - if: ${{ steps.get_results_json.outputs.PASSED != 'true' }}
         run: |
           echo "passed: false."
-          cat /tmp/preflight-artifacts/results.json
+          cat results.json
           exit 1
