@@ -60,4 +60,6 @@ type AgentConfig struct {
 	Monitor bool `yaml:"monitor"`
 	// Set loxilb node roles
 	SetRoles string `yaml:"setRoles,omitempty"`
+	// Path to the kubeconfig file on the master cluster K8s
+	MasterKubeconfigFilePath string `yaml:"masterKubeconfigFilePath,omitempty"`
 }
