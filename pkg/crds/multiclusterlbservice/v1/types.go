@@ -23,6 +23,7 @@ import (
 
 type EpSelect uint
 type LbMode int32
+type MultiClusterLBModel api.LoadBalancerModel
 
 // +genclient
 // +genclient:nonNamespaced
@@ -34,6 +35,11 @@ type MultiClusterLBService struct {
 	Spec MultiClusterLBServiceSpec `json:"spec,omitempty"`
 }
 
+// MultiClusterLBServiceSpec defines the desired state of MultiClusterLBService
+type MultiClusterLBServiceSpec struct {
+	Model MultiClusterLBModel `json:"lbModel"`
+}
+
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type MultiClusterLBServiceList struct {
 	metav1.TypeMeta `json:",inline"`
@@ -41,49 +47,6 @@ type MultiClusterLBServiceList struct {
 	Items           []*MultiClusterLBService `json:"items"`
 }
 
-type LoadBalancerService struct {
-	ExternalIP string   `json:"externalIP" key:"externalipaddress"`
-	Port       uint16   `json:"port" key:"port"`
-	Protocol   string   `json:"protocol" key:"protocol"`
-	Sel        EpSelect `json:"sel"`
-	Mode       LbMode   `json:"mode"`
-	BGP        bool     `json:"BGP,omitempty" options:"bgp"`
-	Monitor    bool     `json:"Monitor,omitempty"`
-	Timeout    uint32   `json:"inactiveTimeOut"`
-	Block      uint16   `json:"block" options:"block"`
-	Managed    bool     `json:"managed,omitempty"`
-	ProbeType  string   `json:"probetype,omitempty"`
-	ProbePort  uint16   `json:"probeport,omitempty"`
-	ProbeReq   string   `json:"probereq,omitempty"`
-	ProbeResp  string   `json:"proberesp,omitempty"`
-}
-
-type LoadBalancerEndpoint struct {
-	EndpointIP string `json:"endpointIP"`
-	TargetPort uint16 `json:"targetPort"`
-	Weight     uint8  `json:"weight"`
-	State      string `json:"state,omitempty"`
-}
-
-type LoadBalancerSecIp struct {
-	SecondaryIP string `json:"secondaryIP"`
-}
-
-// MultiClusterLBServiceSpec defines the desired state of MultiClusterLBService
-type MultiClusterLBServiceSpec struct {
-	Model LoadBalancerModel `json:"lbModel"`
-}
-
-type LoadBalancerModel struct {
-	Service      LoadBalancerService    `json:"serviceArguments"`
-	SecondaryIPs []LoadBalancerSecIp    `json:"secondaryIPs,omitempty"`
-	Endpoints    []LoadBalancerEndpoint `json:"endpoints"`
-}
-
-func (l *LoadBalancerModel) GetKeyStruct() api.LoxiModel {
-	return &l.Service
-}
-
-func (lbService *LoadBalancerService) GetKeyStruct() api.LoxiModel {
-	return lbService
+func (lbModel *MultiClusterLBModel) GetKeyStruct() api.LoxiModel {
+	return &lbModel.Service
 }
