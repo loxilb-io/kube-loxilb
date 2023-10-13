@@ -68,6 +68,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.config.Monitor, "monitor", o.config.Monitor, "Enable monitoring end-points of LB rule")
 	fs.StringVar(&o.config.SetRoles, "setRoles", o.config.SetRoles, "Set LoxiLB node roles")
 	fs.StringVar(&o.config.MasterKubeconfigFilePath, "masterKubeconfigFilePath", o.config.MasterKubeconfigFilePath, "Path to the kubeconfig file on the master cluster K8s.")
+	fs.StringVar(&o.config.ClusterName, "clusterName", o.config.ClusterName, "Cluster name using multi cluster mode")
 }
 
 // complete completes all the required optionst
@@ -248,5 +249,8 @@ func (o *Options) setDefaults() {
 	}
 	if o.config.ExtBGPPeers == nil {
 		o.config.ExtBGPPeers = []string{}
+	}
+	if o.config.ClusterName == "" {
+		o.config.ClusterName = "default"
 	}
 }

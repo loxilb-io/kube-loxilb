@@ -29,4 +29,5 @@ type NetworkConfig struct {
 	SetLBMode               uint16
 	Monitor                 bool
 	SetRoles                string
+	ClusterName             string
 }
