@@ -1392,6 +1392,11 @@ loop:
 							bgpPeers = append(bgpPeers, lpc)
 						}
 					}
+					for _, lc := range m.LoxiClients {
+						if aliveClient.Host != lc.Host {
+							bgpPeers = append(bgpPeers, lc)
+						}
+					}
 				}
 
 				var bgpGlobalCfg api.BGPGlobalConfig
