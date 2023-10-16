@@ -655,14 +655,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			for _, lb := range lbModelList {
 				// TODO: Need to review to make sure there are no duplicate names.
 				// TODO: Who manages the external IP in multicluster mode?
-				var what *v1.MultiClusterLBService
+				var newCrd *v1.MultiClusterLBService
 
 				crdName := fmt.Sprintf("%s-%s:%d", lb.LbModel.Service.Protocol, lb.LbModel.Service.ExternalIP, lb.LbModel.Service.Port)
-				what.Name = crdName
-				what.Labels["loxilb.io/cluster"] = m.networkConfig.ClusterName
-				what.Spec = v1.MultiClusterLBServiceSpec{Model: v1.MultiClusterLBModel(lbModel)}
+				newCrd.Name = crdName
+				newCrd.Labels["loxilb.io/cluster"] = m.networkConfig.ClusterName
+				newCrd.Spec = v1.MultiClusterLBServiceSpec{Model: v1.MultiClusterLBModel(lbModel)}
 
-				_, err := m.masterCrdClient.MulticlusterV1().MultiClusterLBServices().Create(ctx, what, metav1.CreateOptions{})
+				_, err := m.masterCrdClient.MulticlusterV1().MultiClusterLBServices().Create(ctx, newCrd, metav1.CreateOptions{})
 				if err != nil {
 					retIPAMOnErr = true
 					klog.Errorf("failed to add load-balancer CRD to main cluster")
