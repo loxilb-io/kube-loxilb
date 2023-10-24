@@ -34,7 +34,7 @@ kube-loxilb is a standalone implementation of kubernetes load-balancer spec whic
 2.Download the loxilb config yaml :
 
 ```
-wget https://github.com/loxilb-io/kube-loxilb/raw/main/manifest/kube-loxilb.yaml
+wget https://raw.githubusercontent.com/loxilb-io/kube-loxilb/main/manifest/ext-cluster/kube-loxilb.yaml
 ```
 
 3.Modify arguments as per user's needs :
