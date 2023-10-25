@@ -1136,7 +1136,7 @@ func (m *Manager) makeLoxiLBBGPGlobalModel(localAS int, selfID string, setNHSelf
 	}, nil
 }
 
-func (m *Manager) makeLoxiLBBGNeighModel(remoteAS int, IPString string, rPort uint16) (api.BGPNeigh, error) {
+func (m *Manager) makeLoxiLBBGNeighModel(remoteAS int, IPString string, rPort uint16, mHopEn bool) (api.BGPNeigh, error) {
 
 	port := rPort
 	if rPort == 0 {
@@ -1144,9 +1144,10 @@ func (m *Manager) makeLoxiLBBGNeighModel(remoteAS int, IPString string, rPort ui
 	}
 
 	return api.BGPNeigh{
-		RemoteAs:   int64(remoteAS),
-		IPAddress:  IPString,
-		RemotePort: int64(port),
+		RemoteAs:    int64(remoteAS),
+		IPAddress:   IPString,
+		RemotePort:  int64(port),
+		SetMultiHop: mHopEn,
 	}, nil
 }
 
@@ -1419,7 +1420,7 @@ loop:
 				}
 
 				for _, bgpPeer := range bgpPeers {
-					bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), bgpPeer.Host, m.networkConfig.ListenBGPPort)
+					bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), bgpPeer.Host, m.networkConfig.ListenBGPPort, false)
 					err := func(bgpNeighCfg *api.BGPNeigh) error {
 						ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 						defer cancel()
@@ -1432,7 +1433,7 @@ loop:
 						m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
 					}
 
-					bgpNeighCfg1, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), aliveClient.Host, m.networkConfig.ListenBGPPort)
+					bgpNeighCfg1, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), aliveClient.Host, m.networkConfig.ListenBGPPort, false)
 					err = func(bgpNeighCfg1 *api.BGPNeigh) error {
 						ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 						defer cancel()
@@ -1463,7 +1464,7 @@ loop:
 							continue
 						}
 
-						bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(asid), bgpRemoteIP.String(), 0)
+						bgpNeighCfg, _ := m.makeLoxiLBBGNeighModel(int(asid), bgpRemoteIP.String(), 0, m.networkConfig.EBGPMultiHop)
 						err = func(bgpNeighCfg *api.BGPNeigh) error {
 							ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 							defer cancel()

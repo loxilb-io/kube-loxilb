@@ -52,6 +52,8 @@ type AgentConfig struct {
 	SetBGP uint16 `yaml:"setBGP,omitempty,default=0"`
 	// Custom BGP Port
 	ListenBGPPort uint16 `yaml:"listenBGPPort,omitempty,default=179"`
+	// Set eBGP multi-hop
+	EBGPMultiHop bool `yaml:"eBGPMultiHop"`
 	// loxilb loadbalancer mode
 	SetLBMode uint16 `yaml:"setLBMode,omitempty"`
 	// Shared or exclusive IPAM
