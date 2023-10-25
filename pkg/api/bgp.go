@@ -12,6 +12,8 @@ type BGPNeigh struct {
 	RemoteAs int64 `json:"remoteAs,omitempty"`
 	// Remote Connect Port (default 179)
 	RemotePort int64 `json:"remotePort,omitempty"`
+	// Enable multi-hop peering (if needed)
+	SetMultiHop bool `json:"setMultiHop,omitempty"`
 }
 
 type BGPGlobalConfig struct {
