@@ -41,6 +41,7 @@ type LoadBalancerService struct {
 	ProbePort  uint16   `json:"probeport"`
 	ProbeReq   string   `json:"probereq"`
 	ProbeResp  string   `json:"proberesp"`
+	Name       string   `json:"name,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
