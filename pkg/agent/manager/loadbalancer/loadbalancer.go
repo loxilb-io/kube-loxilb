@@ -55,6 +55,7 @@ const (
 	LoxiMaxWeight               = 10
 	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
 	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
+	secIPsAnnotation            = "loxilb.io/secondaryIPs"
 	livenessAnnotation          = "loxilb.io/liveness"
 	lbModeAnnotation            = "loxilb.io/lbmode"
 	lbAddressAnnotation         = "loxilb.io/ipam"
@@ -63,6 +64,7 @@ const (
 	probePortAnnotation         = "loxilb.io/probeport"
 	probeReqAnnotation          = "loxilb.io/probereq"
 	probeRespAnnotation         = "loxilb.io/proberesp"
+	MaxExternalSecondaryIPsNum  = 4
 )
 
 type Manager struct {
@@ -291,6 +293,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return nil
 	}
 
+	var secIPs []string
 	numSecondarySvc := 0
 	livenessCheck := false
 	lbMode := -1
@@ -305,13 +308,30 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return nil
 	}
 
-	// Check for loxilb specific annotations - Secondary IPs
+	// Check for loxilb specific annotations - Secondary IPs number (auto generated IP)
 	if na := svc.Annotations[numSecIPAnnotation]; na != "" {
 		num, err := strconv.Atoi(na)
 		if err != nil {
 			numSecondarySvc = 0
 		} else {
 			numSecondarySvc = num
+		}
+	}
+
+	// Check for loxilb specific annotations - Secondary IPs (user specified)
+	if secIPsStr := svc.Annotations[secIPsAnnotation]; secIPsStr != "" {
+		secIPs = strings.Split(secIPsStr, ",")
+		if len(secIPs) >= 4 {
+			klog.Errorf("%s annotation exceeds the maximum number(%d) allowed.", secIPsAnnotation, MaxExternalSecondaryIPsNum)
+			secIPs = nil
+		} else {
+			for _, secIP := range secIPs {
+				if net.ParseIP(secIP) == nil {
+					klog.Errorf("%s annotation has invalid IP (%s)", secIPsAnnotation, secIP)
+					secIPs = nil
+					break
+				}
+			}
 		}
 	}
 
@@ -400,6 +420,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	if addrType != "ipv4" && numSecondarySvc != 0 {
 		klog.Infof("SecondaryIP Svc not possible for %v", addrType)
+		numSecondarySvc = 0
+	}
+
+	if len(secIPs) != 0 && numSecondarySvc != 0 {
+		klog.Infof("SecondaryIP is specified (%v)", secIPs)
 		numSecondarySvc = 0
 	}
 
@@ -546,7 +571,13 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	if len(m.lbCache[cacheKey].SecIPs) != numSecondarySvc {
+	// If the user specifies a secondary IP in the annotation, update the existing secondary IP.
+	if len(secIPs) > 0 {
+		if !added {
+			m.returnSecondaryIPs(svc, m.lbCache[cacheKey].SecIPs, addrType)
+			m.lbCache[cacheKey].SecIPs = secIPs
+		}
+	} else if len(m.lbCache[cacheKey].SecIPs) != numSecondarySvc {
 		update = true
 		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, addrType)
 		if err != nil {
@@ -920,7 +951,7 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 	return spairs
 }
 
-// getIngressSvcPairs check validation if service have ingress IP already.
+// getIngressSvcPairs check validation if service have ingress or externalIPs already.
 // If service have no ingress IP, assign new IP in IP pool
 func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) ([]SvcPair, error, bool) {
 	var sPairs []SvcPair
@@ -932,8 +963,6 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 	if addrType == "ipv6" || addrType == "ipv6to4" {
 		ipPool = m.ExternalIP6Pool
 	}
-
-	//klog.Infof("inSpairs: %v", inSPairs)
 
 	// k8s service has ingress IP already
 	if len(inSPairs) >= 1 {
@@ -978,6 +1007,50 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 	}
 	//klog.Infof("Spairs: %v", sPairs)
 	return sPairs, nil, hasExtIPAllocated
+}
+
+// returnSecondaryIPs
+func (m *Manager) returnSecondaryIPs(service *corev1.Service, secIPs []string, addrType string) error {
+	cacheKey := GenKey(service.Namespace, service.Name)
+
+	sipPools := m.ExtSecondaryIPPools
+	if addrType == "ipv6" || addrType == "ipv6to4" {
+		sipPools = m.ExtSecondaryIP6Pools
+	}
+
+	for idx, ingSecIP := range secIPs {
+		if idx < len(sipPools) {
+			for _, lb := range m.lbCache[cacheKey].LbModelList {
+				sipPools[idx].ReturnIPAddr(ingSecIP, lb.IdentIPAM)
+			}
+		}
+	}
+
+	return nil
+}
+
+// reserveSecondaryIPs registers the secondary IP specified in the annotation in the secondary IP pool.
+func (m *Manager) reserveSecondaryIPs(service *corev1.Service, secIPs []string, addrType string) error {
+	// k8s service has ingress IP already
+	sipPools := m.ExtSecondaryIPPools
+	if addrType == "ipv6" {
+		sipPools = m.ExtSecondaryIP6Pools
+	}
+
+	cacheKey := GenKey(service.Namespace, service.Name)
+
+	if len(secIPs) >= 1 {
+		for i, secIP := range secIPs {
+			for _, port := range service.Spec.Ports {
+				pool := sipPools[i]
+				proto := strings.ToLower(string(port.Protocol))
+				portNum := port.Port
+				pool.CheckAndReserveIP(secIP, cacheKey, uint32(portNum), proto)
+			}
+		}
+	}
+
+	return nil
 }
 
 // getIngressSecSvcPairs returns a set of secondary IPs
