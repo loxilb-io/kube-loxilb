@@ -107,7 +107,7 @@ func run(o *Options) error {
 	var sipPools []*ippool.IPPool
 	if len(o.config.ExternalSecondaryCIDRs) != 0 {
 
-		if len(o.config.ExternalSecondaryCIDRs) > 4 {
+		if len(o.config.ExternalSecondaryCIDRs) >= loadbalancer.MaxExternalSecondaryIPsNum {
 			return fmt.Errorf("externalSecondaryCIDR %s config is invalid", o.config.ExternalSecondaryCIDRs)
 		}
 
