@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sctp-lb-secips
+  annotations:
+    loxilb.io/lbmode: "fullnat"
+    loxilb.io/secondaryIPs: "1.1.1.1,2.2.2.2"
+spec:
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    what: sctp-lb-secips
+  ports:
+    - port: 56004
+      targetPort: 9999
+      protocol: SCTP
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sctp-secips-test
+  labels:
+    what: sctp-lb-secips
+spec:
+  containers:
+    - name: sctp-test
+      image: ghcr.io/loxilb-io/alpine-socat:latest
+      command: [ "sh", "-c"]
+      args:
+      - while true; do
+          socat -v -T2 sctp-l:9999,reuseaddr,fork system:"echo 'server1'; cat";
+          sleep 20;
+        done;
+      ports:
+        - containerPort: 9999
+      env:
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
