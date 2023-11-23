@@ -94,12 +94,8 @@ spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       tolerations:
-        - effect: NoSchedule
-          operator: Exists
         # Mark the pod as a critical add-on for rescheduling.
         - key: CriticalAddonsOnly
-          operator: Exists
-        - effect: NoExecute
           operator: Exists
       priorityClassName: system-node-critical
       serviceAccountName: kube-loxilb
