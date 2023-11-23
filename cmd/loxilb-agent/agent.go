@@ -42,7 +42,6 @@ import (
 // https://github.com/kubernetes/kubernetes/blob/release-1.17/pkg/controller/apis/config/v1alpha1/defaults.go#L120
 const informerDefaultResync = 12 * time.Hour
 
-var closeSig os.Signal
 var (
 	capturedSignals = []os.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT}
 	notifyCh        = make(chan os.Signal, 2)
@@ -196,11 +195,6 @@ func run(o *Options) error {
 
 	<-stopCh
 
-	if closeSig == syscall.SIGTERM {
-		klog.Info("flushing LoxiLB rules")
-		lbManager.DeleteAllLoadBalancer()
-	}
-
 	klog.Info("Stopping loxilb Agent")
 	return nil
 }
@@ -209,7 +203,7 @@ func RegisterSignalHandlers() <-chan struct{} {
 	stopCh := make(chan struct{})
 
 	go func() {
-		closeSig = <-notifyCh
+		<-notifyCh
 		close(stopCh)
 		<-notifyCh
 		klog.Warning("Received second signal, will force exit")
