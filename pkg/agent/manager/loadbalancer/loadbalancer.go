@@ -56,6 +56,7 @@ const (
 	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
 	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
 	secIPsAnnotation            = "loxilb.io/secondaryIPs"
+	staticIPAnnotation          = "loxilb.io/staticIP"
 	livenessAnnotation          = "loxilb.io/liveness"
 	lbModeAnnotation            = "loxilb.io/lbmode"
 	lbAddressAnnotation         = "loxilb.io/ipam"
@@ -706,7 +707,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			return fmt.Errorf("failed to add loxiLB loadBalancer")
 		}
 		m.lbCache[cacheKey].LbModelList = append(m.lbCache[cacheKey].LbModelList, lbModelList...)
-		if ingSvcPair.InRange && !ingSvcPair.StaticIP {
+		if ingSvcPair.InRange || ingSvcPair.StaticIP {
 			retIngress := corev1.LoadBalancerIngress{Hostname: "llb-" + ingSvcPair.IPString}
 			//retIngress.Ports = append(retIngress.Ports, corev1.PortStatus{Port: ingSvcPair.Port, Protocol: corev1.Protocol(strings.ToUpper(ingSvcPair.Protocol))})
 			svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
@@ -945,6 +946,18 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 		for _, port := range service.Spec.Ports {
 			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
 			spairs = append(spairs, sp)
+		}
+	}
+
+	// Check for loxilb specific annotations - StaticIP (user specified)
+	if staticIPStr := service.Annotations[staticIPAnnotation]; staticIPStr != "" {
+		if net.ParseIP(staticIPStr) == nil {
+			klog.Errorf("%s annotation has invalid IP (%s)", staticIPAnnotation, staticIPStr)
+		} else {
+			for _, port := range service.Spec.Ports {
+				sp := SvcPair{staticIPStr, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
+				spairs = append(spairs, sp)
+			}
 		}
 	}
 
