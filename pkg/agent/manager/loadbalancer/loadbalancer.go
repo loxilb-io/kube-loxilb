@@ -1502,9 +1502,9 @@ loop:
 				}(&bgpGlobalCfg)
 
 				if err == nil {
-					klog.Infof("set-bgp-global success")
+					klog.Infof("loxilb(%s) set-bgp-global success", aliveClient.Host)
 				} else {
-					klog.Infof("set-bgp-global failed(%s)", err)
+					klog.Infof("loxilb(%s) set-bgp-global failed(%s)", aliveClient.Host, err)
 					m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
 				}
 
