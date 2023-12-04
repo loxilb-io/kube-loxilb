@@ -20,13 +20,14 @@ type LoxiClient struct {
 	Host        string
 	Port        string
 	IsAlive     bool
+	DeadSigTs   time.Time
 	DoBGPCfg    bool
 	Purge       bool
 	Stop        chan struct{}
 }
 
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
-func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, peerOnly bool) (*LoxiClient, error) {
+func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan bool, peerOnly bool) (*LoxiClient, error) {
 
 	client := &http.Client{}
 
@@ -57,16 +58,17 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, peerOnly bool) (*
 		Port:        port,
 		Stop:        stop,
 		PeeringOnly: peerOnly,
+		DeadSigTs:   time.Now(),
 	}
 
-	lc.StartLoxiHealthCheckChan(aliveCh)
+	lc.StartLoxiHealthCheckChan(aliveCh, deadCh)
 
 	klog.Infof("NewLoxiClient Created: %s", apiServer)
 
 	return lc, nil
 }
 
-func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient) {
+func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh chan bool) {
 	l.IsAlive = false
 
 	go wait.Until(func() {
@@ -74,6 +76,13 @@ func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient) {
 			if l.IsAlive {
 				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is down", l.RestClient.baseURL.String())
 				l.IsAlive = false
+				if time.Duration(time.Since(l.DeadSigTs).Seconds()) >= 3 && l.MasterLB {
+					klog.Infof("LoxiHealthCheckChan: master down")
+					l.DeadSigTs = time.Now()
+					deadCh <- true
+				} else {
+					l.DeadSigTs = time.Now()
+				}
 			}
 		} else {
 			if !l.IsAlive {

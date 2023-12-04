@@ -155,10 +155,11 @@ func run(o *Options) error {
 	loxiLBLiveCh := make(chan *api.LoxiClient, 50)
 	loxiLBPurgeCh := make(chan *api.LoxiClient, 5)
 	loxiLBSelMasterEvent := make(chan bool)
+	loxiLBDeadCh := make(chan bool, 64)
 
 	if len(networkConfig.LoxilbURLs) > 0 {
 		for _, lbURL := range networkConfig.LoxilbURLs {
-			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, false)
+			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, loxiLBDeadCh, false)
 			if err != nil {
 				return err
 			}
@@ -179,13 +180,21 @@ func run(o *Options) error {
 	)
 
 	go wait.Until(func() {
-		if len(networkConfig.LoxilbURLs) <= 0 {
-			lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBPurgeCh)
-		}
-		lbManager.DiscoverLoxiLBPeerServices(loxiLBLiveCh, loxiLBPurgeCh)
+		select {
+		case <-loxiLBDeadCh:
+			if networkConfig.SetRoles != "" {
+				klog.Infof("Running select-roles")
+				lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
+			}
+		default:
+			if len(networkConfig.LoxilbURLs) <= 0 {
+				lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
+			}
+			lbManager.DiscoverLoxiLBPeerServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 
-		if networkConfig.SetRoles != "" {
-			lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
+			if networkConfig.SetRoles != "" {
+				lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
+			}
 		}
 	}, time.Second*20, stopCh)
 
