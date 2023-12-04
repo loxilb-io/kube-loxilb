@@ -182,6 +182,7 @@ func run(o *Options) error {
 		if len(networkConfig.LoxilbURLs) <= 0 {
 			lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBPurgeCh)
 		}
+		lbManager.DiscoverLoxiLBPeerServices(loxiLBLiveCh, loxiLBPurgeCh)
 
 		if networkConfig.SetRoles != "" {
 			lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)

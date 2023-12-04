@@ -1291,9 +1291,11 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 		}
 	}
 	m.LoxiClients = tmp
+}
 
+func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBPurgeCh chan *api.LoxiClient) {
 	var tmploxilbPeerClients []*api.LoxiClient
-	ips, err = k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "kube-system")
+	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "kube-system")
 	klog.Infof("loxilb-peer-service end-points:  %v", ips)
 	if err != nil {
 		ips = []net.IP{}
@@ -1500,9 +1502,9 @@ loop:
 				}(&bgpGlobalCfg)
 
 				if err == nil {
-					klog.Infof("set-bgp-global success")
+					klog.Infof("loxilb(%s) set-bgp-global success", aliveClient.Host)
 				} else {
-					klog.Infof("set-bgp-global failed(%s)", err)
+					klog.Infof("loxilb(%s) set-bgp-global failed(%s)", aliveClient.Host, err)
 					m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
 				}
 
