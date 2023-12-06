@@ -56,6 +56,7 @@ const (
 	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
 	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
 	secIPsAnnotation            = "loxilb.io/secondaryIPs"
+	staticIPAnnotation          = "loxilb.io/staticIP"
 	livenessAnnotation          = "loxilb.io/liveness"
 	lbModeAnnotation            = "loxilb.io/lbmode"
 	lbAddressAnnotation         = "loxilb.io/ipam"
@@ -706,7 +707,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			return fmt.Errorf("failed to add loxiLB loadBalancer")
 		}
 		m.lbCache[cacheKey].LbModelList = append(m.lbCache[cacheKey].LbModelList, lbModelList...)
-		if ingSvcPair.InRange && !ingSvcPair.StaticIP {
+		if ingSvcPair.InRange || ingSvcPair.StaticIP {
 			retIngress := corev1.LoadBalancerIngress{Hostname: "llb-" + ingSvcPair.IPString}
 			//retIngress.Ports = append(retIngress.Ports, corev1.PortStatus{Port: ingSvcPair.Port, Protocol: corev1.Protocol(strings.ToUpper(ingSvcPair.Protocol))})
 			svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
@@ -945,6 +946,18 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 		for _, port := range service.Spec.Ports {
 			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
 			spairs = append(spairs, sp)
+		}
+	}
+
+	// Check for loxilb specific annotations - StaticIP (user specified)
+	if staticIPStr := service.Annotations[staticIPAnnotation]; staticIPStr != "" {
+		if net.ParseIP(staticIPStr) == nil {
+			klog.Errorf("%s annotation has invalid IP (%s)", staticIPAnnotation, staticIPStr)
+		} else {
+			for _, port := range service.Spec.Ports {
+				sp := SvcPair{staticIPStr, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", port}
+				spairs = append(spairs, sp)
+			}
 		}
 	}
 
@@ -1230,7 +1243,7 @@ func (m *Manager) addIngress(service *corev1.Service, newIP net.IP) {
 		append(service.Status.LoadBalancer.Ingress, corev1.LoadBalancerIngress{IP: newIP.String()})
 }
 
-func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBPurgeCh chan *api.LoxiClient) {
+func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan bool, loxiLBPurgeCh chan *api.LoxiClient) {
 	var tmploxilbClients []*api.LoxiClient
 	// DNS lookup (not used now)
 	// ips, err := net.LookupIP("loxilb-lb-service")
@@ -1257,7 +1270,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, false)
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, false)
 			if err2 != nil {
 				continue
 			}
@@ -1278,10 +1291,14 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 		}
 	}
 	m.LoxiClients = tmp
+}
 
+func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan bool, loxiLBPurgeCh chan *api.LoxiClient) {
 	var tmploxilbPeerClients []*api.LoxiClient
-	ips, err = k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "kube-system")
-	klog.Infof("loxilb-peer-service end-points:  %v", ips)
+	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "kube-system")
+	if len(ips) > 0 {
+		klog.Infof("loxilb-peer-service end-points:  %v", ips)
+	}
 	if err != nil {
 		ips = []net.IP{}
 	}
@@ -1303,7 +1320,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, true)
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, true)
 			if err2 != nil {
 				continue
 			}
@@ -1350,7 +1367,7 @@ func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bo
 				if v.IsAlive {
 					v.MasterLB = true
 					selMaster = true
-					klog.Infof("loxilb-peer(%v) set-role master", v.Url)
+					klog.Infof("loxilb-lb(%v) set-role master", v.Url)
 				}
 			}
 			if selMaster {
@@ -1487,9 +1504,9 @@ loop:
 				}(&bgpGlobalCfg)
 
 				if err == nil {
-					klog.Infof("set-bgp-global success")
+					klog.Infof("loxilb(%s) set-bgp-global success", aliveClient.Host)
 				} else {
-					klog.Infof("set-bgp-global failed(%s)", err)
+					klog.Infof("loxilb(%s) set-bgp-global failed(%s)", aliveClient.Host, err)
 					m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
 				}
 
