@@ -27,7 +27,7 @@ type LoxiClient struct {
 }
 
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
-func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan bool, peerOnly bool) (*LoxiClient, error) {
+func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struct{}, peerOnly bool) (*LoxiClient, error) {
 
 	client := &http.Client{}
 
@@ -68,7 +68,7 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan bool,
 	return lc, nil
 }
 
-func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh chan bool) {
+func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh chan struct{}) {
 	l.IsAlive = false
 
 	go wait.Until(func() {
@@ -79,7 +79,7 @@ func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh c
 				if time.Duration(time.Since(l.DeadSigTs).Seconds()) >= 3 && l.MasterLB {
 					klog.Infof("LoxiHealthCheckChan: master down")
 					l.DeadSigTs = time.Now()
-					deadCh <- true
+					deadCh <- struct{}{}
 				} else {
 					l.DeadSigTs = time.Now()
 				}
