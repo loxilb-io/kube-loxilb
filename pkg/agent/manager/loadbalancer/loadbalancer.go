@@ -760,16 +760,17 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 			}(loxiClient, ch)
 		}
 
+		var err error
 		isError := true
 		for _, errCh := range errChList {
-			err := <-errCh
+			err = <-errCh
 			if err == nil {
 				isError = false
 				break
 			}
 		}
 		if isError {
-			return fmt.Errorf("failed to delete loxiLB LoadBalancer")
+			return fmt.Errorf("failed to delete loxiLB LoadBalancer. err: %v", err)
 		}
 		if lb.inRange {
 			ipPool.ReturnIPAddr(lb.LbModel.Service.ExternalIP, lb.IdentIPAM)
