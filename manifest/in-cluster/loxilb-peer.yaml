@@ -1,3 +1,4 @@
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -60,5 +61,3 @@ spec:
     port: 50051
     targetPort: 50051
     protocol: TCP
-
-

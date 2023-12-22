@@ -30,7 +30,6 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
 
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	"k8s.io/klog/v2"
 
@@ -155,10 +154,12 @@ func run(o *Options) error {
 	loxiLBLiveCh := make(chan *api.LoxiClient, 50)
 	loxiLBPurgeCh := make(chan *api.LoxiClient, 5)
 	loxiLBSelMasterEvent := make(chan bool)
+	loxiLBDeadCh := make(chan struct{}, 64)
+	ticker := time.NewTicker(20 * time.Second)
 
 	if len(networkConfig.LoxilbURLs) > 0 {
 		for _, lbURL := range networkConfig.LoxilbURLs {
-			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, false)
+			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, loxiLBDeadCh, false)
 			if err != nil {
 				return err
 			}
@@ -178,17 +179,28 @@ func run(o *Options) error {
 		informerFactory,
 	)
 
-	go wait.Until(func() {
-		if len(networkConfig.LoxilbURLs) <= 0 {
-			lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBPurgeCh)
-		}
-		lbManager.DiscoverLoxiLBPeerServices(loxiLBLiveCh, loxiLBPurgeCh)
+	go func() {
+		for {
+			select {
+			case <-loxiLBDeadCh:
+				if networkConfig.SetRoles != "" {
+					klog.Infof("Running select-roles")
+					lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
+				}
+			case <-ticker.C:
+				if len(networkConfig.LoxilbURLs) <= 0 {
+					lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
+				}
+				lbManager.DiscoverLoxiLBPeerServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 
-		if networkConfig.SetRoles != "" {
-			lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
+				if networkConfig.SetRoles != "" {
+					lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
+				}
+			case <-stopCh:
+				return
+			}
 		}
-	}, time.Second*20, stopCh)
-
+	}()
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
 

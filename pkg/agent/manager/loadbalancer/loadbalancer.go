@@ -761,16 +761,17 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 			}(loxiClient, ch)
 		}
 
+		var err error
 		isError := true
 		for _, errCh := range errChList {
-			err := <-errCh
+			err = <-errCh
 			if err == nil {
 				isError = false
 				break
 			}
 		}
 		if isError {
-			return fmt.Errorf("failed to delete loxiLB LoadBalancer")
+			return fmt.Errorf("failed to delete loxiLB LoadBalancer. err: %v", err)
 		}
 		if lb.inRange {
 			ipPool.ReturnIPAddr(lb.LbModel.Service.ExternalIP, lb.IdentIPAM)
@@ -1244,7 +1245,7 @@ func (m *Manager) addIngress(service *corev1.Service, newIP net.IP) {
 		append(service.Status.LoadBalancer.Ingress, corev1.LoadBalancerIngress{IP: newIP.String()})
 }
 
-func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBPurgeCh chan *api.LoxiClient) {
+func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
 	var tmploxilbClients []*api.LoxiClient
 	// DNS lookup (not used now)
 	// ips, err := net.LookupIP("loxilb-lb-service")
@@ -1271,7 +1272,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, false)
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, false)
 			if err2 != nil {
 				continue
 			}
@@ -1294,10 +1295,12 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 	m.LoxiClients = tmp
 }
 
-func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBPurgeCh chan *api.LoxiClient) {
+func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
 	var tmploxilbPeerClients []*api.LoxiClient
 	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "kube-system")
-	klog.Infof("loxilb-peer-service end-points:  %v", ips)
+	if len(ips) > 0 {
+		klog.Infof("loxilb-peer-service end-points:  %v", ips)
+	}
 	if err != nil {
 		ips = []net.IP{}
 	}
@@ -1319,7 +1322,7 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, true)
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, true)
 			if err2 != nil {
 				continue
 			}
@@ -1366,7 +1369,7 @@ func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bo
 				if v.IsAlive {
 					v.MasterLB = true
 					selMaster = true
-					klog.Infof("loxilb-peer(%v) set-role master", v.Url)
+					klog.Infof("loxilb-lb(%v) set-role master", v.Url)
 				}
 			}
 			if selMaster {
@@ -1483,9 +1486,11 @@ loop:
 							bgpPeers = append(bgpPeers, lpc)
 						}
 					}
-					for _, lc := range m.LoxiClients {
-						if aliveClient.Host != lc.Host {
-							bgpPeers = append(bgpPeers, lc)
+					if len(m.networkConfig.LoxilbURLs) <= 0 {
+						for _, lc := range m.LoxiClients {
+							if aliveClient.Host != lc.Host {
+								bgpPeers = append(bgpPeers, lc)
+							}
 						}
 					}
 				}

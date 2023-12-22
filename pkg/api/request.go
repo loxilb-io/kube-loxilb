@@ -119,22 +119,26 @@ func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
 
 	resp, err := l.client.Client.Do(req)
 	if err != nil {
-		return &LoxiResponse{err: err}
+		statusCode := 0
+		if resp != nil {
+			statusCode = resp.StatusCode
+		}
+		return &LoxiResponse{statusCode: statusCode, err: err}
 	}
 
 	defer resp.Body.Close()
 	respByte, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return &LoxiResponse{err: err}
+		return &LoxiResponse{statusCode: resp.StatusCode, err: err}
 	}
 
 	if resp.StatusCode == http.StatusOK {
 		if err := json.Unmarshal(respByte, &result); err != nil {
-			return &LoxiResponse{err: err}
+			return &LoxiResponse{statusCode: resp.StatusCode, err: err}
 		}
 
 		if result.Result != "Success" {
-			return &LoxiResponse{err: errors.New(result.Result)}
+			return &LoxiResponse{statusCode: resp.StatusCode, err: errors.New(result.Result)}
 		}
 	}
 
