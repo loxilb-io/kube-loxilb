@@ -695,16 +695,17 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 
 		isError := true
+		var errCheck error
 		for _, errCh := range errChList {
-			err := <-errCh
-			if err == nil {
+			errCheck = <-errCh
+			if errCheck == nil {
 				isError = false
 			}
 		}
 		if isError {
 			retIPAMOnErr = isError
-			klog.Errorf("failed to add load-balancer")
-			return fmt.Errorf("failed to add loxiLB loadBalancer")
+			klog.Errorf("failed to add load-balancer. err: %v", errCheck)
+			return fmt.Errorf("failed to add loxiLB loadBalancer. err: %v", errCheck)
 		}
 		m.lbCache[cacheKey].LbModelList = append(m.lbCache[cacheKey].LbModelList, lbModelList...)
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
