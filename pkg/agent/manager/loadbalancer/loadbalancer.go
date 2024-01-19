@@ -640,6 +640,20 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if delete {
 			m.deleteLoadBalancer(svc.Namespace, svc.Name)
 		}
+		if added {
+			for _, lb := range m.lbCache[cacheKey].LbModelList {
+				for idx := range ingSvcPairs {
+					ingSvcPair := &ingSvcPairs[idx]
+					if ingSvcPair.IPString == lb.LbModel.Service.ExternalIP &&
+						ingSvcPair.Port == int32(lb.LbModel.Service.Port) &&
+						ingSvcPair.Protocol == lb.LbModel.Service.Protocol {
+						ingSvcPair.InRange = lb.inRange
+						ingSvcPair.StaticIP = lb.staticIP
+						ingSvcPair.IdentIPAM = lb.IdentIPAM
+					}
+				}
+			}
+		}
 		m.lbCache[cacheKey].LbModelList = nil
 		if !hasExistingEIP {
 			svc.Status.LoadBalancer.Ingress = nil
@@ -1249,9 +1263,12 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 	// DNS lookup (not used now)
 	// ips, err := net.LookupIP("loxilb-lb-service")
 	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-lb-service", "kube-system")
-	klog.Infof("loxilb-service end-points:  %v", ips)
 	if err != nil {
 		ips = []net.IP{}
+	}
+
+	if len(ips) != len(m.LoxiClients) {
+		klog.Infof("loxilb-service end-points:  %v", ips)
 	}
 
 	for _, v := range m.LoxiClients {
