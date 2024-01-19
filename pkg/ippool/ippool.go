@@ -70,6 +70,7 @@ func (i *IPPool) GetNewIPAddr(name string, sIdent uint32, proto string) (net.IP,
 			ipamIdent = tk.IPAMNoIdent
 			newIP, err := i.IPAlloc.AllocateNewIP(tk.IPClusterDefault, i.CIDR, ipamIdent)
 			if err != nil {
+				klog.Errorf("Allocate NewIP Failed %v:%s (%s)", sIdent, proto, err)
 				return nil, ipamIdent
 			}
 			return newIP, ipamIdent

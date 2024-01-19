@@ -686,12 +686,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 		lbModelList = append(lbModelList, LbModelEnt{ingSvcPair.InRange, ingSvcPair.StaticIP, ingSvcPair.IdentIPAM, lbModel})
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-		defer cancel()
 		for _, client := range m.LoxiClients {
 			ch := make(chan error)
 			go func(c *api.LoxiClient, h chan error) {
 				var err error
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+				defer cancel()
 				for _, lb := range lbModelList {
 					if err = c.LoadBalancer().Create(ctx, &lb.LbModel); err != nil {
 						if !strings.Contains(err.Error(), "exist") {
@@ -1014,22 +1014,18 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string) (
 		for _, port := range service.Spec.Ports {
 			proto := strings.ToLower(string(port.Protocol))
 			portNum := port.Port
+			newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 			if newIP == nil {
-				newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
-				if newIP == nil {
-					// This is a safety code in case the service has the same port.
-					for _, s := range sPairs {
-						if s.Port == portNum && s.Protocol == proto {
-							continue
-						}
+				// This is a safety code in case the service has the same port.
+				for _, s := range sPairs {
+					if s.Port == portNum && s.Protocol == proto {
+						continue
 					}
-					klog.Errorf("failed to generate external IP. IP Pool is full")
-					return nil, errors.New("failed to generate external IP. IP Pool is full"), hasExtIPAllocated
 				}
-				sp = SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, port}
-			} else {
-				sp = SvcPair{newIP.String(), portNum, proto, false, true, identIPAM, port}
+				klog.Errorf("failed to generate external IP. IP Pool is full")
+				return nil, errors.New("failed to generate external IP. IP Pool is full"), hasExtIPAllocated
 			}
+			sp = SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, port}
 			sPairs = append(sPairs, sp)
 		}
 	}
