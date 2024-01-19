@@ -1,0 +1,22 @@
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: hello-world
+spec:
+  replicas: 3
+  rabbitmq:
+    additionalConfig: |
+      log.console.level = info
+      channel_max = 1700
+      default_user= guest
+      default_pass = guest
+      default_user_tags.administrator = true
+  service:
+    type: LoadBalancer
+  override:
+    service:
+      spec:
+        loadBalancerClass: loxilb.io/loxilb
+        externalTrafficPolicy: Local
+        ports:
+        - port: 5672
