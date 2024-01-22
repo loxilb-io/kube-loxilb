@@ -74,10 +74,10 @@ func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh c
 	go wait.Until(func() {
 		if _, err := l.HealthCheck().Get(context.Background(), ""); err != nil {
 			if l.IsAlive {
-				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is down", l.RestClient.baseURL.String())
+				klog.Infof("LoxiHealthCheckChan: loxilb-lb(%s) is down", l.Host)
 				l.IsAlive = false
 				if time.Duration(time.Since(l.DeadSigTs).Seconds()) >= 3 && l.MasterLB {
-					klog.Infof("LoxiHealthCheckChan: master down")
+					klog.Infof("LoxiHealthCheckChan: loxilb-lb(%s) master down", l.Host)
 					l.DeadSigTs = time.Now()
 					deadCh <- struct{}{}
 				} else {
@@ -86,7 +86,7 @@ func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh c
 			}
 		} else {
 			if !l.IsAlive {
-				klog.Infof("LoxiHealthCheckChan: loxilb(%s) is alive", l.RestClient.baseURL.String())
+				klog.Infof("LoxiHealthCheckChan: loxilb-lb(%s) is alive", l.Host)
 				l.IsAlive = true
 				aliveCh <- l
 			}
