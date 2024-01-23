@@ -150,6 +150,12 @@ type SvcPair struct {
 	K8sSvcPort corev1.ServicePort
 }
 
+func (s SvcPair) String() string {
+	return fmt.Sprintf("  IPString: %s\n  Port: %d\n  Protocol: %s\n  InRange: %v\n  StaticIP: %v\n  IdentIPAM: %s\n  IPAllocd:  %v\n  K8sSvcPort: %v\n",
+		s.IPString, s.Port, s.Protocol, s.InRange, s.StaticIP, s.IdentIPAM, s.IPAllocd, s.K8sSvcPort,
+	)
+}
+
 // GenKey generate key for cache
 func GenKey(ns, name string) string {
 	return path.Join(ns, name)
@@ -763,8 +769,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		m.lbCache[cacheKey].LbServicePairs[GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol)] = &sp
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
 			retIngress := corev1.LoadBalancerIngress{Hostname: "llb-" + ingSvcPair.IPString}
+			if !m.checkServiceIngressIPExists(svc, retIngress.Hostname) {
+				svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
+			}
 			//retIngress.Ports = append(retIngress.Ports, corev1.PortStatus{Port: ingSvcPair.Port, Protocol: corev1.Protocol(strings.ToUpper(ingSvcPair.Protocol))})
-			svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
 		}
 	}
 
@@ -1005,50 +1013,96 @@ func (m *Manager) getEndpointsForLB(nodes []*corev1.Node, addrType string) []str
 	return endpoints
 }
 
-func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
-	var spairs []SvcPair
+func (m *Manager) checkServiceIngressIPExists(service *corev1.Service, newIngress string) bool {
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
-		for _, port := range service.Spec.Ports {
-			var sp SvcPair
-			if ingress.IP != "" {
-				//klog.Errorf("Ingress IP %s", ingress.IP)
-				sp = SvcPair{ingress.IP, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", false, port}
-			} else if ingress.Hostname != "" {
-				llbHost := strings.Split(ingress.Hostname, "-")
-				if len(llbHost) != 2 {
-					//klog.Errorf("Ingress host1 %s", llbHost[0])
-					if net.ParseIP(llbHost[0]) != nil {
-						sp = SvcPair{llbHost[0], port.Port, strings.ToLower(string(port.Protocol)), false, true, "", false, port}
-					}
-				} else {
-					if llbHost[0] == "llb" {
-						if net.ParseIP(llbHost[1]) != nil {
-							//klog.Errorf("Ingress llb host %s", llbHost[1])
-							sp = SvcPair{llbHost[1], port.Port, strings.ToLower(string(port.Protocol)), false, true, "", false, port}
-						}
+		if ingress.IP != "" {
+			if ingress.IP == newIngress {
+				return true
+			}
+		}
+		if ingress.Hostname != "" {
+			if ingress.Hostname == newIngress {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (m *Manager) getServiceIngressIPs(service *corev1.Service) []string {
+	var ingressIPs []string
+
+	for _, ingress := range service.Status.LoadBalancer.Ingress {
+		var ingressIP string
+		if ingress.IP != "" {
+			ingressIP = ingress.IP
+
+		} else if ingress.Hostname != "" {
+			llbHost := strings.Split(ingress.Hostname, "-")
+
+			if len(llbHost) != 2 {
+				if net.ParseIP(llbHost[0]) != nil {
+					ingressIP = llbHost[0]
+
+				}
+			} else {
+				if llbHost[0] == "llb" {
+					if net.ParseIP(llbHost[1]) != nil {
+						ingressIP = llbHost[1]
+
 					}
 				}
 			}
-			spairs = append(spairs, sp)
 		}
+
+		ingressIPs = append(ingressIPs, ingressIP)
 	}
 
-	for _, extIP := range service.Spec.ExternalIPs {
-		for _, port := range service.Spec.Ports {
-			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", false, port}
-			spairs = append(spairs, sp)
-		}
-	}
+	return ingressIPs
+}
 
-	// Check for loxilb specific annotations - StaticIP (user specified)
+func (m *Manager) getServiceExternalIPs(service *corev1.Service) []string {
+	return service.Spec.ExternalIPs
+}
+
+func (m *Manager) getServiceLoxiStaticIP(service *corev1.Service) string {
 	if staticIPStr := service.Annotations[staticIPAnnotation]; staticIPStr != "" {
 		if net.ParseIP(staticIPStr) == nil {
 			klog.Errorf("%s annotation has invalid IP (%s)", staticIPAnnotation, staticIPStr)
 		} else {
-			for _, port := range service.Spec.Ports {
-				sp := SvcPair{staticIPStr, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", false, port}
-				spairs = append(spairs, sp)
-			}
+			return staticIPStr
+		}
+	}
+
+	return ""
+}
+
+func (m *Manager) getLBServiceExternalIPs(service *corev1.Service) []string {
+	var lbExternalIPs []string
+	if ingressIPs := m.getServiceIngressIPs(service); len(ingressIPs) > 0 {
+		lbExternalIPs = append(lbExternalIPs, ingressIPs...)
+	}
+
+	if extIPs := m.getServiceExternalIPs(service); len(extIPs) > 0 {
+		lbExternalIPs = append(lbExternalIPs, extIPs...)
+	}
+
+	if staticIPStr := m.getServiceLoxiStaticIP(service); staticIPStr != "" {
+		lbExternalIPs = append(lbExternalIPs, staticIPStr)
+	}
+
+	return lbExternalIPs
+}
+
+func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
+	var spairs []SvcPair
+
+	extIPs := m.getLBServiceExternalIPs(service)
+	for _, extIP := range extIPs {
+		for _, port := range service.Spec.Ports {
+			sp := SvcPair{extIP, port.Port, strings.ToLower(string(port.Protocol)), false, true, "", false, port}
+			spairs = append(spairs, sp)
 		}
 	}
 
@@ -1070,6 +1124,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, l
 
 	// k8s service has ingress IP already
 	if len(inSPairs) >= 1 {
+	checkSvcPortLoop:
 		for _, inSPair := range inSPairs {
 
 			hasExtIPAllocated = true
@@ -1077,7 +1132,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, l
 				if GenSPKey(inSPair.IPString, uint16(inSPair.Port), inSPair.Protocol) == GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol) {
 					sp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, inSPair.K8sSvcPort}
 					sPairs = append(sPairs, sp)
-					continue
+					continue checkSvcPortLoop
 				}
 			}
 
