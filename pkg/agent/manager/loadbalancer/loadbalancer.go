@@ -467,21 +467,26 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			return errors.New("no active endpoints")
 		}
 
-		//c.lbCache[cacheKey] = make([]api.LoadBalancerModel, 0)
-		m.lbCache[cacheKey] = &LbCacheEntry{
-			LbMode:         lbMode,
-			ActCheck:       livenessCheck,
-			PrefLocal:      prefLocal,
-			Timeout:        timeout,
-			State:          "Added",
-			ProbeType:      probeType,
-			ProbePort:      uint16(probePort),
-			ProbeReq:       probeReq,
-			ProbeResp:      probeResp,
-			Addr:           addrType,
-			SecIPs:         []string{},
-			LbServicePairs: make(map[string]*LbServicePairEntry),
-		}
+		addNewLbCacheEntryChan := make(chan *LbCacheEntry)
+		defer close(addNewLbCacheEntryChan)
+		go func() {
+			addNewLbCacheEntryChan <- &LbCacheEntry{
+				LbMode:         lbMode,
+				ActCheck:       livenessCheck,
+				PrefLocal:      prefLocal,
+				Timeout:        timeout,
+				State:          "Added",
+				ProbeType:      probeType,
+				ProbePort:      uint16(probePort),
+				ProbeReq:       probeReq,
+				ProbeResp:      probeResp,
+				Addr:           addrType,
+				SecIPs:         []string{},
+				LbServicePairs: make(map[string]*LbServicePairEntry),
+			}
+		}()
+
+		m.lbCache[cacheKey] = <-addNewLbCacheEntryChan
 		lbCacheEntry = m.lbCache[cacheKey]
 		klog.Infof("New LbCache %s Added", cacheKey)
 	}
