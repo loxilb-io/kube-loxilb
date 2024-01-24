@@ -51,7 +51,7 @@ const (
 	resyncPeriod                = 60 * time.Second
 	minRetryDelay               = 2 * time.Second
 	maxRetryDelay               = 120 * time.Second
-	defaultWorkers              = 4
+	defaultWorkers              = 1
 	LoxiMaxWeight               = 10
 	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
 	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
