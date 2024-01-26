@@ -1153,6 +1153,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, l
 	// If hasExtIPAllocated is false, that means k8s service has no ingress IP
 	if !hasExtIPAllocated {
 		var sp SvcPair
+	checkServicePortLoop:
 		for _, port := range service.Spec.Ports {
 			proto := strings.ToLower(string(port.Protocol))
 			portNum := port.Port
@@ -1161,18 +1162,12 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, l
 				if sp.Port == uint16(portNum) && proto == sp.Protocol {
 					sp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, port}
 					sPairs = append(sPairs, sp)
-					continue
+					continue checkServicePortLoop
 				}
 			}
 
 			newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 			if newIP == nil {
-				// This is a safety code in case the service has the same port.
-				for _, s := range sPairs {
-					if s.Port == portNum && s.Protocol == proto {
-						continue
-					}
-				}
 				klog.Errorf("failed to generate external IP. IP Pool is full")
 				return nil, errors.New("failed to generate external IP. IP Pool is full"), hasExtIPAllocated
 			}
