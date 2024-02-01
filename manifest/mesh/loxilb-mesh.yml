@@ -100,7 +100,7 @@ spec:
         image: "ghcr.io/loxilb-io/loxilb:latest"
         imagePullPolicy: Always
         #command: [ "/root/loxilb-io/loxilb/loxilb", "--egr-hooks", "--blacklist=cni.|veth.|flannel.|cali.|tunl.|vxlan[.]calico", "--ipvs-compat", "--k8s-api=cluster" ]
-        command: [ "/root/loxilb-io/loxilb/loxilb", "--ipvs-compat"]
+        command: [ "/root/loxilb-io/loxilb/loxilb", "--ipvs-compat", "--fallback" ]
         ports:
         - containerPort: 11111
         - containerPort: 179
