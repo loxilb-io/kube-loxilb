@@ -302,7 +302,7 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 	svcName := lb.Name
 	svc, err := m.serviceLister.Services(svcNs).Get(svcName)
 	if err != nil {
-		return m.deleteLoadBalancer(svcNs, svcName)
+		return m.deleteLoadBalancer(svcNs, svcName, true)
 	}
 	return m.addLoadBalancer(svc)
 }
@@ -690,7 +690,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return nil
 	} else {
 		if needDelete {
-			m.deleteLoadBalancer(svc.Namespace, svc.Name)
+			m.deleteLoadBalancer(svc.Namespace, svc.Name, false)
 		}
 		if added {
 			for _, sp := range m.lbCache[cacheKey].LbServicePairs {
@@ -799,7 +799,7 @@ func (m *Manager) updateService(old, new *corev1.Service) error {
 	return nil
 }
 
-func (m *Manager) deleteLoadBalancer(ns, name string) error {
+func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 	cacheKey := GenKey(ns, name)
 	lbEntry, ok := m.lbCache[cacheKey]
 	if !ok {
@@ -840,17 +840,22 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 		if isError {
 			return fmt.Errorf("failed to delete loxiLB LoadBalancer. err: %v", err)
 		}
-		if sp.InRange {
-			ipPool.ReturnIPAddr(sp.ExternalIP, sp.IdentIPAM)
-		}
-		for idx, ingSecIP := range lbEntry.SecIPs {
-			if idx < len(sipPools) {
-				sipPools[idx].ReturnIPAddr(ingSecIP, sp.IdentIPAM)
+
+		if releaseAll {
+			if sp.InRange {
+				ipPool.ReturnIPAddr(sp.ExternalIP, sp.IdentIPAM)
+			}
+			for idx, ingSecIP := range lbEntry.SecIPs {
+				if idx < len(sipPools) {
+					sipPools[idx].ReturnIPAddr(ingSecIP, sp.IdentIPAM)
+				}
 			}
 		}
 	}
 
-	delete(m.lbCache, cacheKey)
+	if releaseAll {
+		delete(m.lbCache, cacheKey)
+	}
 	return nil
 }
 
