@@ -51,7 +51,7 @@ const (
 	resyncPeriod                = 60 * time.Second
 	minRetryDelay               = 2 * time.Second
 	maxRetryDelay               = 120 * time.Second
-	defaultWorkers              = 4
+	defaultWorkers              = 1
 	LoxiMaxWeight               = 10
 	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
 	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
@@ -85,9 +85,8 @@ type Manager struct {
 	ExtSecondaryIP6Pools []*ippool.IPPool
 	ElectionRunOnce      bool
 
-	queue workqueue.RateLimitingInterface
-	//lbCache LbCacheTable
-	lbCache cache.Indexer
+	queue   workqueue.RateLimitingInterface
+	lbCache LbCacheTable
 }
 
 type LbArgs struct {
@@ -119,8 +118,6 @@ type LbServicePairEntry struct {
 }
 
 type LbCacheEntry struct {
-	Name           string
-	Namespace      string
 	LbMode         int
 	Timeout        int
 	ActCheck       bool
@@ -154,7 +151,7 @@ type SvcPair struct {
 }
 
 func (s SvcPair) String() string {
-	return fmt.Sprintf("\n  IPString: %s\n  Port: %d\n  Protocol: %s\n  InRange: %v\n  StaticIP: %v\n  IdentIPAM: %s\n  IPAllocd:  %v\n  K8sSvcPort: %v\n",
+	return fmt.Sprintf("  IPString: %s\n  Port: %d\n  Protocol: %s\n  InRange: %v\n  StaticIP: %v\n  IdentIPAM: %s\n  IPAllocd:  %v\n  K8sSvcPort: %v\n",
 		s.IPString, s.Port, s.Protocol, s.InRange, s.StaticIP, s.IdentIPAM, s.IPAllocd, s.K8sSvcPort,
 	)
 }
@@ -167,19 +164,6 @@ func GenKey(ns, name string) string {
 // GenSPKey generate key for cache
 func GenSPKey(IPString string, Port uint16, Protocol string) string {
 	return fmt.Sprintf("%s:%v:%s", IPString, Port, Protocol)
-}
-
-func lbInfoKeyFunc(obj interface{}) (string, error) {
-	lbInfo, _ := obj.(*LbCacheEntry)
-	klog.Infof("call lbInfoKeyFunc: GenKey(%s)", GenKey(lbInfo.Namespace, lbInfo.Name))
-	return GenKey(lbInfo.Namespace, lbInfo.Name), nil
-}
-
-func lbInfoIndexFunc(obj interface{}) ([]string, error) {
-	lbInfo, _ := obj.(*LbCacheEntry)
-	klog.Infof("call lbInfoIndexFunc: GenKey(%s)", GenKey(lbInfo.Namespace, lbInfo.Name))
-	lbIndexKey := GenKey(lbInfo.Namespace, lbInfo.Name)
-	return []string{lbIndexKey}, nil
 }
 
 // Create and Init Manager.
@@ -213,21 +197,20 @@ func NewLoadBalancerManager(
 		nodeLister:           nodeInformer.Lister(),
 		nodeListerSynced:     nodeInformer.Informer().HasSynced,
 
-		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
-		//lbCache: make(LbCacheTable),
-		lbCache: cache.NewIndexer(lbInfoKeyFunc, cache.Indexers{"selectorLb": lbInfoIndexFunc}),
+		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
+		lbCache: make(LbCacheTable),
 	}
 
 	serviceInformer.Informer().AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(cur interface{}) {
-				manager.enqueueService(cur, "ADDED")
+				manager.enqueueService(cur)
 			},
 			UpdateFunc: func(old, cur interface{}) {
-				manager.enqueueService(cur, "UPDATED")
+				manager.enqueueService(cur)
 			},
 			DeleteFunc: func(old interface{}) {
-				manager.enqueueService(old, "DELETED")
+				manager.enqueueService(old)
 			},
 		},
 		resyncPeriod,
@@ -236,7 +219,7 @@ func NewLoadBalancerManager(
 	return manager
 }
 
-func (m *Manager) enqueueService(obj interface{}, action string) {
+func (m *Manager) enqueueService(obj interface{}) {
 	svc, ok := obj.(*corev1.Service)
 	if !ok {
 		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -258,7 +241,6 @@ func (m *Manager) enqueueService(obj interface{}, action string) {
 		Namespace: svc.Namespace,
 		Name:      svc.Name,
 	}
-	klog.V(4).Infof("%s service %s", action, GenKey(key.Namespace, key.Name))
 	m.queue.Add(key)
 }
 
@@ -320,7 +302,7 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 	svcName := lb.Name
 	svc, err := m.serviceLister.Services(svcNs).Get(svcName)
 	if err != nil {
-		return m.deleteLoadBalancer(svcNs, svcName)
+		return m.deleteLoadBalancer(svcNs, svcName, true)
 	}
 	return m.addLoadBalancer(svc)
 }
@@ -478,39 +460,35 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return err
 	}
 
-	var lbCacheEntry *LbCacheEntry
 	cacheKey := GenKey(svc.Namespace, svc.Name)
-	obj, added, _ := m.lbCache.GetByKey(cacheKey)
-
-	klog.V(4).Infof("addLoadBalancer: service %s is processing...", cacheKey)
-
+	lbCacheEntry, added := m.lbCache[cacheKey]
 	if !added {
 		if len(endpointIPs) <= 0 {
 			return errors.New("no active endpoints")
 		}
 
-		lbCacheEntry = &LbCacheEntry{
-			Name:           svc.Name,
-			Namespace:      svc.Namespace,
-			LbMode:         lbMode,
-			ActCheck:       livenessCheck,
-			PrefLocal:      prefLocal,
-			Timeout:        timeout,
-			State:          "Added",
-			ProbeType:      probeType,
-			ProbePort:      uint16(probePort),
-			ProbeReq:       probeReq,
-			ProbeResp:      probeResp,
-			Addr:           addrType,
-			SecIPs:         []string{},
-			LbServicePairs: make(map[string]*LbServicePairEntry),
-		}
+		addNewLbCacheEntryChan := make(chan *LbCacheEntry)
+		defer close(addNewLbCacheEntryChan)
+		go func() {
+			addNewLbCacheEntryChan <- &LbCacheEntry{
+				LbMode:         lbMode,
+				ActCheck:       livenessCheck,
+				PrefLocal:      prefLocal,
+				Timeout:        timeout,
+				State:          "Added",
+				ProbeType:      probeType,
+				ProbePort:      uint16(probePort),
+				ProbeReq:       probeReq,
+				ProbeResp:      probeResp,
+				Addr:           addrType,
+				SecIPs:         []string{},
+				LbServicePairs: make(map[string]*LbServicePairEntry),
+			}
+		}()
 
-		m.lbCache.Add(lbCacheEntry)
+		m.lbCache[cacheKey] = <-addNewLbCacheEntryChan
+		lbCacheEntry = m.lbCache[cacheKey]
 		klog.Infof("New LbCache %s Added", cacheKey)
-	} else {
-		lbCacheEntry = obj.(*LbCacheEntry)
-		klog.V(4).Infof("LB %s is updated", cacheKey)
 	}
 
 	retIPAMOnErr := false
@@ -521,14 +499,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	ingSvcPairs, err, hasExistingEIP := m.getIngressSvcPairs(svc, addrType, lbCacheEntry)
 
 	if err != nil {
-		klog.Warning("when service reconcile, getIngressSvcPairs return err: %v", err)
 		if !hasExistingEIP {
 			retIPAMOnErr = true
 		}
 	}
-
-	klog.V(4).Infof("service %s has ingSvcPairs: %v", cacheKey, ingSvcPairs)
-	klog.V(4).Infof("service %s has hasExistingEIP: %v", cacheKey, hasExistingEIP)
 
 	// set defer for deallocating IP on error
 	defer func() {
@@ -547,7 +521,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				}
 
 				if i == 0 {
-					for idx, ingSecIP := range lbCacheEntry.SecIPs {
+					for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
 						if idx < len(sipPools) {
 							sipPools[idx].ReturnIPAddr(ingSecIP, sp.IdentIPAM)
 						}
@@ -563,19 +537,18 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	update := false
 	needDelete := false
-	if len(lbCacheEntry.LbServicePairs) <= 0 {
+	if len(m.lbCache[cacheKey].LbServicePairs) <= 0 {
 		update = true
 	} else {
-		for _, lbServPair := range lbCacheEntry.LbServicePairs {
+		for _, lbServPair := range m.lbCache[cacheKey].LbServicePairs {
 			if len(lbServPair.LbModelList) <= 0 {
 				update = true
-				break
 			}
 		}
 	}
 
-	if addrType != lbCacheEntry.Addr {
-		lbCacheEntry.Addr = addrType
+	if addrType != m.lbCache[cacheKey].Addr {
+		m.lbCache[cacheKey].Addr = addrType
 		update = true
 		if added {
 			needDelete = true
@@ -583,8 +556,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: addr-type update", cacheKey)
 	}
 
-	if timeout != lbCacheEntry.Timeout {
-		lbCacheEntry.Timeout = timeout
+	if timeout != m.lbCache[cacheKey].Timeout {
+		m.lbCache[cacheKey].Timeout = timeout
 		update = true
 		if added {
 			needDelete = true
@@ -592,8 +565,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: Timeout update", cacheKey)
 	}
 
-	if livenessCheck != lbCacheEntry.ActCheck {
-		lbCacheEntry.ActCheck = livenessCheck
+	if livenessCheck != m.lbCache[cacheKey].ActCheck {
+		m.lbCache[cacheKey].ActCheck = livenessCheck
 		update = true
 		if added {
 			needDelete = true
@@ -601,8 +574,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: Liveness update", cacheKey)
 	}
 
-	if lbMode != lbCacheEntry.LbMode {
-		lbCacheEntry.LbMode = lbMode
+	if lbMode != m.lbCache[cacheKey].LbMode {
+		m.lbCache[cacheKey].LbMode = lbMode
 		update = true
 		if added {
 			needDelete = true
@@ -610,8 +583,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: LbMode update", cacheKey)
 	}
 
-	if probeType != lbCacheEntry.ProbeType {
-		lbCacheEntry.ProbeType = probeType
+	if probeType != m.lbCache[cacheKey].ProbeType {
+		m.lbCache[cacheKey].ProbeType = probeType
 		update = true
 		if added {
 			needDelete = true
@@ -619,8 +592,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: ProbeType update", cacheKey)
 	}
 
-	if probePort != int(lbCacheEntry.ProbePort) {
-		lbCacheEntry.ProbePort = uint16(probePort)
+	if probePort != int(m.lbCache[cacheKey].ProbePort) {
+		m.lbCache[cacheKey].ProbePort = uint16(probePort)
 		update = true
 		if added {
 			needDelete = true
@@ -628,8 +601,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: ProbePort update", cacheKey)
 	}
 
-	if probeReq != lbCacheEntry.ProbeReq {
-		lbCacheEntry.ProbeReq = probeReq
+	if probeReq != m.lbCache[cacheKey].ProbeReq {
+		m.lbCache[cacheKey].ProbeReq = probeReq
 		update = true
 		if added {
 			needDelete = true
@@ -637,8 +610,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: ProbeReq update", cacheKey)
 	}
 
-	if probeResp != lbCacheEntry.ProbeResp {
-		lbCacheEntry.ProbeResp = probeResp
+	if probeResp != m.lbCache[cacheKey].ProbeResp {
+		m.lbCache[cacheKey].ProbeResp = probeResp
 		update = true
 		if added {
 			needDelete = true
@@ -649,10 +622,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// If the user specifies a secondary IP in the annotation, update the existing secondary IP.
 	if len(secIPs) > 0 {
 		if !added {
-			m.returnSecondaryIPs(svc, lbCacheEntry.SecIPs, addrType)
-			lbCacheEntry.SecIPs = secIPs
+			m.returnSecondaryIPs(svc, m.lbCache[cacheKey].SecIPs, addrType)
+			m.lbCache[cacheKey].SecIPs = secIPs
 		}
-	} else if len(lbCacheEntry.SecIPs) != numSecondarySvc {
+	} else if len(m.lbCache[cacheKey].SecIPs) != numSecondarySvc {
 		update = true
 		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, addrType)
 		if err != nil {
@@ -664,23 +637,23 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if addrType == "ipv6" || addrType == "ipv6to4" {
 			sipPools = m.ExtSecondaryIP6Pools
 		}
-		for idx, ingSecIP := range lbCacheEntry.SecIPs {
+		for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
 			if idx < len(sipPools) {
-				for _, sp := range lbCacheEntry.LbServicePairs {
+				for _, sp := range m.lbCache[cacheKey].LbServicePairs {
 					sipPools[idx].ReturnIPAddr(ingSecIP, sp.IdentIPAM)
 				}
 			}
 		}
 
-		lbCacheEntry.SecIPs = []string{}
+		m.lbCache[cacheKey].SecIPs = []string{}
 
 		for _, ingSecSvcPair := range ingSecSvcPairs {
-			lbCacheEntry.SecIPs = append(lbCacheEntry.SecIPs, ingSecSvcPair.IPString)
+			m.lbCache[cacheKey].SecIPs = append(m.lbCache[cacheKey].SecIPs, ingSecSvcPair.IPString)
 		}
 	}
 
 	// Update endpoint list if the list has changed
-	for _, sp := range lbCacheEntry.LbServicePairs {
+	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
 		for _, lb := range sp.LbModelList {
 			if len(endpointIPs) == len(lb.Endpoints) {
 				nEps := 0
@@ -717,10 +690,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return nil
 	} else {
 		if needDelete {
-			m.deleteLoadBalancer(svc.Namespace, svc.Name)
+			m.deleteLoadBalancer(svc.Namespace, svc.Name, false)
 		}
 		if added {
-			for _, sp := range lbCacheEntry.LbServicePairs {
+			for _, sp := range m.lbCache[cacheKey].LbServicePairs {
 				for idx := range ingSvcPairs {
 					ingSvcPair := &ingSvcPairs[idx]
 					if ingSvcPair.IPString == sp.ExternalIP &&
@@ -731,32 +704,32 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 						ingSvcPair.IdentIPAM = sp.IdentIPAM
 					}
 				}
-				delete(lbCacheEntry.LbServicePairs, GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol))
+				delete(m.lbCache[cacheKey].LbServicePairs, GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol))
 			}
-			lbCacheEntry.LbServicePairs = make(map[string]*LbServicePairEntry)
+			m.lbCache[cacheKey].LbServicePairs = make(map[string]*LbServicePairEntry)
 		}
 		if !hasExistingEIP {
 			svc.Status.LoadBalancer.Ingress = nil
 		}
 		klog.Infof("%s: Added(%v) Update(%v) needDelete(%v)", cacheKey, added, update, needDelete)
 		klog.Infof("Endpoint IP Pairs %v", endpointIPs)
-		klog.Infof("Secondary IP Pairs %v", lbCacheEntry.SecIPs)
+		klog.Infof("Secondary IP Pairs %v", m.lbCache[cacheKey].SecIPs)
 	}
 
 	for _, ingSvcPair := range ingSvcPairs {
 		var errChList []chan error
 		lbArgs := LbArgs{
 			externalIP:    ingSvcPair.IPString,
-			livenessCheck: lbCacheEntry.ActCheck,
-			lbMode:        lbCacheEntry.LbMode,
-			timeout:       lbCacheEntry.Timeout,
-			probeType:     lbCacheEntry.ProbeType,
-			probePort:     lbCacheEntry.ProbePort,
-			probeReq:      lbCacheEntry.ProbeReq,
-			probeResp:     lbCacheEntry.ProbeResp,
+			livenessCheck: m.lbCache[cacheKey].ActCheck,
+			lbMode:        m.lbCache[cacheKey].LbMode,
+			timeout:       m.lbCache[cacheKey].Timeout,
+			probeType:     m.lbCache[cacheKey].ProbeType,
+			probePort:     m.lbCache[cacheKey].ProbePort,
+			probeReq:      m.lbCache[cacheKey].ProbeReq,
+			probeResp:     m.lbCache[cacheKey].ProbeResp,
 			needPodEP:     needPodEP,
 		}
-		lbArgs.secIPs = append(lbArgs.secIPs, lbCacheEntry.SecIPs...)
+		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
 
 		sp := LbServicePairEntry{
@@ -777,7 +750,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		for _, client := range m.LoxiClients {
 			ch := make(chan error)
 			go func(c *api.LoxiClient, h chan error) {
-				err := m.installLB(c, lbModel, lbCacheEntry.PrefLocal)
+				err := m.installLB(c, lbModel, m.lbCache[cacheKey].PrefLocal)
 				h <- err
 			}(client, ch)
 
@@ -798,7 +771,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 
 		sp.LbModelList = append(sp.LbModelList, lbModel)
-		lbCacheEntry.LbServicePairs[GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol)] = &sp
+		m.lbCache[cacheKey].LbServicePairs[GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol)] = &sp
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
 			retIngress := corev1.LoadBalancerIngress{Hostname: "llb-" + ingSvcPair.IPString}
 			if !m.checkServiceIngressIPExists(svc, retIngress.Hostname) {
@@ -816,7 +789,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 func (m *Manager) updateService(old, new *corev1.Service) error {
 	if !reflect.DeepEqual(old.Status, new.Status) {
-		klog.V(4).Infof("service %s is updated new Ingress %v", GenKey(new.Namespace, new.Name), new.Status.LoadBalancer.Ingress)
 		_, err := m.kubeClient.CoreV1().Services(new.Namespace).UpdateStatus(context.TODO(), new, metav1.UpdateOptions{})
 		if err != nil {
 			klog.Errorf("failed to update service %s.status. err: %v", new.Name, err)
@@ -827,20 +799,14 @@ func (m *Manager) updateService(old, new *corev1.Service) error {
 	return nil
 }
 
-func (m *Manager) deleteLoadBalancer(ns, name string) error {
+func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 	cacheKey := GenKey(ns, name)
-	obj, ok, _ := m.lbCache.GetByKey(cacheKey)
+	lbEntry, ok := m.lbCache[cacheKey]
 	if !ok {
-		klog.Warningf("not found service %s", cacheKey)
-		for _, obj := range m.lbCache.List() {
-			what := obj.(*LbCacheEntry)
-			klog.Infof("what the hell: %v", what)
-		}
-
+		klog.Warningf("not found service %s", name)
 		return nil
 	}
 
-	lbEntry := obj.(*LbCacheEntry)
 	ipPool := m.ExternalIPPool
 	sipPools := m.ExtSecondaryIPPools
 	if lbEntry.Addr == "ipv6" || lbEntry.Addr == "ipv6to4" {
@@ -874,24 +840,30 @@ func (m *Manager) deleteLoadBalancer(ns, name string) error {
 		if isError {
 			return fmt.Errorf("failed to delete loxiLB LoadBalancer. err: %v", err)
 		}
-		if sp.InRange {
-			ipPool.ReturnIPAddr(sp.ExternalIP, sp.IdentIPAM)
-		}
-		for idx, ingSecIP := range lbEntry.SecIPs {
-			if idx < len(sipPools) {
-				sipPools[idx].ReturnIPAddr(ingSecIP, sp.IdentIPAM)
+
+		if releaseAll {
+			if sp.InRange {
+				ipPool.ReturnIPAddr(sp.ExternalIP, sp.IdentIPAM)
+			}
+			for idx, ingSecIP := range lbEntry.SecIPs {
+				if idx < len(sipPools) {
+					sipPools[idx].ReturnIPAddr(ingSecIP, sp.IdentIPAM)
+				}
 			}
 		}
 	}
 
-	m.lbCache.Delete(obj)
+	if releaseAll {
+		delete(m.lbCache, cacheKey)
+	}
 	return nil
 }
 
 func (m *Manager) DeleteAllLoadBalancer() {
-	klog.Infof("Len %d", len(m.lbCache.List()))
-	for _, obj := range m.lbCache.List() {
-		lbEntry := obj.(*LbCacheEntry)
+
+	klog.Infof("Len %d", len(m.lbCache))
+	for _, lbEntry := range m.lbCache {
+
 		ipPool := m.ExternalIPPool
 		sipPools := m.ExtSecondaryIPPools
 		if lbEntry.Addr == "ipv6" || lbEntry.Addr == "ipv6to4" {
@@ -916,7 +888,7 @@ func (m *Manager) DeleteAllLoadBalancer() {
 			}
 		}
 	}
-	m.lbCache.Replace(nil, "")
+	m.lbCache = nil
 }
 
 func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLocal bool) error {
@@ -1162,25 +1134,21 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, l
 
 	// k8s service has ingress IP already
 	if len(inSPairs) >= 1 {
-		klog.V(4).Infof("getIngressSvcPairs: service %s has servicePairs: %v", GenKey(lbCacheEntry.Namespace, lbCacheEntry.Name), inSPairs)
-		klog.V(4).Infof("getIngressSvcPairs: service %s has externalIP: %v", GenKey(lbCacheEntry.Namespace, lbCacheEntry.Name), service.Status.LoadBalancer.Ingress)
 	checkSvcPortLoop:
 		for _, inSPair := range inSPairs {
 
 			hasExtIPAllocated = true
 			for _, sp := range lbCacheEntry.LbServicePairs {
 				if GenSPKey(inSPair.IPString, uint16(inSPair.Port), inSPair.Protocol) == GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol) {
-					oldsp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, inSPair.K8sSvcPort}
-					sPairs = append(sPairs, oldsp)
-					klog.V(4).Infof("getIngressSvcPairs: LB cache %s already has servicePairs: %v", GenKey(lbCacheEntry.Namespace, lbCacheEntry.Name), sp)
+					sp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, inSPair.K8sSvcPort}
+					sPairs = append(sPairs, sp)
 					continue checkSvcPortLoop
 				}
 			}
 
 			inRange, _, identStr := ipPool.CheckAndReserveIP(inSPair.IPString, cacheKey, uint32(inSPair.Port), inSPair.Protocol)
-			newsp := SvcPair{inSPair.IPString, inSPair.Port, inSPair.Protocol, inRange, true, identStr, true, inSPair.K8sSvcPort}
-			klog.V(4).Infof("getIngressSvcPairs: LB cache %s is added servicePairs: %v", GenKey(lbCacheEntry.Namespace, lbCacheEntry.Name), newsp)
-			sPairs = append(sPairs, newsp)
+			sp := SvcPair{inSPair.IPString, inSPair.Port, inSPair.Protocol, inRange, true, identStr, true, inSPair.K8sSvcPort}
+			sPairs = append(sPairs, sp)
 		}
 	}
 
@@ -1190,7 +1158,6 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, l
 	// If hasExtIPAllocated is false, that means k8s service has no ingress IP
 	if !hasExtIPAllocated {
 		var sp SvcPair
-		klog.V(4).Infof("getIngressSvcPairs: service %s has no externalIP: %v", GenKey(lbCacheEntry.Namespace, lbCacheEntry.Name), service.Status.LoadBalancer.Ingress)
 	checkServicePortLoop:
 		for _, port := range service.Spec.Ports {
 			proto := strings.ToLower(string(port.Protocol))
@@ -1198,24 +1165,22 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, l
 
 			for _, sp := range lbCacheEntry.LbServicePairs {
 				if sp.Port == uint16(portNum) && proto == sp.Protocol {
-					oldsp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, port}
-					sPairs = append(sPairs, oldsp)
-					klog.V(4).Infof("getIngressSvcPairs: LB cache %s already has servicePairs: %v", GenKey(lbCacheEntry.Namespace, lbCacheEntry.Name), sp)
+					sp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, port}
+					sPairs = append(sPairs, sp)
 					continue checkServicePortLoop
 				}
 			}
 
 			newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 			if newIP == nil {
-				klog.Errorf("failed to generate external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
-				return nil, fmt.Errorf("failed to generate external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM), hasExtIPAllocated
+				klog.Errorf("failed to generate external IP. IP Pool is full")
+				return nil, errors.New("failed to generate external IP. IP Pool is full"), hasExtIPAllocated
 			}
-
-			klog.V(4).Infof("getIngressSvcPairs: service %s is generated new externalIP: %s", GenKey(lbCacheEntry.Namespace, lbCacheEntry.Name), newIP.String())
 			sp = SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}
 			sPairs = append(sPairs, sp)
 		}
 	}
+	//klog.Infof("Spairs: %v", sPairs)
 	return sPairs, nil, hasExtIPAllocated
 }
 
@@ -1230,13 +1195,7 @@ func (m *Manager) returnSecondaryIPs(service *corev1.Service, secIPs []string, a
 
 	for idx, ingSecIP := range secIPs {
 		if idx < len(sipPools) {
-			obj, ok, _ := m.lbCache.GetByKey(cacheKey)
-			if !ok {
-				return fmt.Errorf("not found %s in lbCache", cacheKey)
-			}
-
-			lbEntry := obj.(*LbCacheEntry)
-			for _, sp := range lbEntry.LbServicePairs {
+			for _, sp := range m.lbCache[cacheKey].LbServicePairs {
 				sipPools[idx].ReturnIPAddr(ingSecIP, sp.IdentIPAM)
 			}
 		}
@@ -1311,6 +1270,15 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 	}
 
 	return sPairs, nil
+}
+
+func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []string {
+	var ips []string
+	for _, ingress := range service.Status.LoadBalancer.Ingress {
+		ips = append(ips, ingress.IP)
+	}
+
+	return ips
 }
 
 func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service, port corev1.ServicePort) (api.LoadBalancerModel, error) {
@@ -1423,6 +1391,11 @@ func (m *Manager) makeLoxiLBBGNeighModel(remoteAS int, IPString string, rPort ui
 		RemotePort:  int64(port),
 		SetMultiHop: mHopEn,
 	}, nil
+}
+
+func (m *Manager) addIngress(service *corev1.Service, newIP net.IP) {
+	service.Status.LoadBalancer.Ingress =
+		append(service.Status.LoadBalancer.Ingress, corev1.LoadBalancerIngress{IP: newIP.String()})
 }
 
 func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
@@ -1760,8 +1733,7 @@ loop:
 
 			if !aliveClient.PeeringOnly {
 				isSuccess := false
-				for _, obj := range m.lbCache.List() {
-					value := obj.(*LbCacheEntry)
+				for _, value := range m.lbCache {
 					for _, sp := range value.LbServicePairs {
 						for _, lb := range sp.LbModelList {
 							for retry := 0; retry < 5; retry++ {
