@@ -65,6 +65,9 @@ func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Servic
 	if err != nil {
 		return epList, err
 	}
+	if len(podList.Items) <= 0 {
+		return epList, errors.New("waiting for pods to be added")
+	}
 
 	epMap := make(map[string]struct{})
 	for _, pod := range podList.Items {

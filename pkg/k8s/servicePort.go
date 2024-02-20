@@ -28,7 +28,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 )
 
-func GetServicePortIntValue(kubeClient clientset.Interface, svc *corev1.Service, port corev1.ServicePort) (int, error) {
+func GetServiceTargetPortIntValue(kubeClient clientset.Interface, svc *corev1.Service, port corev1.ServicePort) (int, error) {
 	if port.TargetPort.IntValue() != 0 {
 		return port.TargetPort.IntValue(), nil
 	}

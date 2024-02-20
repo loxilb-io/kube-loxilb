@@ -308,11 +308,23 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 }
 
 func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
+	// For multus-test
+	lbClassName := svc.Spec.LoadBalancerClass
+	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
+	if lbClassName == nil && !needPodEP {
+		klog.V(4).Infof("service %s/%s is missing loadBalancerClass & multus annotation", svc.Namespace, svc.Name)
+		return nil
+	}
+
+	klog.Infof("service %s/%s is processing...", svc.Namespace, svc.Name)
+
 	// check LoadBalancerClass
+	/* For multus-test
 	lbClassName := svc.Spec.LoadBalancerClass
 	if lbClassName == nil {
 		return nil
 	}
+	*/
 
 	var secIPs []string
 	numSecondarySvc := 0
@@ -329,9 +341,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		prefLocal = true
 	}
 
+	/* For multus-test
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
 		return nil
 	}
+	*/
 
 	// Check for loxilb specific annotations - Secondary IPs number (auto generated IP)
 	if na := svc.Annotations[numSecIPAnnotation]; na != "" {
@@ -454,9 +468,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	// Check for loxilb specific annotation - Multus Networks
-	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
+	// For multus-test
+	_, needPodEP = svc.Annotations[LoxiMultusServiceAnnotation]
 	endpointIPs, err := m.getEndpoints(svc, needPodEP, addrType)
 	if err != nil {
+		klog.Errorf("service %s/%s failed to get multus endpoints. err: %v", svc.Namespace, svc.Name, err)
 		return err
 	}
 
@@ -532,6 +548,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}()
 
 	if err != nil {
+		klog.Errorf("service %s/%s failed to create svcPair. err: %v", svc.Namespace, svc.Name, err)
 		return err
 	}
 
@@ -630,6 +647,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, addrType)
 		if err != nil {
 			retIPAMOnErr = true
+			klog.Errorf("service %s/%s failed to create secondary svcPair. err: %v", svc.Namespace, svc.Name, err)
 			return err
 		}
 
@@ -687,6 +705,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			retIPAMOnErr = true
 		}
 		ingSvcPairs = nil
+		klog.V(4).Infof("service %s/%s isn't updated. processing finished.", svc.Namespace, svc.Name)
 		return nil
 	} else {
 		if needDelete {
@@ -744,6 +763,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		lbModel, err := m.makeLoxiLoadBalancerModel(&lbArgs, svc, ingSvcPair.K8sSvcPort)
 		if err != nil {
 			retIPAMOnErr = true
+			klog.Errorf("service %s/%s failed to create loadbalancer model. err: %v", svc.Namespace, svc.Name, err)
 			return err
 		}
 
@@ -803,7 +823,7 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 	cacheKey := GenKey(ns, name)
 	lbEntry, ok := m.lbCache[cacheKey]
 	if !ok {
-		klog.Warningf("not found service %s", name)
+		klog.Warningf("not found service in lbCache %s", name)
 		return nil
 	}
 
@@ -821,9 +841,10 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 				ch := make(chan error)
 				errChList = append(errChList, ch)
 
+				deletedLB := lb
 				go func(client *api.LoxiClient, ch chan error) {
-					klog.Infof("loxilb-lb(%s): delete lb %v", client.Host, lb)
-					ch <- client.LoadBalancer().Delete(context.Background(), &lb)
+					klog.Infof("loxilb-lb(%s): delete lb %v", client.Host, deletedLB)
+					ch <- client.LoadBalancer().Delete(context.Background(), &deletedLB)
 				}(loxiClient, ch)
 			}
 		}
@@ -1292,7 +1313,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 
 			tport := uint16(port.NodePort)
 			if lbArgs.needPodEP {
-				portNum, err := k8s.GetServicePortIntValue(m.kubeClient, svc, port)
+				portNum, err := k8s.GetServiceTargetPortIntValue(m.kubeClient, svc, port)
 				if err != nil {
 					return api.LoadBalancerModel{}, err
 				}
