@@ -649,6 +649,24 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: ProbeResp update", cacheKey)
 	}
 
+	if probeTimeout != m.lbCache[cacheKey].ProbeTimeo {
+		m.lbCache[cacheKey].ProbeTimeo = probeTimeout
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: ProbeTimeo update", cacheKey)
+	}
+
+	if probeRetries != m.lbCache[cacheKey].ProbeRetries {
+		m.lbCache[cacheKey].ProbeRetries = probeRetries
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: ProbeRetries update", cacheKey)
+	}
+
 	// If the user specifies a secondary IP in the annotation, update the existing secondary IP.
 	if len(secIPs) > 0 {
 		if !added {
