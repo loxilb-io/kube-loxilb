@@ -67,6 +67,7 @@ const (
 	probeRespAnnotation         = "loxilb.io/proberesp"
 	probeTimeoutAnnotation      = "loxilb.io/probetimeout"
 	probeRetriesAnnotation      = "loxilb.io/proberetries"
+	endPointSelAnnotation       = "loxilb.io/epselect"
 	MaxExternalSecondaryIPsNum  = 4
 )
 
@@ -96,6 +97,7 @@ type LbArgs struct {
 	livenessCheck bool
 	lbMode        int
 	timeout       int
+	sel           api.EpSelect
 	probeType     string
 	probePort     uint16
 	probeReq      string
@@ -134,6 +136,7 @@ type LbCacheEntry struct {
 	ProbeResp      string
 	ProbeTimeo     uint32
 	ProbeRetries   int
+	EpSelect       api.EpSelect
 	SecIPs         []string
 	LbServicePairs map[string]*LbServicePairEntry
 }
@@ -333,6 +336,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	probeTimeout := uint32(0)
 	probeRetries := 0
 	prefLocal := false
+	epSelect := api.LbSelRr
 	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeLocal {
 		prefLocal = true
 	}
@@ -458,6 +462,19 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	// Check for loxilb specific annotations - Endpoint selection algo
+	if eps := svc.Annotations[endPointSelAnnotation]; eps != "" {
+		if eps == "rr" || eps == "roundrobin" {
+			epSelect = api.LbSelRr
+		} else if eps == "hash" {
+			epSelect = api.LbSelHash
+		} else if eps == "persist" {
+			epSelect = api.LbSelRrPersist
+		} else {
+			epSelect = api.LbSelRr
+		}
+	}
+
 	// Check for loxilb specific annotations - Addressing
 	if lba := svc.Annotations[lbAddressAnnotation]; lba != "" {
 		if lba == "ipv4" || lba == "ipv6" || lba == "ipv6to4" {
@@ -510,6 +527,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				ProbeResp:      probeResp,
 				ProbeTimeo:     probeTimeout,
 				ProbeRetries:   probeRetries,
+				EpSelect:       epSelect,
 				Addr:           addrType,
 				SecIPs:         []string{},
 				LbServicePairs: make(map[string]*LbServicePairEntry),
@@ -667,6 +685,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: ProbeRetries update", cacheKey)
 	}
 
+	if epSelect != m.lbCache[cacheKey].EpSelect {
+		m.lbCache[cacheKey].EpSelect = epSelect
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: EpSelect update", cacheKey)
+	}
+
 	// If the user specifies a secondary IP in the annotation, update the existing secondary IP.
 	if len(secIPs) > 0 {
 		if !added {
@@ -777,6 +804,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			probeResp:     m.lbCache[cacheKey].ProbeResp,
 			probeTimeo:    m.lbCache[cacheKey].ProbeTimeo,
 			probeRetries:  m.lbCache[cacheKey].ProbeRetries,
+			sel:           m.lbCache[cacheKey].EpSelect,
 			needPodEP:     needPodEP,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
@@ -1392,6 +1420,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			ProbeResp:    lbArgs.probeResp,
 			ProbeTimeout: lbArgs.probeTimeo,
 			ProbeRetries: int32(lbArgs.probeRetries),
+			Sel:          lbArgs.sel,
 			Name:         fmt.Sprintf("%s_%s", svc.Namespace, svc.Name),
 		},
 		SecondaryIPs: loxiSecIPModelList,

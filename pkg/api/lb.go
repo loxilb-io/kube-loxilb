@@ -7,6 +7,18 @@ import (
 )
 
 type EpSelect uint
+
+const (
+	// LbSelRr - select the lb end-points based on round-robin
+	LbSelRr EpSelect = iota
+	// LbSelHash - select the lb end-points based on hashing
+	LbSelHash
+	// LbSelPrio - select the lb based on weighted round-robin
+	LbSelPrio
+	// LbSelRrPersist - persist connectons from same client
+	LbSelRrPersist
+)
+
 type LbMode int32
 type LoadBalancerListModel struct {
 	Item []LoadBalancerModel `json:"lbAttr"`
