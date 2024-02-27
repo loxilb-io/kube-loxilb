@@ -7,6 +7,18 @@ import (
 )
 
 type EpSelect uint
+
+const (
+	// LbSelRr - select the lb end-points based on round-robin
+	LbSelRr EpSelect = iota
+	// LbSelHash - select the lb end-points based on hashing
+	LbSelHash
+	// LbSelPrio - select the lb based on weighted round-robin
+	LbSelPrio
+	// LbSelRrPersist - persist connectons from same client
+	LbSelRrPersist
+)
+
 type LbMode int32
 type LoadBalancerListModel struct {
 	Item []LoadBalancerModel `json:"lbAttr"`
@@ -27,21 +39,23 @@ func (lbModel *LoadBalancerModel) GetKeyStruct() LoxiModel {
 }
 
 type LoadBalancerService struct {
-	ExternalIP string   `json:"externalIP" key:"externalipaddress"`
-	Port       uint16   `json:"port" key:"port"`
-	Protocol   string   `json:"protocol" key:"protocol"`
-	Sel        EpSelect `json:"sel"`
-	Mode       LbMode   `json:"mode"`
-	BGP        bool     `json:"BGP" options:"bgp"`
-	Monitor    bool     `json:"Monitor"`
-	Timeout    uint32   `json:"inactiveTimeOut"`
-	Block      uint16   `json:"block" options:"block"`
-	Managed    bool     `json:"managed,omitempty"`
-	ProbeType  string   `json:"probetype"`
-	ProbePort  uint16   `json:"probeport"`
-	ProbeReq   string   `json:"probereq"`
-	ProbeResp  string   `json:"proberesp"`
-	Name       string   `json:"name,omitempty"`
+	ExternalIP   string   `json:"externalIP" key:"externalipaddress"`
+	Port         uint16   `json:"port" key:"port"`
+	Protocol     string   `json:"protocol" key:"protocol"`
+	Sel          EpSelect `json:"sel"`
+	Mode         LbMode   `json:"mode"`
+	BGP          bool     `json:"BGP" options:"bgp"`
+	Monitor      bool     `json:"Monitor"`
+	Timeout      uint32   `json:"inactiveTimeOut"`
+	Block        uint16   `json:"block" options:"block"`
+	Managed      bool     `json:"managed,omitempty"`
+	ProbeType    string   `json:"probetype"`
+	ProbePort    uint16   `json:"probeport"`
+	ProbeReq     string   `json:"probereq"`
+	ProbeResp    string   `json:"proberesp"`
+	ProbeRetries int32    `json:"probeRetries,omitempty"`
+	ProbeTimeout uint32   `json:"probeTimeout,omitempty"`
+	Name         string   `json:"name,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
