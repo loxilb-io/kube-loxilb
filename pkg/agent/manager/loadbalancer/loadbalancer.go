@@ -470,6 +470,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			epSelect = api.LbSelHash
 		} else if eps == "persist" {
 			epSelect = api.LbSelRrPersist
+		} else if eps == "lc" {
+			epSelect = api.LbSelLeastConnections
 		} else {
 			epSelect = api.LbSelRr
 		}
