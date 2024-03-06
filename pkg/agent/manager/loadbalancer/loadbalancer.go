@@ -68,6 +68,7 @@ const (
 	probeTimeoutAnnotation      = "loxilb.io/probetimeout"
 	probeRetriesAnnotation      = "loxilb.io/proberetries"
 	endPointSelAnnotation       = "loxilb.io/epselect"
+	zoneSelAnnotation           = "loxilb.io/zoneselect"
 	MaxExternalSecondaryIPsNum  = 4
 )
 
@@ -320,6 +321,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// check LoadBalancerClass
 	lbClassName := svc.Spec.LoadBalancerClass
 	if lbClassName == nil {
+		return nil
+	}
+
+	zone := svc.Annotations[zoneSelAnnotation]
+	if zone != "" {
+		if m.networkConfig.Zone != zone {
+			return nil
+		}
+	} else if m.networkConfig.Zone != "" {
 		return nil
 	}
 
