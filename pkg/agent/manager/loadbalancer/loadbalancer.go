@@ -320,7 +320,11 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// check LoadBalancerClass
 	lbClassName := svc.Spec.LoadBalancerClass
-	if lbClassName == nil {
+
+	// Check for loxilb specific annotation - Multus Networks
+	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
+	if lbClassName == nil && !needPodEP {
+		klog.V(4).Infof("service %s/%s missing loadBalancerClass & multus annotation", svc.Namespace, svc.Name)
 		return nil
 	}
 
@@ -351,7 +355,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		prefLocal = true
 	}
 
-	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
+	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needPodEP {
 		return nil
 	}
 
@@ -510,8 +514,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		numSecondarySvc = 0
 	}
 
-	// Check for loxilb specific annotation - Multus Networks
-	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
 	endpointIPs, err := m.getEndpoints(svc, needPodEP, addrType)
 	if err != nil {
 		return err
