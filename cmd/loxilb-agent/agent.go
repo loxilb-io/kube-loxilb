@@ -80,6 +80,7 @@ func run(o *Options) error {
 	klog.Infof("SecondaryCIDRs: %v", o.config.ExternalSecondaryCIDRs)
 	klog.Infof("ExtBGPPeers: %v", o.config.ExtBGPPeers)
 	klog.Infof("SetRoles: %s", o.config.SetRoles)
+	klog.Infof("Zone: %s", o.config.Zone)
 
 	networkConfig := &config.NetworkConfig{
 		LoxilbURLs:              o.config.LoxiURLs,
@@ -90,6 +91,7 @@ func run(o *Options) error {
 		ListenBGPPort:           o.config.ListenBGPPort,
 		EBGPMultiHop:            o.config.EBGPMultiHop,
 		SetRoles:                o.config.SetRoles,
+		Zone:                    o.config.Zone,
 		ExtBGPPeers:             o.config.ExtBGPPeers,
 		SetLBMode:               o.config.SetLBMode,
 		Monitor:                 o.config.Monitor,

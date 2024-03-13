@@ -68,6 +68,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.Uint16Var(&o.config.SetLBMode, "setLBMode", o.config.SetLBMode, "LB mode to use")
 	fs.BoolVar(&o.config.Monitor, "monitor", o.config.Monitor, "Enable monitoring end-points of LB rule")
 	fs.StringVar(&o.config.SetRoles, "setRoles", o.config.SetRoles, "Set LoxiLB node roles")
+	fs.StringVar(&o.config.Zone, "zone", o.config.Zone, "The kube-loxilb zone instance")
 }
 
 // complete completes all the required optionst

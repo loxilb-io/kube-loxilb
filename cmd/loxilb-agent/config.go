@@ -62,4 +62,6 @@ type AgentConfig struct {
 	Monitor bool `yaml:"monitor"`
 	// Set loxilb node roles
 	SetRoles string `yaml:"setRoles,omitempty"`
+	// Set loxilb zone
+	Zone string `yaml:"zone,omitempty"`
 }

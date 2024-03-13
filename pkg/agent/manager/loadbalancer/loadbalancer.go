@@ -68,6 +68,7 @@ const (
 	probeTimeoutAnnotation      = "loxilb.io/probetimeout"
 	probeRetriesAnnotation      = "loxilb.io/proberetries"
 	endPointSelAnnotation       = "loxilb.io/epselect"
+	zoneSelAnnotation           = "loxilb.io/zoneselect"
 	MaxExternalSecondaryIPsNum  = 4
 )
 
@@ -319,7 +320,20 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// check LoadBalancerClass
 	lbClassName := svc.Spec.LoadBalancerClass
-	if lbClassName == nil {
+
+	// Check for loxilb specific annotation - Multus Networks
+	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
+	if lbClassName == nil && !needPodEP {
+		klog.V(4).Infof("service %s/%s missing loadBalancerClass & multus annotation", svc.Namespace, svc.Name)
+		return nil
+	}
+
+	zone := svc.Annotations[zoneSelAnnotation]
+	if zone != "" {
+		if m.networkConfig.Zone != zone {
+			return nil
+		}
+	} else if m.networkConfig.Zone != "" {
 		return nil
 	}
 
@@ -341,7 +355,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		prefLocal = true
 	}
 
-	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
+	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needPodEP {
 		return nil
 	}
 
@@ -470,6 +484,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			epSelect = api.LbSelHash
 		} else if eps == "persist" {
 			epSelect = api.LbSelRrPersist
+		} else if eps == "lc" {
+			epSelect = api.LbSelLeastConnections
 		} else {
 			epSelect = api.LbSelRr
 		}
@@ -498,8 +514,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		numSecondarySvc = 0
 	}
 
-	// Check for loxilb specific annotation - Multus Networks
-	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
 	endpointIPs, err := m.getEndpoints(svc, needPodEP, addrType)
 	if err != nil {
 		return err
