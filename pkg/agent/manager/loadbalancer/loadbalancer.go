@@ -716,7 +716,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	} else if len(m.lbCache[cacheKey].SecIPs) != numSecondarySvc {
 		update = true
-		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, addrType)
+		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, addrType, m.lbCache[cacheKey])
 		if err != nil {
 			retIPAMOnErr = true
 			return err
@@ -913,10 +913,10 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 				ch := make(chan error)
 				errChList = append(errChList, ch)
 
-				go func(client *api.LoxiClient, ch chan error) {
-					klog.Infof("loxilb-lb(%s): delete lb %v", client.Host, lb)
-					ch <- client.LoadBalancer().Delete(context.Background(), &lb)
-				}(loxiClient, ch)
+				go func(client *api.LoxiClient, ch chan error, lbModel api.LoadBalancerModel) {
+					klog.Infof("loxilb-lb(%s): delete lb %v", client.Host, lbModel)
+					ch <- client.LoadBalancer().Delete(context.Background(), &lbModel)
+				}(loxiClient, ch, lb)
 			}
 		}
 
@@ -1321,7 +1321,7 @@ func (m *Manager) reserveSecondaryIPs(service *corev1.Service, secIPs []string, 
 }
 
 // getIngressSecSvcPairs returns a set of secondary IPs
-func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary int, addrType string) ([]SvcPair, error) {
+func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary int, addrType string, lbCacheEntry *LbCacheEntry) ([]SvcPair, error) {
 	var sPairs []SvcPair
 
 	sipPools := m.ExtSecondaryIPPools
@@ -1337,18 +1337,22 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 	cacheKey := GenKey(service.Namespace, service.Name)
 
 	for i := 0; i < numSecondary; i++ {
+	checkServicePortLoop:
 		for _, port := range service.Spec.Ports {
 			pool := sipPools[i]
 			proto := strings.ToLower(string(port.Protocol))
 			portNum := port.Port
+
+			for _, sp := range lbCacheEntry.LbServicePairs {
+				if sp.Port == uint16(portNum) && proto == sp.Protocol {
+					sp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, port}
+					sPairs = append(sPairs, sp)
+					continue checkServicePortLoop
+				}
+			}
+
 			newIP, identIPAM := pool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 			if newIP == nil {
-				// This is a safety code in case the service has the same port.
-				for _, s := range sPairs {
-					if s.Port == portNum && s.Protocol == proto {
-						continue
-					}
-				}
 				for j := 0; j < i; j++ {
 					rpool := sipPools[j]
 					rpool.ReturnIPAddr(sPairs[j].IPString, sPairs[j].IdentIPAM)
