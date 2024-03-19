@@ -3,7 +3,7 @@ module github.com/loxilb-io/kube-loxilb
 go 1.19
 
 require (
-	github.com/loxilb-io/loxilib v0.8.9-0.20240124072521-f37fbddfb4e8
+	github.com/loxilb-io/loxilib v0.8.9-0.20240315085933-0925d8a579ed
 	github.com/spf13/cobra v1.6.1
 	github.com/spf13/pflag v1.0.5
 	gopkg.in/yaml.v2 v2.4.0
@@ -52,7 +52,7 @@ require (
 	golang.org/x/text v0.13.0 // indirect
 	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
-	google.golang.org/protobuf v1.28.1 // indirect
+	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20221012153701-172d655c2280 // indirect
