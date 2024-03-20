@@ -31,6 +31,10 @@ import (
 
 type dnsIf interface{}
 
+type networkList struct {
+	Name string `json:"name"`
+}
+
 type networkStatus struct {
 	Name  string   `json:"name"`
 	Iface string   `json:"interface"`
@@ -42,6 +46,16 @@ type networkStatus struct {
 
 func GetMultusNetworkName(ns, name string) string {
 	return strings.Join([]string{ns, name}, "/")
+}
+
+func UnmarshalNetworkList(ns string) ([]networkList, error) {
+	data := []networkList{}
+	err := json.Unmarshal([]byte(ns), &data)
+	if err != nil {
+		return data, err
+	}
+
+	return data, nil
 }
 
 func UnmarshalNetworkStatus(ns string) ([]networkStatus, error) {
@@ -96,6 +110,11 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svc *corev1.Service, net
 			continue
 		}
 
+		podNetList, err := UnmarshalNetworkList(multusNetworkListStr)
+		if err != nil {
+			podNetList = []networkList{{Name: multusNetworkListStr}}
+		}
+
 		networkStatusListStr, ok := pod.Annotations["k8s.v1.cni.cncf.io/network-status"]
 		if !ok {
 			return epList, errors.New("net found k8s.v1.cni.cncf.io/network-status annotation")
@@ -106,13 +125,12 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svc *corev1.Service, net
 			return epList, err
 		}
 
-		multusNetworkList := strings.Split(multusNetworkListStr, ",")
-		for _, mNet := range multusNetworkList {
-			if !contain(netList, mNet) {
+		for _, mNet := range podNetList {
+			if !contain(netList, mNet.Name) {
 				continue
 			}
 
-			netName := GetMultusNetworkName(pod.Namespace, mNet)
+			netName := GetMultusNetworkName(pod.Namespace, mNet.Name)
 			for _, ns := range networkStatusList {
 				if ns.Name == netName {
 					if len(ns.Ips) > 0 {
