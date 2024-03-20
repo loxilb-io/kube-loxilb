@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/gatewayapi"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
@@ -32,6 +33,8 @@ import (
 
 	"k8s.io/client-go/informers"
 	"k8s.io/klog/v2"
+
+	sigsInformer "sigs.k8s.io/gateway-api/pkg/client/informers/externalversions"
 
 	tk "github.com/loxilb-io/loxilib"
 )
@@ -53,12 +56,13 @@ func run(o *Options) error {
 	klog.Infof("  Build: %s", BuildInfo)
 
 	// create k8s Clientset, CRD Clientset and SharedInformerFactory for the given config.
-	k8sClient, _, _, err := k8s.CreateClients(o.config.ClientConnection, "")
+	k8sClient, _, _, sigsClient, err := k8s.CreateClients(o.config.ClientConnection, "")
 	if err != nil {
 		return fmt.Errorf("error creating k8s clients: %v", err)
 	}
 
 	informerFactory := informers.NewSharedInformerFactory(k8sClient, informerDefaultResync)
+	sigsInformerFactory := sigsInformer.NewSharedInformerFactory(sigsClient, informerDefaultResync)
 
 	// networkReadyCh is used to notify that the Node's network is ready.
 	// Functions that rely on the Node's network should wait for the channel to close.
@@ -85,6 +89,7 @@ func run(o *Options) error {
 	networkConfig := &config.NetworkConfig{
 		LoxilbURLs:              o.config.LoxiURLs,
 		LoxilbLoadBalancerClass: o.config.LoxilbLoadBalancerClass,
+		LoxilbGatewayClass:      o.config.LoxilbGatewayClass,
 		ExternalCIDR:            o.config.ExternalCIDR,
 		ExternalCIDR6:           o.config.ExternalCIDR6,
 		SetBGP:                  o.config.SetBGP,
@@ -169,6 +174,18 @@ func run(o *Options) error {
 		}
 	}
 
+	gatewayClassManager := gatewayapi.NewGatewayClassManager(
+		k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+
+	gatewayManager := gatewayapi.NewGatewayManager(
+		k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
+
+	tcpRouteManager := gatewayapi.NewTCPRouteManager(
+		k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+
+	udpRouteManager := gatewayapi.NewUDPRouteManager(
+		k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+
 	lbManager := loadbalancer.NewLoadBalancerManager(
 		k8sClient,
 		loxilbClients,
@@ -205,8 +222,13 @@ func run(o *Options) error {
 	}()
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
+	sigsInformerFactory.Start(stopCh)
 
 	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+	go gatewayClassManager.Run(stopCh)
+	go gatewayManager.Run(stopCh)
+	go tcpRouteManager.Run(stopCh)
+	go udpRouteManager.Run(stopCh)
 
 	<-stopCh
 

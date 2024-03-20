@@ -19,6 +19,7 @@ package config
 type NetworkConfig struct {
 	LoxilbURLs              []string
 	LoxilbLoadBalancerClass string
+	LoxilbGatewayClass      string
 	ExternalCIDR            string
 	ExternalSecondaryCIDRs  []string
 	ExternalCIDR6           string
