@@ -242,9 +242,11 @@ func (o *Options) setDefaults() {
 	if o.config.LoxilbGatewayClass == "" {
 		o.config.LoxilbGatewayClass = "loxilb.io/loxilb"
 	}
+
 	if o.config.ExternalCIDR == "" {
 		o.config.ExternalCIDR = "123.123.123.1/24"
 	}
+
 	if o.config.ExternalSecondaryCIDRs == nil {
 		o.config.ExternalSecondaryCIDRs = []string{}
 	}
