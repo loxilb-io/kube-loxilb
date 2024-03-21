@@ -174,18 +174,6 @@ func run(o *Options) error {
 		}
 	}
 
-	gatewayClassManager := gatewayapi.NewGatewayClassManager(
-		k8sClient, sigsClient, networkConfig, sigsInformerFactory)
-
-	gatewayManager := gatewayapi.NewGatewayManager(
-		k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
-
-	tcpRouteManager := gatewayapi.NewTCPRouteManager(
-		k8sClient, sigsClient, networkConfig, sigsInformerFactory)
-
-	udpRouteManager := gatewayapi.NewUDPRouteManager(
-		k8sClient, sigsClient, networkConfig, sigsInformerFactory)
-
 	lbManager := loadbalancer.NewLoadBalancerManager(
 		k8sClient,
 		loxilbClients,
@@ -222,13 +210,30 @@ func run(o *Options) error {
 	}()
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
-	sigsInformerFactory.Start(stopCh)
 
 	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
-	go gatewayClassManager.Run(stopCh)
-	go gatewayManager.Run(stopCh)
-	go tcpRouteManager.Run(stopCh)
-	go udpRouteManager.Run(stopCh)
+
+	// Run gateway API managers
+	if o.config.EnableGatewayAPI {
+		gatewayClassManager := gatewayapi.NewGatewayClassManager(
+			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+
+		gatewayManager := gatewayapi.NewGatewayManager(
+			k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
+
+		tcpRouteManager := gatewayapi.NewTCPRouteManager(
+			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+
+		udpRouteManager := gatewayapi.NewUDPRouteManager(
+			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+
+		sigsInformerFactory.Start(stopCh)
+
+		go gatewayClassManager.Run(stopCh)
+		go gatewayManager.Run(stopCh)
+		go tcpRouteManager.Run(stopCh)
+		go udpRouteManager.Run(stopCh)
+	}
 
 	<-stopCh
 

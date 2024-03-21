@@ -126,6 +126,7 @@ spec:
         - --setBGP=64512
         - --listenBGPPort=1791
         - --setRoles=0.0.0.0
+        - --gatewayAPI
         #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
         #- --setLBMode=1
         #- --config=/opt/loxilb/agent/kube-loxilb.conf
