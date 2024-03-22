@@ -41,6 +41,16 @@ rules:
       - patch
       - update
   - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - gatewayclasses
+      - gatewayclasses/status
+      - gateways
+      - gateways/status
+      - tcproutes
+      - udproutes
+    verbs: ["get", "watch", "list", "patch", "update"]
+  - apiGroups:
       - discovery.k8s.io
     resources:
       - endpointslices

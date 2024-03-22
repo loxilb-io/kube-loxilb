@@ -1,0 +1,22 @@
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: test-tcproute
+  namespace: default
+  labels:
+    selectorkey: run
+    selectorvalue: my-nginx
+    serviceBehaviour: create
+  annotations:
+    ### https://loxilb-io.github.io/loxilbdocs/kube-loxilb/
+    #loxilb.io/liveness: "yes"
+    #loxilb.io/lbmode: "fullnat"
+spec:
+  # find gateway and gateway's listener
+  parentRefs:
+  - name: test-gateway         # name of gateway
+    sectionName: test-listener # name of listener
+  rules:
+  - backendRefs:
+    - name: tcproute-lb-service
+      port: 80

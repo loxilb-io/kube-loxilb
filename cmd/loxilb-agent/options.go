@@ -60,6 +60,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.config.ExternalCIDR6, "externalCIDR6", o.config.ExternalCIDR6, "External CIDR6 Range")
 	fs.StringVar(&secondaryCIDRs6, "externalSecondaryCIDRs6", secondaryCIDRs6, "External Secondary CIDR6 Range(s)")
 	fs.StringVar(&o.config.LoxilbLoadBalancerClass, "loxilbLoadBalancerClass", o.config.LoxilbLoadBalancerClass, "Load-Balancer Class Name")
+	fs.StringVar(&o.config.LoxilbGatewayClass, "loxilbGatewayClass", o.config.LoxilbGatewayClass, "GatewayClass manager Name")
 	fs.Uint16Var(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
 	fs.Uint16Var(&o.config.ListenBGPPort, "listenBGPPort", o.config.ListenBGPPort, "Custom BGP listen port")
 	fs.BoolVar(&o.config.EBGPMultiHop, "eBGPMultiHop", o.config.EBGPMultiHop, "Enable multi-hop eBGP")
@@ -174,6 +175,12 @@ func (o *Options) validate(args []string) error {
 		}
 	}
 
+	if o.config.LoxilbGatewayClass != "" {
+		if ok := strings.Contains(o.config.LoxilbGatewayClass, "/"); !ok {
+			return fmt.Errorf("LoxilbGatewayClass must be a label-style identifier")
+		}
+	}
+
 	if o.config.SetRoles != "" {
 		if net.ParseIP(o.config.SetRoles) == nil {
 			return fmt.Errorf("SetRoles %s config is invalid", o.config.SetRoles)
@@ -229,9 +236,11 @@ func (o *Options) setDefaults() {
 	if o.config.LoxilbLoadBalancerClass == "" {
 		o.config.LoxilbLoadBalancerClass = "loxilb.io/loxilb"
 	}
+
 	if o.config.ExternalCIDR == "" {
 		o.config.ExternalCIDR = "123.123.123.1/24"
 	}
+
 	if o.config.ExternalSecondaryCIDRs == nil {
 		o.config.ExternalSecondaryCIDRs = []string{}
 	}

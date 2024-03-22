@@ -38,6 +38,8 @@ type AgentConfig struct {
 	NodePortServiceVirtIP string `yaml:"nodePortServiceVirtIP,omitempty"`
 	// support LoadBalancerClass
 	LoxilbLoadBalancerClass string `yaml:"loxilbLoadBalancerClass,omitempty"`
+	// support GatewayClass manager name
+	LoxilbGatewayClass string `yaml:"loxilbGatewayClass,omitempty"`
 	// support LoadBalancer external IP
 	ExternalCIDR string `yaml:"externalCIDR,omitempty"`
 	// support LoadBalancer external secondary IP. This is a comma separated list

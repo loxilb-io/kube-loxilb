@@ -1,0 +1,13 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: test-gateway
+spec:
+  gatewayClassName: test-gc
+  listeners:
+  - name: test-listener
+    protocol: TCP
+    port: 21818
+    allowedRoutes:
+      kinds:
+      - kind: TCPRoute

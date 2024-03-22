@@ -39,7 +39,9 @@ rules:
       - watch
       - list
       - patch
+      - create
       - update
+      - delete
   - apiGroups:
       - gateway.networking.k8s.io
     resources:
@@ -112,18 +114,18 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: kube-loxilb
-        image: ghcr.io/loxilb-io/kube-loxilb:latest
+        image: ghcr.io/loxilb-io/kube-loxilb:gateway-debug
         imagePullPolicy: Always
         command:
         - /bin/kube-loxilb
         args:
-        - --loxiURL=http://192.168.80.10:11111
+        #- --loxiURL=http://12.12.12.1:11111,http://14.14.14.1:11111
         - --externalCIDR=123.123.123.1/24
         #- --externalSecondaryCIDRs=124.124.124.1/24,125.125.125.1/24
+        #- --monitor
         - --setBGP=64512
         - --listenBGPPort=1791
         - --setRoles=0.0.0.0
-        #- --monitor
         #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
         #- --setLBMode=1
         #- --config=/opt/loxilb/agent/kube-loxilb.conf
