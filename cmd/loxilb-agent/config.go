@@ -38,6 +38,8 @@ type AgentConfig struct {
 	NodePortServiceVirtIP string `yaml:"nodePortServiceVirtIP,omitempty"`
 	// support LoadBalancerClass
 	LoxilbLoadBalancerClass string `yaml:"loxilbLoadBalancerClass,omitempty"`
+	// enable Gateway API
+	EnableGatewayAPI bool `yaml:"gatewayAPI"`
 	// support GatewayClass manager name
 	LoxilbGatewayClass string `yaml:"loxilbGatewayClass,omitempty"`
 	// support LoadBalancer external IP

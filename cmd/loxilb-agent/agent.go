@@ -225,7 +225,9 @@ func run(o *Options) error {
 
 	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 	go BgpPeerManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
-	if networkConfig.LoxilbGatewayClass != "" {
+
+	// Run gateway API managers
+	if o.config.EnableGatewayAPI {
 		gatewayClassManager := gatewayapi.NewGatewayClassManager(
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
 
