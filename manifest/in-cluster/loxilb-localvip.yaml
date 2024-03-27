@@ -42,7 +42,7 @@ spec:
             echo done;
             rm /hbin/mkllb_cgroup;
         image: "ghcr.io/loxilb-io/loxilb:latest"
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         volumeMounts:
           - name: hproc
             mountPath: /hproc
