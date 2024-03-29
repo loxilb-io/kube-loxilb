@@ -199,3 +199,53 @@ kube-system       loxilb-lb-5m85p                             1/1     Running   
 ```    
 
 Thereafter, the process of service creation remains the same as explained in previous sections.   
+
+
+## How to use CRD ?
+
+Kube-loxilb provides Custom Resource Definition (CRD). The current CRD features include the following and will be updated.
+-  Add / Delete BGP Peer
+
+An example of CRD is stored in the manifast folder, and using BGP Peer as an example is as follows.
+1. preprocessing
+ - Apply lbpeercrd.yaml in manifast first
+```
+kubectl apply -f manifast/crds/lbpeercrd.yaml
+```
+2. CRD definition
+
+You need to create a yaml file that adds a peer for BGP. The example below is an example of creating a Peer with a RemoteAS number of Peer IP address 65123 at 123.123.2. Create a file named bgp-peer.yaml and add the contents below.
+```yaml
+apiVersion: "bgppeer.loxilb.io/v1"
+kind: BGPPeerService
+metadata:
+  name: bgp-peer-test
+spec:
+  ipAddress: 123.123.123.2
+  remoteAs: 65123
+  remotePort: 179
+```
+
+3. Apply CRD
+
+It's simple to apply, you can use kubectl the same as the usual k8s settings.
+```
+kubectl apply -f bgp-peer.yaml
+```
+
+4. CRD verification
+
+
+You can check it in two ways. The first one can be checked through loxicmd, and the second one can be checked through kubectl. It is more recommended to check through loxicmd.
+```
+# loxicmd
+kubectl exec -it {loxilb} -n kube-system -- loxicmd get bgpneigh 
+|      PEER      |  AS   |   UP/DOWN   |    STATE    | 
+|----------------|-------|-------------|-------------|
+| 123.123.123.2  | 65123 | never       | ACTIVE      |
+
+# kubectl
+kubectl get bgppeerservice
+NAME            PEER            AS   
+bgp-peer-test   123.123.123.2   65123 
+```
