@@ -1,0 +1,8 @@
+apiVersion: "bgppeer.loxilb.io/v1"
+kind: BGPPeerService
+metadata:
+  name: bgp-peer-test
+spec:
+  ipAddress: 123.123.123.2
+  remoteAs: 65123
+  remotePort: 179

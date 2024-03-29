@@ -1,0 +1,53 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.13.0
+  name: bgppeerservices.bgppeer.loxilb.io
+spec:
+  group: bgppeer.loxilb.io
+  names:
+    kind: BGPPeerService
+    listKind: BGPPeerServiceList
+    plural: bgppeerservices
+    singular: bgppeerservice
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+      - name: Peer
+        type: string
+        priority: 0
+        jsonPath: .spec.ipAddress
+        description: BGP Peer IP address
+      - name: AS
+        type: string
+        priority: 0
+        jsonPath: .spec.remoteAs
+        description: BGP Peer Remote AS number
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                ipAddress:
+                  type: string
+                remoteAs:
+                  type: integer
+                remotePort:
+                  type: integer
+                setMultiHop:
+                  type: boolean
+              required:
+                - ipAddress
+                - remoteAs
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

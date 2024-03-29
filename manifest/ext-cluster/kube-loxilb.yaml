@@ -70,6 +70,18 @@ rules:
       - subjectaccessreviews
     verbs:
       - create
+  - apiGroups:
+      - bgppeer.loxilb.io
+    resources:
+      - bgppeerservices
+    verbs:
+      - get
+      - watch
+      - list
+      - create
+      - update
+      - delete
+
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1

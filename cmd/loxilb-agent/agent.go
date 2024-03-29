@@ -24,9 +24,11 @@ import (
 	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppeer"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/gatewayapi"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
+	crdinformers "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
@@ -56,12 +58,14 @@ func run(o *Options) error {
 	klog.Infof("  Build: %s", BuildInfo)
 
 	// create k8s Clientset, CRD Clientset and SharedInformerFactory for the given config.
-	k8sClient, _, _, sigsClient, err := k8s.CreateClients(o.config.ClientConnection, "")
+	k8sClient, _, crdClient, _, sigsClient, err := k8s.CreateClients(o.config.ClientConnection, "")
 	if err != nil {
 		return fmt.Errorf("error creating k8s clients: %v", err)
 	}
 
 	informerFactory := informers.NewSharedInformerFactory(k8sClient, informerDefaultResync)
+	crdInformerFactory := crdinformers.NewSharedInformerFactory(crdClient, informerDefaultResync)
+	BGPPeerInformer := crdInformerFactory.Bgppeer().V1().BGPPeerServices()
 	sigsInformerFactory := sigsInformer.NewSharedInformerFactory(sigsClient, informerDefaultResync)
 
 	// networkReadyCh is used to notify that the Node's network is ready.
@@ -186,6 +190,13 @@ func run(o *Options) error {
 		informerFactory,
 	)
 
+	BgpPeerManager := bgppeer.NewBGPPeerManager(
+		k8sClient,
+		crdClient,
+		loxilbClients,
+		networkConfig,
+		BGPPeerInformer,
+	)
 	go func() {
 		for {
 			select {
@@ -197,6 +208,7 @@ func run(o *Options) error {
 			case <-ticker.C:
 				if len(networkConfig.LoxilbURLs) <= 0 {
 					lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
+					BgpPeerManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 				}
 				lbManager.DiscoverLoxiLBPeerServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 
@@ -212,6 +224,7 @@ func run(o *Options) error {
 	informerFactory.Start(stopCh)
 
 	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+	go BgpPeerManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {

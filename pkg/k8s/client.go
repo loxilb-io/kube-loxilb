@@ -17,6 +17,7 @@
 package k8s
 
 import (
+	crdclientset "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned"
 	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -30,7 +31,7 @@ import (
 
 // CreateClients creates kube clients from the given config.
 func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kubeAPIServerOverride string) (
-	clientset.Interface, aggregatorclientset.Interface, apiextensionclientset.Interface, sigsclientset.Interface, error) {
+	clientset.Interface, aggregatorclientset.Interface, crdclientset.Interface, apiextensionclientset.Interface, sigsclientset.Interface, error) {
 	var kubeConfig *rest.Config
 	var err error
 
@@ -48,7 +49,7 @@ func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kub
 	}
 
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	kubeConfig.AcceptContentTypes = config.AcceptContentTypes
@@ -58,26 +59,27 @@ func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kub
 
 	client, err := clientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	aggregatorClient, err := aggregatorclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	// Create client for crd operations
-	//crdClient, err := crdclientset.NewForConfig(kubeConfig)
+	crdClient, err := crdclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
+
 	// Create client for crd manipulations
 	apiExtensionClient, err := apiextensionclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	sigsClient, err := sigsclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
-	return client, aggregatorClient, apiExtensionClient, sigsClient, nil
+	return client, aggregatorClient, crdClient, apiExtensionClient, sigsClient, nil
 }
