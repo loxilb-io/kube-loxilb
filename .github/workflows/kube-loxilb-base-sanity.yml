@@ -1,0 +1,136 @@
+name: check kube-loxilb base sanity
+on: [push]
+jobs:
+  test-kube-loxilb:
+    runs-on: ubuntu-22.04
+    permissions:
+      packages: write
+    steps:
+      - name: install k3d
+        run: wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: make k3d single node
+        run: k3d cluster create test-cluster --k3s-arg "--disable=traefik@server:*" --k3s-arg "--disable=servicelb@server:*" --k3s-arg "--kubelet-arg=cloud-provider=external@server:*"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '>=1.19.0'
+
+      - name: build kube-loxilb's new image
+        run: make docker 
+
+      - name: install gateway api
+        run: kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/experimental-install.yaml
+          
+      - name: deploy kube-loxilb & loxilb & gateway resources
+        run: |
+          kubectl apply -f manifest/gateway-api/kube-loxilb.yaml
+          kubectl apply -f manifest/gateway-api/loxilb.yaml
+          kubectl apply -f manifest/gateway-api/gatewayclass.yaml
+          kubectl apply -f manifest/gateway-api/gateway.yaml
+          kubectl apply -f manifest/gateway-api/tcpRoute.yaml
+          kubectl apply -f manifest/gateway-api/udpRoute.yaml
+
+      - name: wait to deploy kube-loxilb pod
+        id: deploy_kube_loxilb
+        run: |
+          kubectl -n kube-system wait --for=condition=ready pod -l app=kube-loxilb-app --timeout=300s
+          KUBE_LOXILB=`kubectl get pods -A -o json | jq -r '.items[] | select(.metadata.name | test("kube-loxilb")).metadata.name'`
+          echo "KUBE_LOXILB=$KUBE_LOXILB" >> $GITHUB_OUTPUT
+
+      - if: failure()
+        run: |
+          kubectl -n kube-system get pods
+          exit 1
+          
+      - name: Sleep for 60 seconds for kube-loxilb
+        run: sleep 60s
+        
+      - name: check status of gateway resources
+        id: get_results_json
+        run: |
+          GC_PASSED=$(kubectl get gatewayclass -o json | jq -r '.items[0].status.conditions[0] | select(.type | test("Accepted")).status')
+          echo "GC_PASSED=$GC_PASSED" >> $GITHUB_OUTPUT
+          GW_PASSED=$(kubectl get gateway -o json | jq -r '.items[0].status.conditions[] | select(.type | test("Programmed")).status')
+          echo "GW_PASSED=$GW_PASSED" >> $GITHUB_OUTPUT
+          TCPROUTE_PASSED=$(kubectl get svc tcproute-lb-service -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
+          echo "TCPROUTE_PASSED=$TCPROUTE_PASSED" >> $GITHUB_OUTPUT
+          UDPROUTE_PASSED=$(kubectl get svc udproute-lb-service -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
+          echo "UDPROUTE_PASSED=$UDPROUTE_PASSED" >> $GITHUB_OUTPUT
+
+      - if: ${{ steps.get_results_json.outputs.GC_PASSED != 'True' }}
+        run: |
+          echo "gatewayClass passed: $steps.get_results_json.outputs.GC_PASSED"
+          kubectl get gatewayclass
+          kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
+          exit 1
+
+      - if: ${{ steps.get_results_json.outputs.GW_PASSED != 'True' }}
+        run: |
+          echo "gateway passed: $steps.get_results_json.outputs.GW_PASSED"
+          kubectl get gateway
+          kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
+          exit 1
+
+      - if: ${{ steps.get_results_json.outputs.TCPROUTE_PASSED != 'llb-123.123.123.1' }}
+        run: |
+          echo "tcpRoute external IP: $steps.get_results_json.outputs.TCPROUTE_PASSED"
+          kubectl get tcproute
+          kubectl get svc tcproute-lb-service -o wide
+          kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
+          exit 1
+
+      - if: ${{ steps.get_results_json.outputs.UDPROUTE_PASSED != 'llb-123.123.123.1' }}
+        run: |
+          echo "udpRoute external IP: $steps.get_results_json.outputs.UDPROUTE_PASSED"
+          kubectl get udproute
+          kubectl get svc udproute-lb-service -o wide
+          kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
+          exit 1
+
+      - name: deploy services & pod resources
+        run: |
+          kubectl apply -f manifest/workloads/iperf.yaml
+          kubectl apply -f manifest/workloads/sctp-no-secips.yml
+          kubectl apply -f manifest/workloads/udp-echo-svc-lb.yml
+
+      - name: Sleep for 60 seconds for wait to deploy pod
+        run: sleep 60s
+
+      - name: check status of service resources
+        id: get_svc_results_json
+        run: |
+          IPERF_PASSED=$(kubectl get svc iperf-service -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
+          echo "IPERF_PASSED=$IPERF_PASSED" >> $GITHUB_OUTPUT
+          SCTP_PASSED=$(kubectl get svc sctp-lb1 -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
+          echo "SCTP_PASSED=$SCTP_PASSED" >> $GITHUB_OUTPUT
+          UDP_PASSED=$(kubectl get svc udp-lb1 -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
+          echo "UDP_PASSED=$UDP_PASSED" >> $GITHUB_OUTPUT
+
+      - if: ${{ steps.get_svc_results_json.outputs.IPERF_PASSED != 'llb-123.123.123.1' }}
+        run: |
+          echo "iperf-service external IP: $steps.get_results_json.outputs.IPERF_PASSED"
+          kubectl get svc -o wide
+          kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
+          exit 1
+      - if: ${{ steps.get_svc_results_json.outputs.SCTP_PASSED != 'llb-123.123.123.1' }}
+        run: |
+          echo "iperf-service external IP: $steps.get_results_json.outputs.SCTP_PASSED"
+          kubectl get svc -o wide
+          kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
+          exit 1
+
+      - if: ${{ steps.get_svc_results_json.outputs.UDP_PASSED != 'llb-123.123.123.1' }}
+        run: |
+          echo "iperf-service external IP: $steps.get_results_json.outputs.UDP_PASSED"
+          kubectl get svc -o wide
+          kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
+          exit 1
+
+  test-k3s-base-sanity:
+    needs: test-kube-loxilb
+    uses: loxilb-io/loxilb/.github/workflows/__k3s-base-sanity-module.yml@main

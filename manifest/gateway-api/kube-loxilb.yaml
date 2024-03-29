@@ -125,7 +125,7 @@ spec:
       terminationGracePeriodSeconds: 0
       containers:
       - name: kube-loxilb
-        image: ghcr.io/loxilb-io/kube-loxilb:gateway-debug
+        image: ghcr.io/loxilb-io/kube-loxilb:latest
         imagePullPolicy: Always
         command:
         - /bin/kube-loxilb
@@ -138,6 +138,7 @@ spec:
         - --listenBGPPort=1791
         - --setRoles=0.0.0.0
         - --gatewayAPI
+        - --v=4
         #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
         #- --setLBMode=1
         #- --config=/opt/loxilb/agent/kube-loxilb.conf

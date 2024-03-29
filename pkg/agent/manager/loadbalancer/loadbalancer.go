@@ -161,7 +161,7 @@ type SvcPair struct {
 }
 
 func (s SvcPair) String() string {
-	return fmt.Sprintf("  IPString: %s\n  Port: %d\n  Protocol: %s\n  InRange: %v\n  StaticIP: %v\n  IdentIPAM: %s\n  IPAllocd:  %v\n  K8sSvcPort: %v\n",
+	return fmt.Sprintf("\n  IPString: %s\n  Port: %d\n  Protocol: %s\n  InRange: %v\n  StaticIP: %v\n  IdentIPAM: %s\n  IPAllocd:  %v\n  K8sSvcPort: %v\n",
 		s.IPString, s.Port, s.Protocol, s.InRange, s.StaticIP, s.IdentIPAM, s.IPAllocd, s.K8sSvcPort,
 	)
 }
@@ -516,6 +516,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	endpointIPs, err := m.getEndpoints(svc, needPodEP, addrType)
 	if err != nil {
+		klog.Errorf("getEndpoints return error.")
+		klog.V(4).Infof("endpointIPs: %v", endpointIPs)
 		return err
 	}
 
@@ -575,7 +577,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				ipPool = m.ExternalIP6Pool
 				sipPools = m.ExtSecondaryIP6Pools
 			}
-			klog.Infof("deallocateOnFailure defer function called")
+			klog.Infof("deallocateOnFailure defer function called by service %s", svc.Name)
+			klog.V(4).Infof("error: %v", err)
+			klog.V(4).Infof("ingSvcPairs: %v", ingSvcPairs)
+			klog.V(4).Infof("hasExistingEIP: %v", hasExistingEIP)
 			for i, sp := range ingSvcPairs {
 				if sp.InRange && sp.IPAllocd {
 					klog.Infof("Returning ip %s to free pool", sp.IPString)
@@ -772,6 +777,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	if !update {
+		// TODO: Some cloud providers(e.g: K3d) delete external IPs assigned by kube-loxilb, so you can reach this syntax:
 		if !hasExistingEIP {
 			retIPAMOnErr = true
 		}
@@ -882,6 +888,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 func (m *Manager) updateService(old, new *corev1.Service) error {
 	if !reflect.DeepEqual(old.Status, new.Status) {
 		_, err := m.kubeClient.CoreV1().Services(new.Namespace).UpdateStatus(context.TODO(), new, metav1.UpdateOptions{})
+		klog.V(4).Infof("service %s is updated status: %v", new.Name, new.Status.LoadBalancer.Ingress)
 		if err != nil {
 			klog.Errorf("failed to update service %s.status. err: %v", new.Name, err)
 			return err
