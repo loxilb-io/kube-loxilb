@@ -75,7 +75,7 @@ func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kub
 	// Create client for crd manipulations
 	apiExtensionClient, err := apiextensionclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	sigsClient, err := sigsclientset.NewForConfig(kubeConfig)
 	if err != nil {
