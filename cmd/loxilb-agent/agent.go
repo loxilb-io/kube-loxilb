@@ -193,9 +193,9 @@ func run(o *Options) error {
 	BgpPeerManager := bgppeer.NewBGPPeerManager(
 		k8sClient,
 		crdClient,
-		loxilbClients,
 		networkConfig,
 		BGPPeerInformer,
+		lbManager,
 	)
 	go func() {
 		for {
@@ -208,7 +208,6 @@ func run(o *Options) error {
 			case <-ticker.C:
 				if len(networkConfig.LoxilbURLs) <= 0 {
 					lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
-					BgpPeerManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 				}
 				lbManager.DiscoverLoxiLBPeerServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 

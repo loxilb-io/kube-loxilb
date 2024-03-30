@@ -19,17 +19,16 @@ package bgppeer
 import (
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned"
 	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions/bgppeer/v1"
 	crdLister "github.com/loxilb-io/kube-loxilb/pkg/client/listers/bgppeer/v1"
 	crdv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppeer/v1"
-	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 
 	//v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -50,11 +49,11 @@ const (
 type Manager struct {
 	kubeClient          kubernetes.Interface
 	crdClient           versioned.Interface
-	loxiClients         []*api.LoxiClient
 	bgpPeerInformer     crdInformer.BGPPeerServiceInformer
 	bgpPeerLister       crdLister.BGPPeerServiceLister
 	bgpPeerListerSynced cache.InformerSynced
 	queue               workqueue.RateLimitingInterface
+	lbManager           *loadbalancer.Manager
 }
 
 // Create and Init Manager.
@@ -62,15 +61,15 @@ type Manager struct {
 func NewBGPPeerManager(
 	kubeClient kubernetes.Interface,
 	crdClient versioned.Interface,
-	loxiClients []*api.LoxiClient,
 	networkConfig *config.NetworkConfig,
-	bgpPeerInformer crdInformer.BGPPeerServiceInformer) *Manager {
+	bgpPeerInformer crdInformer.BGPPeerServiceInformer,
+	lbManager *loadbalancer.Manager,
+) *Manager {
 
 	manager := &Manager{
 
 		kubeClient:          kubeClient,
 		crdClient:           crdClient,
-		loxiClients:         loxiClients,
 		bgpPeerInformer:     bgpPeerInformer,
 		bgpPeerLister:       bgpPeerInformer.Lister(),
 		bgpPeerListerSynced: bgpPeerInformer.Informer().HasSynced,
@@ -192,7 +191,7 @@ func (m *Manager) addBGPPeerService(lb *crdv1.BGPPeerService) error {
 	klog.Infof("RemotePort: %v", lb.Spec.RemotePort)
 
 	var errChList []chan error
-	for _, client := range m.loxiClients {
+	for _, client := range m.lbManager.LoxiClients {
 		ch := make(chan error)
 		go func(c *api.LoxiClient, h chan error) {
 			var err error
@@ -224,47 +223,9 @@ func (m *Manager) addBGPPeerService(lb *crdv1.BGPPeerService) error {
 	return nil
 }
 
-func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
-	var tmploxilbClients []*api.LoxiClient
-	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-lb-service", "kube-system")
-	klog.Infof("loxilb-service end-points:  %v", ips)
-	if err != nil {
-		ips = []net.IP{}
-	}
-
-	for _, v := range m.loxiClients {
-		v.Purge = true
-		for _, ip := range ips {
-			if v.Host == ip.String() {
-				v.Purge = false
-			}
-		}
-	}
-
-	for _, ip := range ips {
-		found := false
-		for _, v := range m.loxiClients {
-			if v.Host == ip.String() {
-				found = true
-			}
-		}
-		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, false)
-			if err2 != nil {
-				continue
-			}
-			tmploxilbClients = append(tmploxilbClients, client)
-		}
-	}
-	if len(tmploxilbClients) > 0 {
-		m.loxiClients = append(m.loxiClients, tmploxilbClients...)
-	}
-
-}
-
 func (m *Manager) deleteBGPPeerService(lb *crdv1.BGPPeerService) error {
 	var errChList []chan error
-	for _, loxiClient := range m.loxiClients {
+	for _, loxiClient := range m.lbManager.LoxiClients {
 		ch := make(chan error)
 		errChList = append(errChList, ch)
 
