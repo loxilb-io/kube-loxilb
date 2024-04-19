@@ -748,37 +748,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
-		// Update external IP if has changed
-
-		// Update endpoint list if the list has changed
-		for _, lb := range sp.LbModelList {
-			if len(endpointIPs) == len(lb.Endpoints) {
-				nEps := 0
-				for _, ep := range endpointIPs {
-					found := false
-					for _, oldEp := range lb.Endpoints {
-						if ep == oldEp.EndpointIP {
-							found = true
-							nEps++
-							break
-						}
-					}
-					if !found {
-						break
-					}
-				}
-				if nEps != len(endpointIPs) {
-					update = true
-				}
-			} else {
-				update = true
-			}
-		}
-		if update {
-			klog.Infof("%s: Endpoint update", cacheKey)
-		}
-	}
+	update = m.checkUpdateEndpoints(cacheKey, endpointIPs) || m.checkUpdateExternalIP(ingSvcPairs, svc)
 
 	if !update {
 		// TODO: Some cloud providers(e.g: K3d) delete external IPs assigned by kube-loxilb, so you can reach this syntax:
@@ -1124,6 +1094,57 @@ func (m *Manager) getEndpointsForLB(nodes []*corev1.Node, addrType string) []str
 	}
 
 	return endpoints
+}
+
+func (m *Manager) checkUpdateExternalIP(ingSvcPairs []SvcPair, svc *corev1.Service) bool {
+	for _, ingSvcPair := range ingSvcPairs {
+		if ingSvcPair.InRange || ingSvcPair.StaticIP {
+			retIngress := corev1.LoadBalancerIngress{Hostname: "llb-" + ingSvcPair.IPString}
+			if !m.checkServiceIngressIPExists(svc, retIngress.Hostname) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (m *Manager) checkUpdateEndpoints(cacheKey string, endpointIPs []string) bool {
+	var update bool
+
+	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
+		// Update external IP if has changed
+
+		// Update endpoint list if the list has changed
+		for _, lb := range sp.LbModelList {
+			if len(endpointIPs) == len(lb.Endpoints) {
+				nEps := 0
+				for _, ep := range endpointIPs {
+					found := false
+					for _, oldEp := range lb.Endpoints {
+						if ep == oldEp.EndpointIP {
+							found = true
+							nEps++
+							break
+						}
+					}
+					if !found {
+						break
+					}
+				}
+				if nEps != len(endpointIPs) {
+					update = true
+				}
+			} else {
+				update = true
+			}
+		}
+		if update {
+			klog.Infof("%s: Endpoint update", cacheKey)
+		}
+	}
+
+	return update
 }
 
 func (m *Manager) checkServiceIngressIPExists(service *corev1.Service, newIngress string) bool {
