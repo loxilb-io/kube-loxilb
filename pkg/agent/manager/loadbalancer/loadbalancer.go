@@ -861,7 +861,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 		isError := true
 		for _, errCh := range errChList {
-			err := <-errCh
+			err = <-errCh
 			if err == nil {
 				isError = false
 			}
