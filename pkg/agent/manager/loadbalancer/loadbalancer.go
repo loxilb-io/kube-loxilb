@@ -297,7 +297,7 @@ func (m *Manager) processNextWorkItem() bool {
 		m.queue.Forget(key)
 	} else {
 		m.queue.AddRateLimited(key)
-		klog.Errorf("Error syncing Node %s, requeuing. Error: %v", key, err)
+		klog.Errorf("Error syncing LoadBalancer %s, requeuing. Error: %v", key, err)
 	}
 	return true
 }
@@ -305,7 +305,7 @@ func (m *Manager) processNextWorkItem() bool {
 func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 	startTime := time.Now()
 	defer func() {
-		klog.V(4).Infof("Finished syncing endpoints %s. (%v)", lb.Name, time.Since(startTime))
+		klog.V(4).Infof("Finished syncing LoadBalancer service %s. (%v)", lb.Name, time.Since(startTime))
 	}()
 
 	svcNs := lb.Namespace
@@ -748,35 +748,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	// Update endpoint list if the list has changed
-	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
-		for _, lb := range sp.LbModelList {
-			if len(endpointIPs) == len(lb.Endpoints) {
-				nEps := 0
-				for _, ep := range endpointIPs {
-					found := false
-					for _, oldEp := range lb.Endpoints {
-						if ep == oldEp.EndpointIP {
-							found = true
-							nEps++
-							break
-						}
-					}
-					if !found {
-						break
-					}
-				}
-				if nEps != len(endpointIPs) {
-					update = true
-				}
-			} else {
-				update = true
-			}
-		}
-		if update {
-			klog.Infof("%s: Endpoint update", cacheKey)
-		}
-	}
+	update = m.checkUpdateEndpoints(cacheKey, endpointIPs) || m.checkUpdateExternalIP(ingSvcPairs, svc)
 
 	if !update {
 		// TODO: Some cloud providers(e.g: K3d) delete external IPs assigned by kube-loxilb, so you can reach this syntax:
@@ -857,17 +829,17 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			errChList = append(errChList, ch)
 		}
 
-		isError := true
+		var loxilbAPIErr error
 		for _, errCh := range errChList {
 			err := <-errCh
-			if err == nil {
-				isError = false
+			if err != nil {
+				loxilbAPIErr = err
 			}
 		}
-		if isError {
-			retIPAMOnErr = isError
-			klog.Errorf("failed to add load-balancer - spair(%s)", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol))
-			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s)", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol))
+		if loxilbAPIErr != nil {
+			retIPAMOnErr = true
+			klog.Errorf("failed to add load-balancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
+			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
 		}
 
 		sp.LbModelList = append(sp.LbModelList, lbModel)
@@ -1122,6 +1094,58 @@ func (m *Manager) getEndpointsForLB(nodes []*corev1.Node, addrType string) []str
 	}
 
 	return endpoints
+}
+
+func (m *Manager) checkUpdateExternalIP(ingSvcPairs []SvcPair, svc *corev1.Service) bool {
+	for _, ingSvcPair := range ingSvcPairs {
+		if ingSvcPair.InRange || ingSvcPair.StaticIP {
+			retIngress := corev1.LoadBalancerIngress{Hostname: "llb-" + ingSvcPair.IPString}
+			if !m.checkServiceIngressIPExists(svc, retIngress.Hostname) {
+				klog.V(4).Infof("checkUpdateExternalIP: ingSvcPair %v has external IP but service %s has no IP. need update.", ingSvcPair, svc.Name)
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (m *Manager) checkUpdateEndpoints(cacheKey string, endpointIPs []string) bool {
+	var update bool
+
+	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
+		// Update external IP if has changed
+
+		// Update endpoint list if the list has changed
+		for _, lb := range sp.LbModelList {
+			if len(endpointIPs) == len(lb.Endpoints) {
+				nEps := 0
+				for _, ep := range endpointIPs {
+					found := false
+					for _, oldEp := range lb.Endpoints {
+						if ep == oldEp.EndpointIP {
+							found = true
+							nEps++
+							break
+						}
+					}
+					if !found {
+						break
+					}
+				}
+				if nEps != len(endpointIPs) {
+					update = true
+				}
+			} else {
+				update = true
+			}
+		}
+		if update {
+			klog.Infof("%s: Endpoint update", cacheKey)
+		}
+	}
+
+	return update
 }
 
 func (m *Manager) checkServiceIngressIPExists(service *corev1.Service, newIngress string) bool {
