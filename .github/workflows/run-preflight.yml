@@ -1,17 +1,25 @@
 name: Run Preflight
 on: [push]
 jobs:
+  Check-Repogitory:
+    runs-on: ubuntu-20.04
+    outputs:
+      result: ${{ steps.check_repogitory.outputs.is_kube_loxilb }}
+    steps:
+      - name: check repository
+        id: check_repogitory
+        if: github.repository == 'loxilb-io/kube-loxilb'
+        run: |
+          echo "This workflow only runs on the loxilb-io/kube-loxilb repository."
+          echo "is_kube_loxilb=true" >> $GITHUB_OUTPUT
+
   Run-Preflight:
     runs-on: ubuntu-20.04
+    needs: Check-Repogitory
+    if: needs.Check-Repogitory.outputs.result == 'true'
     permissions:
       packages: write
     steps:
-      - name: check repository
-        if: github.repository != 'loxilb-io/kube-loxilb'
-        run: |
-          echo "This workflow only runs on the loxilb-io/kube-loxilb repository."
-          exit 0
-
       - uses: actions/checkout@v3
         with:
           submodules: recursive
