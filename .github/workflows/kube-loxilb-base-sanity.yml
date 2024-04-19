@@ -64,7 +64,7 @@ jobs:
 
       - if: ${{ steps.get_results_json.outputs.GC_PASSED != 'True' }}
         run: |
-          echo "gatewayClass passed: $steps.get_results_json.outputs.GC_PASSED"
+          echo "gatewayClass passed: ${{ steps.get_results_json.outputs.GC_PASSED }}"
           kubectl get pods -A
           kubectl get gatewayclass
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
