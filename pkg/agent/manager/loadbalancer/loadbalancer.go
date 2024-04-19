@@ -748,8 +748,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	// Update endpoint list if the list has changed
 	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
+		// Update external IP if has changed
+
+		// Update endpoint list if the list has changed
 		for _, lb := range sp.LbModelList {
 			if len(endpointIPs) == len(lb.Endpoints) {
 				nEps := 0
@@ -866,8 +868,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 		if isError {
 			retIPAMOnErr = isError
-			klog.Errorf("failed to add load-balancer - spair(%s)", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol))
-			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s)", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol))
+			klog.Errorf("failed to add load-balancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), err)
+			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), err)
 		}
 
 		sp.LbModelList = append(sp.LbModelList, lbModel)

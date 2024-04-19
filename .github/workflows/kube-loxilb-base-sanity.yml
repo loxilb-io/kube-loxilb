@@ -71,14 +71,14 @@ jobs:
 
       - if: ${{ steps.get_results_json.outputs.GW_PASSED != 'True' }}
         run: |
-          echo "gateway passed: $steps.get_results_json.outputs.GW_PASSED"
+          echo "gateway passed: ${{ steps.get_results_json.outputs.GW_PASSED }}"
           kubectl get gateway
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
       - if: ${{ steps.get_results_json.outputs.TCPROUTE_PASSED != 'llb-123.123.123.1' }}
         run: |
-          echo "tcpRoute external IP: $steps.get_results_json.outputs.TCPROUTE_PASSED"
+          echo "tcpRoute external IP: ${{ steps.get_results_json.outputs.TCPROUTE_PASSED }}"
           kubectl get tcproute
           kubectl get svc tcproute-lb-service -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
@@ -86,7 +86,7 @@ jobs:
 
       - if: ${{ steps.get_results_json.outputs.UDPROUTE_PASSED != 'llb-123.123.123.1' }}
         run: |
-          echo "udpRoute external IP: $steps.get_results_json.outputs.UDPROUTE_PASSED"
+          echo "udpRoute external IP: ${{ steps.get_results_json.outputs.UDPROUTE_PASSED }}"
           kubectl get udproute
           kubectl get svc udproute-lb-service -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
