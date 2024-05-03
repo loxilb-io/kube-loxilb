@@ -69,6 +69,7 @@ const (
 	probeRetriesAnnotation      = "loxilb.io/proberetries"
 	endPointSelAnnotation       = "loxilb.io/epselect"
 	zoneSelAnnotation           = "loxilb.io/zoneselect"
+	prefLocalPodAnnotation      = "loxilb.io/prefLocalPod"
 	MaxExternalSecondaryIPsNum  = 4
 )
 
@@ -351,12 +352,16 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	probeRetries := 0
 	prefLocal := false
 	epSelect := api.LbSelRr
-	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeLocal {
-		prefLocal = true
-	}
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needPodEP {
 		return nil
+	}
+
+	// Check for loxilb specific annotations - PreferLocalPodAlways
+	if plp := svc.Annotations[prefLocalPodAnnotation]; plp != "" {
+		if plp == "yes" {
+			prefLocal = true
+		}
 	}
 
 	// Check for loxilb specific annotations - Secondary IPs number (auto generated IP)
