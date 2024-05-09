@@ -170,7 +170,7 @@ func run(o *Options) error {
 
 	if len(networkConfig.LoxilbURLs) > 0 {
 		for _, lbURL := range networkConfig.LoxilbURLs {
-			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, loxiLBDeadCh, false)
+			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, loxiLBDeadCh, false, false)
 			if err != nil {
 				return err
 			}
@@ -207,7 +207,7 @@ func run(o *Options) error {
 				}
 			case <-ticker.C:
 				if len(networkConfig.LoxilbURLs) <= 0 {
-					lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
+					lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh, o.config.ExcludeRoleList)
 				}
 				lbManager.DiscoverLoxiLBPeerServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 
