@@ -37,7 +37,7 @@ func Execute() {
 		Long:  "loxilb-k8s",
 	}
 
-	client, err := api.NewLoxiClient("http://127.0.0.1:11111", nil, nil, false)
+	client, err := api.NewLoxiClient("http://127.0.0.1:11111", nil, nil, false, false)
 	if err != nil {
 		return
 	}

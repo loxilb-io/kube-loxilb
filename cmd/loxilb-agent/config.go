@@ -68,4 +68,6 @@ type AgentConfig struct {
 	SetRoles string `yaml:"setRoles,omitempty"`
 	// Set loxilb zone
 	Zone string `yaml:"zone,omitempty"`
+	// NodeIPs to exclude from role-selection. This is a comma separated list
+	ExcludeRoleList []string `yaml:"excludeRoleList,omitempty"`
 }

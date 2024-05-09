@@ -24,10 +24,11 @@ type LoxiClient struct {
 	DoBGPCfg    bool
 	Purge       bool
 	Stop        chan struct{}
+	NoRole      bool
 }
 
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
-func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struct{}, peerOnly bool) (*LoxiClient, error) {
+func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struct{}, peerOnly bool, noRole bool) (*LoxiClient, error) {
 
 	client := &http.Client{}
 
@@ -59,6 +60,7 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struc
 		Stop:        stop,
 		PeeringOnly: peerOnly,
 		DeadSigTs:   time.Now(),
+		NoRole:      noRole,
 	}
 
 	lc.StartLoxiHealthCheckChan(aliveCh, deadCh)
