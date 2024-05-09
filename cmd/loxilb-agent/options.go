@@ -197,12 +197,12 @@ func (o *Options) validate(args []string) error {
 			return fmt.Errorf("excludeRoleList %v config is invalid", o.config.ExcludeRoleList)
 		}
 
-		for _, CIDR := range o.config.ExcludeRoleList {
-			if _, _, err := net.ParseCIDR(CIDR); err != nil {
-				return fmt.Errorf("excludeRoleList %s config is invalid", CIDR)
+		for _, nodeIP := range o.config.ExcludeRoleList {
+			if ip := net.ParseIP(nodeIP); ip == nil {
+				return fmt.Errorf("excludeRoleList %s config is invalid", nodeIP)
 			}
-			if !lib.IsNetIPv4(CIDR) {
-				return fmt.Errorf("excludeRoleList %s config is invalid", CIDR)
+			if !lib.IsNetIPv4(nodeIP) {
+				return fmt.Errorf("excludeRoleList %s config is invalid", nodeIP)
 			}
 		}
 	}
