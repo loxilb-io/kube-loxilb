@@ -36,13 +36,12 @@ spec:
           type: DirectoryOrCreate
       containers:
       - name: loxilb-app
-        image: "ghcr.io/loxilb-io/loxilb:debug"
+        image: "ghcr.io/loxilb-io/loxilb:latest"
         imagePullPolicy: Always  
         command:
         - /root/loxilb-io/loxilb/loxilb
         args:
         - --egr-hooks
-        - --blacklist=cni[0-9a-z]|veth.|flannel.
         - --ipvs-compat
         - --blacklist=eth0
         volumeMounts:
