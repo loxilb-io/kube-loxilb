@@ -68,6 +68,8 @@ type AgentConfig struct {
 	SetRoles string `yaml:"setRoles,omitempty"`
 	// Set loxilb zone
 	Zone string `yaml:"zone,omitempty"`
+	// NodeIPs to exclude from role-selection. This is a comma separated list
+	ExcludeRoleList []string `yaml:"excludeRoleList,omitempty"`
 	// Specify aws secondary IP. Used when configuring HA in AWS.
 	// The specified private IP is assigned to the loxilb instance and is associated with EIP.
 	PrivateCIDR string `yaml:"privateCIDR,omitempty"`

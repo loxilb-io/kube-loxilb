@@ -34,6 +34,7 @@ var (
 	secondaryCIDRs  = ""
 	secondaryCIDRs6 = ""
 	extBGPPeers     = ""
+	excludeRoleList = ""
 	Version         = "latest"
 	BuildInfo       = "master"
 )
@@ -72,6 +73,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.config.SetRoles, "setRoles", o.config.SetRoles, "Set LoxiLB node roles")
 	fs.StringVar(&o.config.Zone, "zone", o.config.Zone, "The kube-loxilb zone instance")
 	fs.StringVar(&o.config.PrivateCIDR, "privateCIDR", o.config.PrivateCIDR, "Specify aws secondary IP. Used when configuring HA in AWS and associate with EIP.")
+	fs.StringVar(&excludeRoleList, "excludeRoleList", excludeRoleList, "List of nodes to exclude in role-selection")
 }
 
 // complete completes all the required optionst
@@ -200,6 +202,21 @@ func (o *Options) validate(args []string) error {
 		}
 	}
 
+	if len(o.config.ExcludeRoleList) > 0 {
+		if len(o.config.ExcludeRoleList) > 128 {
+			return fmt.Errorf("excludeRoleList %v config is invalid", o.config.ExcludeRoleList)
+		}
+
+		for _, nodeIP := range o.config.ExcludeRoleList {
+			if ip := net.ParseIP(nodeIP); ip == nil {
+				return fmt.Errorf("excludeRoleList %s config is invalid", nodeIP)
+			}
+			if !lib.IsNetIPv4(nodeIP) {
+				return fmt.Errorf("excludeRoleList %s config is invalid", nodeIP)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -225,6 +242,9 @@ func (o *Options) updateConfigFromCommandLine() {
 	}
 	if extBGPPeers != "" {
 		o.config.ExtBGPPeers = strings.Split(extBGPPeers, ",")
+	}
+	if excludeRoleList != "" {
+		o.config.ExcludeRoleList = strings.Split(excludeRoleList, ",")
 	}
 }
 

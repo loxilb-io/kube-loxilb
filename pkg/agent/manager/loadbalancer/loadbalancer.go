@@ -69,6 +69,7 @@ const (
 	probeRetriesAnnotation      = "loxilb.io/proberetries"
 	endPointSelAnnotation       = "loxilb.io/epselect"
 	zoneSelAnnotation           = "loxilb.io/zoneselect"
+	prefLocalPodAnnotation      = "loxilb.io/prefLocalPod"
 	MaxExternalSecondaryIPsNum  = 4
 )
 
@@ -352,12 +353,16 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	probeRetries := 0
 	prefLocal := false
 	epSelect := api.LbSelRr
-	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeLocal {
-		prefLocal = true
-	}
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needPodEP {
 		return nil
+	}
+
+	// Check for loxilb specific annotations - PreferLocalPodAlways
+	if plp := svc.Annotations[prefLocalPodAnnotation]; plp != "" {
+		if plp == "yes" {
+			prefLocal = true
+		}
 	}
 
 	// Check for loxilb specific annotations - Secondary IPs number (auto generated IP)
@@ -1532,7 +1537,7 @@ func (m *Manager) addIngress(service *corev1.Service, newIP net.IP) {
 		append(service.Status.LoadBalancer.Ingress, corev1.LoadBalancerIngress{IP: newIP.String()})
 }
 
-func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
+func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient, excludeList []string) {
 	var tmploxilbClients []*api.LoxiClient
 	// DNS lookup (not used now)
 	// ips, err := net.LookupIP("loxilb-lb-service")
@@ -1556,13 +1561,21 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 
 	for _, ip := range ips {
 		found := false
+		noRole := false
+
+		for _, eNode := range excludeList {
+			if eNode == ip.String() {
+				noRole = true
+				break
+			}
+		}
 		for _, v := range m.LoxiClients {
 			if v.Host == ip.String() {
 				found = true
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, false)
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, false, noRole)
 			if err2 != nil {
 				continue
 			}
@@ -1612,7 +1625,7 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, true)
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, true, true)
 			if err2 != nil {
 				continue
 			}
@@ -1652,6 +1665,9 @@ func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bo
 			selMaster := false
 			for i := range m.LoxiClients {
 				v := m.LoxiClients[i]
+				if v.NoRole {
+					continue
+				}
 				if selMaster {
 					v.MasterLB = false
 					continue
