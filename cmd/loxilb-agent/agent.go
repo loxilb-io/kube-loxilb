@@ -106,6 +106,7 @@ func run(o *Options) error {
 		Monitor:                 o.config.Monitor,
 		ExternalSecondaryCIDRs:  o.config.ExternalSecondaryCIDRs,
 		ExternalSecondaryCIDRs6: o.config.ExternalSecondaryCIDRs6,
+		PrivateCIDR:             o.config.PrivateCIDR,
 	}
 
 	ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), networkConfig.ExternalCIDR, !o.config.ExclIPAM)
