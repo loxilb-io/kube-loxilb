@@ -19,6 +19,8 @@ const (
 	LbSelRrPersist
 	// LbSelLeastConnections - select client based on least connections
 	LbSelLeastConnections
+	// LbSelN2 - select client based on N2 interface contents
+	LbSelN2
 )
 
 type LbMode int32

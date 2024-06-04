@@ -401,7 +401,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	// Check for loxilb specific annotations - NAT LB Mode
 	if lbm := svc.Annotations[lbModeAnnotation]; lbm != "" {
-		if lbm == "dsr" {
+		if lbm == "fullproxy" {
+			lbMode = 4
+		} else if lbm == "dsr" {
 			lbMode = 3
 		} else if lbm == "fullnat" {
 			lbMode = 2
@@ -493,6 +495,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			epSelect = api.LbSelRrPersist
 		} else if eps == "lc" {
 			epSelect = api.LbSelLeastConnections
+		} else if eps == "n2" {
+			epSelect = api.LbSelN2
 		} else {
 			epSelect = api.LbSelRr
 		}
