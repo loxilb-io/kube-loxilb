@@ -401,7 +401,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	// Check for loxilb specific annotations - NAT LB Mode
 	if lbm := svc.Annotations[lbModeAnnotation]; lbm != "" {
-		if lbm == "fullproxy" {
+		if lbm == "hostonearm" {
+			lbMode = 5
+		} else if lbm == "fullproxy" {
 			lbMode = 4
 		} else if lbm == "dsr" {
 			lbMode = 3
