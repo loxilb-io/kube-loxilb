@@ -20,15 +20,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"time"
-
 	tk "github.com/loxilb-io/loxilib"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	clientset "k8s.io/client-go/kubernetes"
+	"net"
+	"time"
 )
 
 // GetNodeAddr gets the available IP address of a Node.
@@ -53,8 +52,17 @@ func GetNodeAddr(node *v1.Node) (net.IP, error) {
 	return ipAddr, nil
 }
 
+func MatchNodeinNodeList(node string, nodeMatchList []string) bool {
+	for _, n := range nodeMatchList {
+		if n == node {
+			return true
+		}
+	}
+	return false
+}
+
 // GetServiceLocalEndpoints - Get HostIPs of pods belonging to the given service
-func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Service, addrType string) ([]string, error) {
+func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Service, addrType string, nodeMatchList []string) ([]string, error) {
 	var epList []string
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
@@ -70,6 +78,9 @@ func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Servic
 	for _, pod := range podList.Items {
 		if pod.Status.HostIP != "" {
 			if addrType == "ipv6" && !tk.IsNetIPv6(pod.Status.HostIP) {
+				continue
+			}
+			if len(nodeMatchList) > 0 && !MatchNodeinNodeList(pod.Status.HostIP, nodeMatchList) {
 				continue
 			}
 			if _, found := epMap[pod.Status.HostIP]; !found {
