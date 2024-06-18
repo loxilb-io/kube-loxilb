@@ -44,6 +44,7 @@ func (lbModel *LoadBalancerModel) GetKeyStruct() LoxiModel {
 
 type LoadBalancerService struct {
 	ExternalIP   string   `json:"externalIP" key:"externalipaddress"`
+	PrivateIP    string   `json:"privateIP" key:"privateipaddress"`
 	Port         uint16   `json:"port" key:"port"`
 	Protocol     string   `json:"protocol" key:"protocol"`
 	Sel          EpSelect `json:"sel"`
