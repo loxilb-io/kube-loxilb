@@ -791,11 +791,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("Secondary IP Pairs %v", m.lbCache[cacheKey].SecIPs)
 	}
 
+	privateIP, _, _ := net.ParseCIDR(m.networkConfig.PrivateCIDR)
 	for _, ingSvcPair := range ingSvcPairs {
 		var errChList []chan error
 		lbArgs := LbArgs{
 			externalIP:    ingSvcPair.IPString,
-			privateIP:     m.networkConfig.PrivateCIDR,
+			privateIP:     privateIP.String(),
 			livenessCheck: m.lbCache[cacheKey].ActCheck,
 			lbMode:        m.lbCache[cacheKey].LbMode,
 			timeout:       m.lbCache[cacheKey].Timeout,
@@ -1465,6 +1466,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
 			ExternalIP:   lbArgs.externalIP,
+			PrivateIP:    lbArgs.privateIP,
 			Port:         uint16(port.Port),
 			Protocol:     strings.ToLower(string(port.Protocol)),
 			BGP:          bgpMode,
