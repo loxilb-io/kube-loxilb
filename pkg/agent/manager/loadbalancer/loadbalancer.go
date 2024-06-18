@@ -97,6 +97,7 @@ type Manager struct {
 
 type LbArgs struct {
 	externalIP    string
+	privateIP     string
 	livenessCheck bool
 	lbMode        int
 	timeout       int
@@ -829,6 +830,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		var errChList []chan error
 		lbArgs := LbArgs{
 			externalIP:    ingSvcPair.IPString,
+			privateIP:     m.networkConfig.PrivateCIDR,
 			livenessCheck: m.lbCache[cacheKey].ActCheck,
 			lbMode:        m.lbCache[cacheKey].LbMode,
 			timeout:       m.lbCache[cacheKey].Timeout,

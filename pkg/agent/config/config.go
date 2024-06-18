@@ -32,4 +32,5 @@ type NetworkConfig struct {
 	Monitor                 bool
 	SetRoles                string
 	Zone                    string
+	PrivateCIDR             string
 }

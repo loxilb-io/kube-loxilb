@@ -72,6 +72,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.config.Monitor, "monitor", o.config.Monitor, "Enable monitoring end-points of LB rule")
 	fs.StringVar(&o.config.SetRoles, "setRoles", o.config.SetRoles, "Set LoxiLB node roles")
 	fs.StringVar(&o.config.Zone, "zone", o.config.Zone, "The kube-loxilb zone instance")
+	fs.StringVar(&o.config.PrivateCIDR, "privateCIDR", o.config.PrivateCIDR, "Specify aws secondary IP. Used when configuring HA in AWS and associate with EIP.")
 	fs.StringVar(&excludeRoleList, "excludeRoleList", excludeRoleList, "List of nodes to exclude in role-selection")
 }
 
@@ -189,6 +190,15 @@ func (o *Options) validate(args []string) error {
 	if o.config.SetRoles != "" {
 		if net.ParseIP(o.config.SetRoles) == nil {
 			return fmt.Errorf("SetRoles %s config is invalid", o.config.SetRoles)
+		}
+	}
+
+	if o.config.PrivateCIDR != "" {
+		if _, _, err := net.ParseCIDR(o.config.PrivateCIDR); err != nil {
+			return fmt.Errorf("privateCIDR %s config is invalid", o.config.PrivateCIDR)
+		}
+		if !lib.IsNetIPv4(o.config.PrivateCIDR) {
+			return fmt.Errorf("privateCIDR %s config is invalid", o.config.PrivateCIDR)
 		}
 	}
 
