@@ -89,6 +89,7 @@ func run(o *Options) error {
 	klog.Infof("ExtBGPPeers: %v", o.config.ExtBGPPeers)
 	klog.Infof("SetRoles: %s", o.config.SetRoles)
 	klog.Infof("Zone: %s", o.config.Zone)
+	klog.Infof("AppendEPs: %v", o.config.AppendEPs)
 
 	networkConfig := &config.NetworkConfig{
 		LoxilbURLs:              o.config.LoxiURLs,
@@ -104,6 +105,7 @@ func run(o *Options) error {
 		ExtBGPPeers:             o.config.ExtBGPPeers,
 		SetLBMode:               o.config.SetLBMode,
 		Monitor:                 o.config.Monitor,
+		AppendEPs:               o.config.AppendEPs,
 		ExternalSecondaryCIDRs:  o.config.ExternalSecondaryCIDRs,
 		ExternalSecondaryCIDRs6: o.config.ExternalSecondaryCIDRs6,
 		PrivateCIDR:             o.config.PrivateCIDR,

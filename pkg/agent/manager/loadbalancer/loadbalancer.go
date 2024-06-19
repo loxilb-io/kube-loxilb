@@ -941,7 +941,12 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 
 				go func(client *api.LoxiClient, ch chan error, lbModel api.LoadBalancerModel) {
 					klog.Infof("loxilb-lb(%s): delete lb %v", client.Host, lbModel)
-					ch <- client.LoadBalancer().Delete(context.Background(), &lbModel)
+					if m.networkConfig.AppendEPs {
+						lbModel.Service.Oper = api.LBOPDetach
+						ch <- client.LoadBalancer().Create(context.Background(), &lbModel)
+					} else {
+						ch <- client.LoadBalancer().Delete(context.Background(), &lbModel)
+					}
 				}(loxiClient, ch, lb)
 			}
 		}
@@ -1506,6 +1511,11 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 	loxiEndpointModelList := []api.LoadBalancerEndpoint{}
 	loxiSecIPModelList := []api.LoadBalancerSecIp{}
 	lbModeSvc := api.LbMode(m.networkConfig.SetLBMode)
+	lbOper := api.LBOPAdd
+
+	if m.networkConfig.AppendEPs {
+		lbOper = api.LBOPAttach
+	}
 
 	if len(lbArgs.endpointIPs) > 0 {
 
@@ -1555,6 +1565,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			Protocol:     strings.ToLower(string(port.Protocol)),
 			BGP:          bgpMode,
 			Mode:         lbModeSvc,
+			Oper:         lbOper,
 			Monitor:      lbArgs.livenessCheck,
 			Timeout:      uint32(lbArgs.timeout),
 			Managed:      true,

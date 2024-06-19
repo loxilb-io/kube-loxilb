@@ -24,6 +24,17 @@ const (
 )
 
 type LbMode int32
+type LbOP int32
+
+const (
+	// LBOPAdd - Add te LB rule (replace if existing)
+	LBOPAdd LbOP = iota
+	// LBModeOneArm - Attach End-Points
+	LBOPAttach
+	// LBOPDetach - Detach End-Points
+	LBOPDetach
+)
+
 type LoadBalancerListModel struct {
 	Item []LoadBalancerModel `json:"lbAttr"`
 }
@@ -61,6 +72,7 @@ type LoadBalancerService struct {
 	ProbeRetries int32    `json:"probeRetries,omitempty"`
 	ProbeTimeout uint32   `json:"probeTimeout,omitempty"`
 	Name         string   `json:"name,omitempty"`
+	Oper         LbOP     `json:"oper,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {

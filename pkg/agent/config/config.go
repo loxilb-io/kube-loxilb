@@ -30,6 +30,7 @@ type NetworkConfig struct {
 	ExtBGPPeers             []string
 	SetLBMode               uint16
 	Monitor                 bool
+	AppendEPs               bool
 	SetRoles                string
 	Zone                    string
 	PrivateCIDR             string
