@@ -789,7 +789,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	update = m.checkUpdateEndpoints(cacheKey, endpointIPs) || m.checkUpdateExternalIP(ingSvcPairs, svc)
+	if !update {
+		update = m.checkUpdateEndpoints(cacheKey, endpointIPs) || m.checkUpdateExternalIP(ingSvcPairs, svc)
+	}
 
 	if !update {
 		// TODO: Some cloud providers(e.g: K3d) delete external IPs assigned by kube-loxilb, so you can reach this syntax:
