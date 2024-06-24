@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"net"
 	"path"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -591,7 +590,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	retIPAMOnErr := false
 
-	oldsvc := svc.DeepCopy()
+	//oldsvc := svc.DeepCopy()
 
 	// Check if service has ingress IP already allocated
 	ingSvcPairs, err, hasExistingEIP := m.getIngressSvcPairs(svc, addrType, lbCacheEntry)
@@ -789,7 +788,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	update = m.checkUpdateEndpoints(cacheKey, endpointIPs) || m.checkUpdateExternalIP(ingSvcPairs, svc)
+	if !update {
+		update = m.checkUpdateEndpoints(cacheKey, endpointIPs) || m.checkUpdateExternalIP(ingSvcPairs, svc)
+	}
 
 	if !update {
 		// TODO: Some cloud providers(e.g: K3d) delete external IPs assigned by kube-loxilb, so you can reach this syntax:
@@ -889,32 +890,40 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 		sp.LbModelList = append(sp.LbModelList, lbModel)
 		m.lbCache[cacheKey].LbServicePairs[GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol)] = &sp
-		if ingSvcPair.InRange || ingSvcPair.StaticIP {
-			retIngress := corev1.LoadBalancerIngress{Hostname: genExtIPName(ingSvcPair.IPString)}
-			if !m.checkServiceIngressIPExists(svc, retIngress.Hostname) {
-				svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
-			}
-			//retIngress.Ports = append(retIngress.Ports, corev1.PortStatus{Port: ingSvcPair.Port, Protocol: corev1.Protocol(strings.ToUpper(ingSvcPair.Protocol))})
-		}
 	}
 
 	// Update service.Status.LoadBalancer.Ingress
-	m.updateService(oldsvc, svc)
+	m.updateService(svc.Namespace, svc.Name, ingSvcPairs)
 
 	return nil
 }
 
-func (m *Manager) updateService(old, new *corev1.Service) error {
-	if !reflect.DeepEqual(old.Status, new.Status) {
-		_, err := m.kubeClient.CoreV1().Services(new.Namespace).UpdateStatus(context.TODO(), new, metav1.UpdateOptions{})
-		klog.V(4).Infof("service %s is updated status: %v", new.Name, new.Status.LoadBalancer.Ingress)
-		if err != nil {
-			klog.Errorf("failed to update service %s.status. err: %v", new.Name, err)
-			return err
+func (m *Manager) updateService(svcNs, svcName string, ingSvcPairs []SvcPair) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer cancel()
+
+	cur, err := m.kubeClient.CoreV1().Services(svcNs).Get(ctx, svcName, metav1.GetOptions{})
+	if err != nil {
+		// Service is deleted
+		return err
+	}
+
+	for _, ingSvcPair := range ingSvcPairs {
+		if ingSvcPair.InRange || ingSvcPair.StaticIP {
+			retIngress := corev1.LoadBalancerIngress{Hostname: genExtIPName(ingSvcPair.IPString)}
+			if !m.checkServiceIngressIPExists(cur, retIngress.Hostname) {
+				cur.Status.LoadBalancer.Ingress = append(cur.Status.LoadBalancer.Ingress, retIngress)
+			}
 		}
 	}
 
-	return nil
+	_, err = m.kubeClient.CoreV1().Services(cur.Namespace).UpdateStatus(ctx, cur, metav1.UpdateOptions{})
+	klog.V(4).Infof("service %s is updated status: %v", cur.Name, cur.Status.LoadBalancer.Ingress)
+	if err != nil {
+		klog.Errorf("failed to update service %s.status. err: %v", cur.Name, err)
+	}
+
+	return err
 }
 
 func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
