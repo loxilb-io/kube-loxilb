@@ -74,6 +74,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.config.Zone, "zone", o.config.Zone, "The kube-loxilb zone instance")
 	fs.StringVar(&o.config.PrivateCIDR, "privateCIDR", o.config.PrivateCIDR, "Specify aws secondary IP. Used when configuring HA in AWS and associate with EIP.")
 	fs.StringVar(&excludeRoleList, "excludeRoleList", excludeRoleList, "List of nodes to exclude in role-selection")
+	fs.BoolVar(&o.config.AppendEPs, "appendEPs", o.config.AppendEPs, "Attach and detach end-points of LB rule")
 }
 
 // complete completes all the required optionst
