@@ -27,6 +27,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
@@ -893,7 +894,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	// Update service.Status.LoadBalancer.Ingress
-	m.updateService(svc.Namespace, svc.Name, ingSvcPairs)
+	for retry := 0; retry < 5; retry++ {
+		err := m.updateService(svc.Namespace, svc.Name, ingSvcPairs)
+		if !k8sErrors.IsConflict(err) {
+			break
+		}
+
+		time.Sleep(1 * time.Second)
+	}
 
 	return nil
 }
