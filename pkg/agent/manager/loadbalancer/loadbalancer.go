@@ -1413,6 +1413,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, l
 			newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 			if newIP == nil {
 				klog.Errorf("failed to generate external IP. IP Pool is full")
+				klog.Exit("kube-loxilb cant run optimally anymore")
 				return nil, errors.New("failed to generate external IP. IP Pool is full"), hasExtIPAllocated
 			}
 			sp = SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}
@@ -1505,6 +1506,7 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 					rpool.ReturnIPAddr(sPairs[j].IPString, sPairs[j].IdentIPAM)
 				}
 				klog.Errorf("failed to generate external secondary IP. IP Pool is full")
+				klog.Exit("kube-loxilb cant run optimally anymore")
 				return nil, errors.New("failed to generate external secondary IP. IP Pool is full")
 			}
 			sp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}

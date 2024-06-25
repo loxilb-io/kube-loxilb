@@ -195,6 +195,7 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 		newIP, identIPAM := ipPool.GetNewIPAddr(GenKey(gw.Namespace, gw.Name), 0, "")
 		if newIP == nil {
 			klog.Error("gateway ip pool failure")
+			klog.Exit("kube-loxilb cant run optimally anymore")
 			return fmt.Errorf("failed to generate gateway address")
 		}
 
