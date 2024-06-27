@@ -1501,8 +1501,8 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 
 			for _, sp := range lbCacheEntry.LbServicePairs {
 				if sp.Port == uint16(portNum) && proto == sp.Protocol {
-					sp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, port}
-					sPairs = append(sPairs, sp)
+					oldsp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, port}
+					sPairs = append(sPairs, oldsp)
 					continue checkServicePortLoop
 				}
 			}
@@ -1513,12 +1513,13 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 					rpool := sipPools[j]
 					rpool.ReturnIPAddr(sPairs[j].IPString, sPairs[j].IdentIPAM)
 				}
-				klog.Errorf("failed to generate external secondary IP. IP Pool is full")
+				errMsg := fmt.Sprintf("failed to generate secondary external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
+				klog.Errorf(errMsg)
 				klog.Exit("kube-loxilb cant run optimally anymore")
-				return nil, errors.New("failed to generate external secondary IP. IP Pool is full")
+				return nil, errors.New(errMsg)
 			}
-			sp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}
-			sPairs = append(sPairs, sp)
+			newsp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}
+			sPairs = append(sPairs, newsp)
 		}
 	}
 
