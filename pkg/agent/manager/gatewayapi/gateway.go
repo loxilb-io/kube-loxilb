@@ -78,7 +78,7 @@ func NewGatewayManager(
 		gatewayLister:       gatewayInformer.Lister(),
 		gatewayListerSynced: gatewayInformer.Informer().HasSynced,
 
-		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gatewayClass"),
+		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gateway"),
 	}
 
 	manager.gatewayInformer.Informer().AddEventHandler(

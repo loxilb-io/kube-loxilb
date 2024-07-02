@@ -23,7 +23,7 @@ const (
 	minRetryDelay  = 2 * time.Second
 	maxRetryDelay  = 120 * time.Second
 	defaultWorkers = 4
-	contextTimeout = 5 * time.Second
+	contextTimeout = 30 * time.Second
 	implementation = "kube-loxilb"
 	finalizer      = "loxilb.io"
 )
