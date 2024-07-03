@@ -1,0 +1,10 @@
+apiVersion: bgppolicyapply.loxilb.io/v1
+kind: BGPPolicyApplyService
+metadata:
+  name: policy-apply
+spec:
+  ipAddress: "10.10.10.254"
+  policyType: "import"
+  policies:
+  - "poltest6"
+  routeAction: "accept"

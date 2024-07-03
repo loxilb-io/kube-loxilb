@@ -25,6 +25,9 @@ import (
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppeer"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppolicyapply"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppolicydefinedsets"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppolicydefinition"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/gatewayapi"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -66,6 +69,9 @@ func run(o *Options) error {
 	informerFactory := informers.NewSharedInformerFactory(k8sClient, informerDefaultResync)
 	crdInformerFactory := crdinformers.NewSharedInformerFactory(crdClient, informerDefaultResync)
 	BGPPeerInformer := crdInformerFactory.Bgppeer().V1().BGPPeerServices()
+	BGPPolicyDefinedSetInformer := crdInformerFactory.Bgppolicydefinedsets().V1().BGPPolicyDefinedSetsServices()
+	BGPPolicyDefinitionInformer := crdInformerFactory.Bgppolicydefinition().V1().BGPPolicyDefinitionServices()
+	BGPPolicyApplyInformer := crdInformerFactory.Bgppolicyapply().V1().BGPPolicyApplyServices()
 	sigsInformerFactory := sigsInformer.NewSharedInformerFactory(sigsClient, informerDefaultResync)
 
 	// networkReadyCh is used to notify that the Node's network is ready.
@@ -200,6 +206,30 @@ func run(o *Options) error {
 		BGPPeerInformer,
 		lbManager,
 	)
+
+	BGPPolicyDefinedSetsManager := bgppolicydefinedsets.NewBGPPolicyDefinedSetsManager(
+		k8sClient,
+		crdClient,
+		networkConfig,
+		BGPPolicyDefinedSetInformer,
+		lbManager,
+	)
+
+	BGPPolicyDefinitionManager := bgppolicydefinition.NewBGPPolicyDefinitionManager(
+		k8sClient,
+		crdClient,
+		networkConfig,
+		BGPPolicyDefinitionInformer,
+		lbManager,
+	)
+	BGPPolicyApplyManager := bgppolicyapply.NewBGPPolicyApplyManager(
+		k8sClient,
+		crdClient,
+		networkConfig,
+		BGPPolicyApplyInformer,
+		lbManager,
+	)
+
 	go func() {
 		for {
 			select {
@@ -224,9 +254,13 @@ func run(o *Options) error {
 	}()
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
+	crdInformerFactory.Start(stopCh)
 
 	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 	go BgpPeerManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+	go BGPPolicyDefinedSetsManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+	go BGPPolicyDefinitionManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+	go BGPPolicyApplyManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {

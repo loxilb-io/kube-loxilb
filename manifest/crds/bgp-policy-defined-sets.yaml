@@ -1,0 +1,10 @@
+apiVersion: bgppolicydefinedsets.loxilb.io/v1
+kind: BGPPolicyDefinedSetsService
+metadata:
+  name: policy-prefix
+spec:
+  name: "ps2"
+  definedType: "prefix"
+  prefixList:
+    - ipPrefix: "192.168.0.0/16"
+      masklengthRange: "16..24"

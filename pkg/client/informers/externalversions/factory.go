@@ -25,6 +25,9 @@ import (
 
 	versioned "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned"
 	bgppeer "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions/bgppeer"
+	bgppolicyapply "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions/bgppolicyapply"
+	bgppolicydefinedsets "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions/bgppolicydefinedsets"
+	bgppolicydefinition "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions/bgppolicydefinition"
 	internalinterfaces "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions/internalinterfaces"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -254,8 +257,23 @@ type SharedInformerFactory interface {
 	InformerFor(obj runtime.Object, newFunc internalinterfaces.NewInformerFunc) cache.SharedIndexInformer
 
 	Bgppeer() bgppeer.Interface
+	Bgppolicyapply() bgppolicyapply.Interface
+	Bgppolicydefinedsets() bgppolicydefinedsets.Interface
+	Bgppolicydefinition() bgppolicydefinition.Interface
 }
 
 func (f *sharedInformerFactory) Bgppeer() bgppeer.Interface {
 	return bgppeer.New(f, f.namespace, f.tweakListOptions)
+}
+
+func (f *sharedInformerFactory) Bgppolicyapply() bgppolicyapply.Interface {
+	return bgppolicyapply.New(f, f.namespace, f.tweakListOptions)
+}
+
+func (f *sharedInformerFactory) Bgppolicydefinedsets() bgppolicydefinedsets.Interface {
+	return bgppolicydefinedsets.New(f, f.namespace, f.tweakListOptions)
+}
+
+func (f *sharedInformerFactory) Bgppolicydefinition() bgppolicydefinition.Interface {
+	return bgppolicydefinition.New(f, f.namespace, f.tweakListOptions)
 }

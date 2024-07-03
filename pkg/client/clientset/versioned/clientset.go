@@ -23,6 +23,9 @@ import (
 	"net/http"
 
 	bgppeerv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppeer/v1"
+	bgppolicyapplyv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppolicyapply/v1"
+	bgppolicydefinedsetsv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppolicydefinedsets/v1"
+	bgppolicydefinitionv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppolicydefinition/v1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"
@@ -31,17 +34,38 @@ import (
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
 	BgppeerV1() bgppeerv1.BgppeerV1Interface
+	BgppolicyapplyV1() bgppolicyapplyv1.BgppolicyapplyV1Interface
+	BgppolicydefinedsetsV1() bgppolicydefinedsetsv1.BgppolicydefinedsetsV1Interface
+	BgppolicydefinitionV1() bgppolicydefinitionv1.BgppolicydefinitionV1Interface
 }
 
 // Clientset contains the clients for groups.
 type Clientset struct {
 	*discovery.DiscoveryClient
-	bgppeerV1 *bgppeerv1.BgppeerV1Client
+	bgppeerV1              *bgppeerv1.BgppeerV1Client
+	bgppolicyapplyV1       *bgppolicyapplyv1.BgppolicyapplyV1Client
+	bgppolicydefinedsetsV1 *bgppolicydefinedsetsv1.BgppolicydefinedsetsV1Client
+	bgppolicydefinitionV1  *bgppolicydefinitionv1.BgppolicydefinitionV1Client
 }
 
 // BgppeerV1 retrieves the BgppeerV1Client
 func (c *Clientset) BgppeerV1() bgppeerv1.BgppeerV1Interface {
 	return c.bgppeerV1
+}
+
+// BgppolicyapplyV1 retrieves the BgppolicyapplyV1Client
+func (c *Clientset) BgppolicyapplyV1() bgppolicyapplyv1.BgppolicyapplyV1Interface {
+	return c.bgppolicyapplyV1
+}
+
+// BgppolicydefinedsetsV1 retrieves the BgppolicydefinedsetsV1Client
+func (c *Clientset) BgppolicydefinedsetsV1() bgppolicydefinedsetsv1.BgppolicydefinedsetsV1Interface {
+	return c.bgppolicydefinedsetsV1
+}
+
+// BgppolicydefinitionV1 retrieves the BgppolicydefinitionV1Client
+func (c *Clientset) BgppolicydefinitionV1() bgppolicydefinitionv1.BgppolicydefinitionV1Interface {
+	return c.bgppolicydefinitionV1
 }
 
 // Discovery retrieves the DiscoveryClient
@@ -92,6 +116,18 @@ func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset,
 	if err != nil {
 		return nil, err
 	}
+	cs.bgppolicyapplyV1, err = bgppolicyapplyv1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	cs.bgppolicydefinedsetsV1, err = bgppolicydefinedsetsv1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	cs.bgppolicydefinitionV1, err = bgppolicydefinitionv1.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
 
 	cs.DiscoveryClient, err = discovery.NewDiscoveryClientForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
@@ -114,6 +150,9 @@ func NewForConfigOrDie(c *rest.Config) *Clientset {
 func New(c rest.Interface) *Clientset {
 	var cs Clientset
 	cs.bgppeerV1 = bgppeerv1.New(c)
+	cs.bgppolicyapplyV1 = bgppolicyapplyv1.New(c)
+	cs.bgppolicydefinedsetsV1 = bgppolicydefinedsetsv1.New(c)
+	cs.bgppolicydefinitionV1 = bgppolicydefinitionv1.New(c)
 
 	cs.DiscoveryClient = discovery.NewDiscoveryClient(c)
 	return &cs
