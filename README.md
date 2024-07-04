@@ -48,6 +48,7 @@ wget https://github.com/loxilb-io/kube-loxilb/raw/main/manifest/ext-cluster/kube
             #- --monitor
             #- --setBGP=65100
             #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
+            #- --enableBGPCRDs
             #- --setRoles=0.0.0.0
             #- --setLBMode=1
             #- --setUniqueIP=false
@@ -67,6 +68,7 @@ The arguments have the following meaning :
 | setLBMode | 0, 1, 2 <br> 0 - default (only DNAT, preserves source-IP) <br> 1 - onearm (source IP is changed to load balancer’s interface IP) <br> 2 - fullNAT (sourceIP is changed to virtual IP) | 
 | setUniqueIP | Allocate unique service-IP per LB service (default : false) | 
 | externalSecondaryCIDRs | Secondary CIDR or IPAddress ranges to allocate addresses from in case of multi-homing support |   
+| enableBGPCRDs | Enable BGP Policy and Peer CRDs |   
 
 Many of the above flags and arguments can be overriden on a per-service basis based on loxilb specific annotation as mentioned below.   
 
@@ -211,7 +213,24 @@ For information on BGP Policy CRD, please refer [here.](https://github.com/loxil
 
 An example of CRD is stored in  manifest/crds. Setting up a BGP Peer as an example is as follows:   
 
-1. Pre-Processing (Register kube-loxilb CRDs with K8s). Apply lbpeercrd.yaml as first step   
+1. Pre-Processing (Register kube-loxilb CRDs with K8s). 
+
+First of all change the kube-loxilb.yaml arguments. It need to add  `- --enableBGPCRDs` option.
+```
+        args:
+            - --loxiURL=http://12.12.12.1:11111
+            - --externalCIDR=123.123.123.1/24
+            #- --externalSecondaryCIDRs=124.124.124.1/24,125.125.125.1/24
+            #- --externalCIDR6=3ffe::1/96
+            #- --monitor
+            #- --setBGP=65100
+            #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
+            - --enableBGPCRDs
+            #- --setRoles=0.0.0.0
+            #- --setLBMode=1
+            #- --setUniqueIP=false
+```
+And Apply lbpeercrd.yaml
 ```
 kubectl apply -f manifest/crds/lbpeercrd.yaml
 ```
