@@ -254,13 +254,15 @@ func run(o *Options) error {
 	}()
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
-	crdInformerFactory.Start(stopCh)
 
 	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
-	go BgpPeerManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
-	go BGPPolicyDefinedSetsManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
-	go BGPPolicyDefinitionManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
-	go BGPPolicyApplyManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+	if o.config.EnableBGPCRDs {
+		crdInformerFactory.Start(stopCh)
+		go BgpPeerManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+		go BGPPolicyDefinedSetsManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+		go BGPPolicyDefinitionManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+		go BGPPolicyApplyManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+	}
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {
