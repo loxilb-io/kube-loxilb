@@ -205,6 +205,9 @@ Thereafter, the process of service creation remains the same as explained in pre
 Kube-loxilb provides Custom Resource Definition (CRD). Current the following operations are supported (which would be continually updated):   
 -  Add a BGP Peer   
 -  Delete a BGP Peer   
+-  Add/Delete a BGP Policy
+
+For information on BGP Policy CRD, please refer [here.](https://github.com/loxilb-io/loxilbdocs/blob/main/docs/k8s_bgp_policy_crd.md)
 
 An example of CRD is stored in  manifest/crds. Setting up a BGP Peer as an example is as follows:   
 
