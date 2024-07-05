@@ -71,6 +71,7 @@ type LoadBalancerService struct {
 	ProbeResp    string   `json:"proberesp"`
 	ProbeRetries int32    `json:"probeRetries,omitempty"`
 	ProbeTimeout uint32   `json:"probeTimeout,omitempty"`
+	Security     int32    `json:"security,omitempty"`
 	Name         string   `json:"name,omitempty"`
 	Oper         LbOP     `json:"oper,omitempty"`
 }

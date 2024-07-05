@@ -82,7 +82,7 @@ func NewTCPRouteManager(
 		tcpRouteLister:       tcpRouteInformer.Lister(),
 		tcpRouteListerSynced: tcpRouteInformer.Informer().HasSynced,
 
-		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gatewayClass"),
+		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "tcpRoute"),
 	}
 
 	manager.tcpRouteInformer.Informer().AddEventHandler(

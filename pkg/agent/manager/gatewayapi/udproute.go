@@ -82,7 +82,7 @@ func NewUDPRouteManager(
 		udpRouteLister:       udpRouteInformer.Lister(),
 		udpRouteListerSynced: udpRouteInformer.Informer().HasSynced,
 
-		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gatewayClass"),
+		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "udpRoute"),
 	}
 
 	manager.udpRouteInformer.Informer().AddEventHandler(
