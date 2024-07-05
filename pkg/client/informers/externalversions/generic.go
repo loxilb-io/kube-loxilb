@@ -22,6 +22,9 @@ import (
 	"fmt"
 
 	v1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppeer/v1"
+	bgppolicyapplyv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppolicyapply/v1"
+	bgppolicydefinedsetsv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppolicydefinedsets/v1"
+	bgppolicydefinitionv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppolicydefinition/v1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	cache "k8s.io/client-go/tools/cache"
 )
@@ -55,6 +58,18 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 	// Group=bgppeer.loxilb.io, Version=v1
 	case v1.SchemeGroupVersion.WithResource("bgppeerservices"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Bgppeer().V1().BGPPeerServices().Informer()}, nil
+
+		// Group=bgppolicyapply.loxilb.io, Version=v1
+	case bgppolicyapplyv1.SchemeGroupVersion.WithResource("bgppolicyapplyservices"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Bgppolicyapply().V1().BGPPolicyApplyServices().Informer()}, nil
+
+		// Group=bgppolicydefinedsets.loxilb.io, Version=v1
+	case bgppolicydefinedsetsv1.SchemeGroupVersion.WithResource("bgppolicydefinedsetsservices"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Bgppolicydefinedsets().V1().BGPPolicyDefinedSetsServices().Informer()}, nil
+
+		// Group=bgppolicydefinition.loxilb.io, Version=v1
+	case bgppolicydefinitionv1.SchemeGroupVersion.WithResource("bgppolicydefinitionservices"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Bgppolicydefinition().V1().BGPPolicyDefinitionServices().Informer()}, nil
 
 	}
 

@@ -1,0 +1,158 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.13.0
+  name: bgppolicydefinitionservices.bgppolicydefinition.loxilb.io
+spec:
+  group: bgppolicydefinition.loxilb.io
+  names:
+    kind: BGPPolicyDefinitionService
+    listKind: BGPPolicyDefinitionServiceList
+    plural: bgppolicydefinitionservices
+    singular: bgppolicydefinitionservice
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+      - name: Name
+        type: string
+        priority: 0
+        jsonPath: .spec.name
+        description: Defined Set Name        
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                name:
+                  type: string
+                statements:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      conditions:
+                        type: object
+                        properties:
+                          bgpConditions:
+                            type: object
+                            properties:
+                              afiSafiIn:
+                                type: array
+                                items:
+                                  type: string
+                              asPathLength:
+                                type: object
+                                properties:
+                                  operator:
+                                    type: string
+                                  value:
+                                    type: integer
+                              matchAsPathSet:
+                                type: object
+                                properties:
+                                  asPathSet:
+                                    type: string
+                                  matchSetOptions:
+                                    type: string
+                              matchCommunitySet:
+                                type: object
+                                properties:
+                                  communitySet:
+                                    type: string
+                                  matchSetOptions:
+                                    type: string
+                              matchExtCommunitySet:
+                                type: object
+                                properties:
+                                  communitySet:
+                                    type: string
+                                  matchSetOptions:
+                                    type: string
+                              matchLargeCommunitySet:
+                                type: object
+                                properties:
+                                  communitySet:
+                                    type: string
+                                  matchSetOptions:
+                                    type: string
+                              nextHopInList:
+                                type: array
+                                items:
+                                  type: string
+                              rpki:
+                                type: string
+                              routeType:
+                                type: string
+                          matchNeighborSet:
+                            type: object
+                            properties:
+                              matchSetOption:
+                                type: string
+                              neighborSet:
+                                type: string
+                          matchPrefixSet:
+                            type: object
+                            properties:
+                              matchSetOption:
+                                type: string
+                              prefixSet:
+                                type: string
+                      actions:
+                        type: object
+                        properties:
+                          routeDisposition:
+                            type: string
+                          bgpActions:
+                            type: object
+                            properties:
+                              setMed:
+                                type: string
+                              setNextHop:
+                                type: string
+                              setLocalPref:
+                                type: integer
+                              setCommunity:
+                                type: object
+                                properties:
+                                  options:
+                                    type: string
+                                  setCommunityMethod:
+                                    type: array
+                                    items:
+                                      type: string
+                              setExtCommunity:
+                                type: object
+                                properties:
+                                  options:
+                                    type: string
+                                  setCommunityMethod:
+                                    type: array
+                                    items:
+                                      type: string
+                              setLargeCommunity:
+                                type: object
+                                properties:
+                                  options:
+                                    type: string
+                                  setCommunityMethod:
+                                    type: array
+                                    items:
+                                      type: string
+                              setAsPathPrepend:
+                                type: object
+                                properties:
+                                  as:
+                                    type: string
+                                  repeatN:
+                                    type: integer
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

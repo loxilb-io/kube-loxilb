@@ -75,4 +75,6 @@ type AgentConfig struct {
 	// Specify aws secondary IP. Used when configuring HA in AWS.
 	// The specified private IP is assigned to the loxilb instance and is associated with EIP.
 	PrivateCIDR string `yaml:"privateCIDR,omitempty"`
+	// enable Gateway API
+	EnableBGPCRDs bool `yaml:"enableBGPCRDs,omitempty"`
 }
