@@ -116,6 +116,18 @@ func (l *LoxiClient) HealthCheck() *HealthCheckAPI {
 	return newHealthCheckAPI(l.GetRESTClient())
 }
 
+func (l *LoxiClient) BGPPolicyDefinedSetsAPI() *BGPPolicyDefinedSetsAPI {
+	return newBGPPolicyDefinedSetsAPI(l.GetRESTClient())
+}
+
+func (l *LoxiClient) BGPPolicyDefinition() *BGPPolicyDefinitionAPI {
+	return newBGPPolicyDefinition(l.GetRESTClient())
+}
+
+func (l *LoxiClient) BGPPolicyApply() *BGPPolicyApplyAPI {
+	return newBGPPolicyApplyAPI(l.GetRESTClient())
+}
+
 func (l *LoxiClient) GetRESTClient() *RESTClient {
 	if l == nil {
 		return nil

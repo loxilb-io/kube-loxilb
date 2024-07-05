@@ -1,0 +1,17 @@
+apiVersion: bgppolicydefinition.loxilb.io/v1
+kind: BGPPolicyDefinitionService
+metadata:
+  name: my-custom-resource
+spec:
+  name: poltest
+  statements:
+  - name: statement
+    conditions:
+      matchPrefixSet:
+        matchSetOption: any
+        prefixSet: ps1
+      matchNeighborSet:
+        matchSetOption: any
+        neighborSet: ns2
+    actions:
+      routeDisposition: accept-route

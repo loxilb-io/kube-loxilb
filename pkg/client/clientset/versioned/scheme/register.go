@@ -20,6 +20,9 @@ package scheme
 
 import (
 	bgppeerv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppeer/v1"
+	bgppolicyapplyv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppolicyapply/v1"
+	bgppolicydefinedsetsv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppolicydefinedsets/v1"
+	bgppolicydefinitionv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppolicydefinition/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -32,6 +35,9 @@ var Codecs = serializer.NewCodecFactory(Scheme)
 var ParameterCodec = runtime.NewParameterCodec(Scheme)
 var localSchemeBuilder = runtime.SchemeBuilder{
 	bgppeerv1.AddToScheme,
+	bgppolicyapplyv1.AddToScheme,
+	bgppolicydefinedsetsv1.AddToScheme,
+	bgppolicydefinitionv1.AddToScheme,
 }
 
 // AddToScheme adds all types of this clientset into the given scheme. This allows composition

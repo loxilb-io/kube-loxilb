@@ -22,6 +22,12 @@ import (
 	clientset "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned"
 	bgppeerv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppeer/v1"
 	fakebgppeerv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppeer/v1/fake"
+	bgppolicyapplyv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppolicyapply/v1"
+	fakebgppolicyapplyv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppolicyapply/v1/fake"
+	bgppolicydefinedsetsv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppolicydefinedsets/v1"
+	fakebgppolicydefinedsetsv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppolicydefinedsets/v1/fake"
+	bgppolicydefinitionv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppolicydefinition/v1"
+	fakebgppolicydefinitionv1 "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned/typed/bgppolicydefinition/v1/fake"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
@@ -82,4 +88,19 @@ var (
 // BgppeerV1 retrieves the BgppeerV1Client
 func (c *Clientset) BgppeerV1() bgppeerv1.BgppeerV1Interface {
 	return &fakebgppeerv1.FakeBgppeerV1{Fake: &c.Fake}
+}
+
+// BgppolicyapplyV1 retrieves the BgppolicyapplyV1Client
+func (c *Clientset) BgppolicyapplyV1() bgppolicyapplyv1.BgppolicyapplyV1Interface {
+	return &fakebgppolicyapplyv1.FakeBgppolicyapplyV1{Fake: &c.Fake}
+}
+
+// BgppolicydefinedsetsV1 retrieves the BgppolicydefinedsetsV1Client
+func (c *Clientset) BgppolicydefinedsetsV1() bgppolicydefinedsetsv1.BgppolicydefinedsetsV1Interface {
+	return &fakebgppolicydefinedsetsv1.FakeBgppolicydefinedsetsV1{Fake: &c.Fake}
+}
+
+// BgppolicydefinitionV1 retrieves the BgppolicydefinitionV1Client
+func (c *Clientset) BgppolicydefinitionV1() bgppolicydefinitionv1.BgppolicydefinitionV1Interface {
+	return &fakebgppolicydefinitionv1.FakeBgppolicydefinitionV1{Fake: &c.Fake}
 }
