@@ -71,7 +71,6 @@ const (
 	zoneSelAnnotation           = "loxilb.io/zoneselect"
 	prefLocalPodAnnotation      = "loxilb.io/prefLocalPod"
 	matchNodeLabelAnnotation    = "loxilb.io/nodelabel"
-	enableTlsAnnotation         = "loxilb.io/tls"
 	MaxExternalSecondaryIPsNum  = 4
 )
 
@@ -112,7 +111,6 @@ type LbArgs struct {
 	secIPs        []string
 	endpointIPs   []string
 	needPodEP     bool
-	security      int32
 }
 
 type LbModelEnt struct {
@@ -144,7 +142,6 @@ type LbCacheEntry struct {
 	ProbeTimeo     uint32
 	ProbeRetries   int
 	EpSelect       api.EpSelect
-	Security       int32
 	SecIPs         []string
 	LbServicePairs map[string]*LbServicePairEntry
 }
@@ -846,7 +843,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			probeTimeo:    m.lbCache[cacheKey].ProbeTimeo,
 			probeRetries:  m.lbCache[cacheKey].ProbeRetries,
 			sel:           m.lbCache[cacheKey].EpSelect,
-			security:      m.lbCache[cacheKey].Security,
 			needPodEP:     needPodEP,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
@@ -1608,7 +1604,6 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			ProbeTimeout: lbArgs.probeTimeo,
 			ProbeRetries: int32(lbArgs.probeRetries),
 			Sel:          lbArgs.sel,
-			Security:     lbArgs.security,
 			Name:         fmt.Sprintf("%s_%s", svc.Namespace, svc.Name),
 		},
 		SecondaryIPs: loxiSecIPModelList,
