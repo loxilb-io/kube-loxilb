@@ -370,17 +370,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	prefLocal := false
 	epSelect := api.LbSelRr
 	matchNodeLabel := ""
-	enableTls := int32(0)
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needPodEP {
 		return nil
-	}
-
-	// Check for loxilb specific annotations - enableTlsAnnotation
-	if tls := svc.Annotations[enableTlsAnnotation]; tls != "" {
-		if tls == "true" {
-			enableTls = 1
-		}
 	}
 
 	// Check for loxilb specific annotations - MatchNodeLabel
@@ -590,7 +582,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				ProbeRetries:   probeRetries,
 				EpSelect:       epSelect,
 				Addr:           addrType,
-				Security:       enableTls,
 				SecIPs:         []string{},
 				LbServicePairs: make(map[string]*LbServicePairEntry),
 			}
