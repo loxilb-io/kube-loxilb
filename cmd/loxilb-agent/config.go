@@ -53,9 +53,9 @@ type AgentConfig struct {
 	// external BGP Peers. This is a comma separated list e.g. IP1:ASID1,IP2:ASID2
 	ExtBGPPeers []string `yaml:"extBGPPeers,omitempty"`
 	// support BGP protocol
-	SetBGP uint16 `yaml:"setBGP,omitempty,default=0"`
+	SetBGP uint16 `yaml:"setBGP,omitempty"`
 	// Custom BGP Port
-	ListenBGPPort uint16 `yaml:"listenBGPPort,omitempty,default=179"`
+	ListenBGPPort uint16 `yaml:"listenBGPPort,omitempty"`
 	// Set eBGP multi-hop
 	EBGPMultiHop bool `yaml:"eBGPMultiHop"`
 	// loxilb loadbalancer mode

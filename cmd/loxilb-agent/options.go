@@ -291,4 +291,7 @@ func (o *Options) setDefaults() {
 	if o.config.ExtBGPPeers == nil {
 		o.config.ExtBGPPeers = []string{}
 	}
+	if o.config.ListenBGPPort == 0 {
+		o.config.ListenBGPPort = 179
+	}
 }

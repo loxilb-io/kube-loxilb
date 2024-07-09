@@ -81,7 +81,6 @@ func newAgentCommand() *cobra.Command {
 			if err := opts.validate(args); err != nil {
 				klog.Errorf("Failed to options validate. err: %v", err)
 				os.Exit(255)
-
 			}
 			if err := run(opts); err != nil {
 				klog.Errorf("Error running agent. err: %v", err)
