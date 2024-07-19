@@ -1300,6 +1300,8 @@ func (m *Manager) getServiceIngressIPs(service *corev1.Service) []string {
 						if net.ParseIP(llbHost[1]) != nil {
 							ingressIP = llbHost[1]
 						}
+					} else {
+						continue
 					}
 				}
 			}
