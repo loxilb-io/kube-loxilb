@@ -278,12 +278,16 @@ func run(o *Options) error {
 		udpRouteManager := gatewayapi.NewUDPRouteManager(
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
 
+		httpRouteManager := gatewayapi.NewHTTPRouteManager(
+			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+
 		sigsInformerFactory.Start(stopCh)
 
 		go gatewayClassManager.Run(stopCh)
 		go gatewayManager.Run(stopCh)
 		go tcpRouteManager.Run(stopCh)
 		go udpRouteManager.Run(stopCh)
+		go httpRouteManager.Run(stopCh)
 	}
 
 	<-stopCh
