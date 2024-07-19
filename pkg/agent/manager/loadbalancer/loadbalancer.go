@@ -180,8 +180,8 @@ func GenSPKey(IPString string, Port uint16, Protocol string) string {
 	return fmt.Sprintf("%s:%v:%s", IPString, Port, Protocol)
 }
 
-func genExtIPName(ipStr string) string {
-	prefix := "llb-"
+func (m *Manager) genExtIPName(ipStr string) string {
+	prefix := m.networkConfig.Zone + "-"
 	IP := net.ParseIP(ipStr)
 	if IP != nil {
 		if IP.IsUnspecified() {
@@ -348,9 +348,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if m.networkConfig.Zone != zone {
 			return nil
 		}
-	} else if m.networkConfig.Zone != "" {
+	} /*else if m.networkConfig.Zone != "" {
 		return nil
-	}
+	}*/
 
 	var secIPs []string
 	numSecondarySvc := 0
@@ -918,7 +918,7 @@ func (m *Manager) updateService(svcNs, svcName string, ingSvcPairs []SvcPair) er
 
 	for _, ingSvcPair := range ingSvcPairs {
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
-			retIngress := corev1.LoadBalancerIngress{Hostname: genExtIPName(ingSvcPair.IPString)}
+			retIngress := corev1.LoadBalancerIngress{Hostname: m.genExtIPName(ingSvcPair.IPString)}
 			if !m.checkServiceIngressIPExists(cur, retIngress.Hostname) {
 				cur.Status.LoadBalancer.Ingress = append(cur.Status.LoadBalancer.Ingress, retIngress)
 			}
@@ -1210,7 +1210,7 @@ func (m *Manager) getEndpointsForLB(nodes []*corev1.Node, addrType string, nodeM
 func (m *Manager) checkUpdateExternalIP(ingSvcPairs []SvcPair, svc *corev1.Service) bool {
 	for _, ingSvcPair := range ingSvcPairs {
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
-			retIngress := corev1.LoadBalancerIngress{Hostname: genExtIPName(ingSvcPair.IPString)}
+			retIngress := corev1.LoadBalancerIngress{Hostname: m.genExtIPName(ingSvcPair.IPString)}
 			if !m.checkServiceIngressIPExists(svc, retIngress.Hostname) {
 				klog.V(4).Infof("checkUpdateExternalIP: ingSvcPair %v has external IP but service %s has no IP. need update.", ingSvcPair, svc.Name)
 				return true
@@ -1296,7 +1296,7 @@ func (m *Manager) getServiceIngressIPs(service *corev1.Service) []string {
 
 					}
 				} else {
-					if llbHost[0] == "llb" {
+					if llbHost[0] == m.networkConfig.Zone {
 						if net.ParseIP(llbHost[1]) != nil {
 							ingressIP = llbHost[1]
 						}
