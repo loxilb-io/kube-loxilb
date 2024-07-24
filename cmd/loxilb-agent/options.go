@@ -294,4 +294,7 @@ func (o *Options) setDefaults() {
 	if o.config.ListenBGPPort == 0 {
 		o.config.ListenBGPPort = 179
 	}
+	if o.config.Zone == "" {
+		o.config.Zone = "llb"
+	}
 }
