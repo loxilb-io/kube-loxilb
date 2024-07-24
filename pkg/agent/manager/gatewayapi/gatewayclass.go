@@ -168,6 +168,9 @@ func (m *GatewayClassManager) updateGatewayClass(gc *v1.GatewayClass) error {
 		klog.Infof("gateway class has parametersRef(type: %s): ", gc.Spec.ParametersRef.Kind)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
+	defer cancel()
+
 	// A new GatewayClass will start with the Accepted condition set to False.
 	// At this point the controller has not seen the configuration.
 	// Once the controller has processed the configuration, the condition will be set to True
@@ -179,8 +182,6 @@ func (m *GatewayClassManager) updateGatewayClass(gc *v1.GatewayClass) error {
 				klog.V(4).Infof("gatewayClass %s is created and accepted.", gc.Name)
 			}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
-		defer cancel()
 		_, err := m.sigsClient.GatewayV1().GatewayClasses().UpdateStatus(ctx, gc, metav1.UpdateOptions{})
 		if err != nil {
 			klog.Errorf("unable to update gateway class. err: %v", err)

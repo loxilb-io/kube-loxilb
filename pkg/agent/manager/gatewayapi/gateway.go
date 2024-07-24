@@ -22,8 +22,10 @@ import (
 	"path"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -54,11 +56,6 @@ type GatewayManager struct {
 	gatewayListerSynced cache.InformerSynced
 
 	queue workqueue.RateLimitingInterface
-}
-
-type GatewayQueueEntry struct {
-	namespace string
-	name      string
 }
 
 func NewGatewayManager(
@@ -117,7 +114,7 @@ func (gm *GatewayManager) enqueueObject(obj interface{}) {
 		}
 	}
 
-	gm.queue.Add(GatewayQueueEntry{gw.Namespace, gw.Name})
+	gm.queue.Add(gw)
 }
 
 func (gm *GatewayManager) Run(stopCh <-chan struct{}) {
@@ -151,30 +148,45 @@ func (gm *GatewayManager) processNextWorkItem() bool {
 	}
 	defer gm.queue.Done(obj)
 
-	if key, ok := obj.(GatewayQueueEntry); !ok {
+	if key, ok := obj.(*v1.Gateway); !ok {
 		gm.queue.Forget(obj)
 		klog.Errorf("Expected string in work queue but got %#v", obj)
 		return true
-	} else if err := gm.reconcile(key.namespace, key.name); err == nil {
+	} else if err := gm.reconcile(key); err == nil {
 		gm.queue.Forget(obj)
 	} else {
 		gm.queue.AddRateLimited(obj)
-		klog.Errorf("Error syncing gateway %s/%s, requeuing. Error: %v", key.namespace, key.name, err)
+		klog.Errorf("Error syncing gateway %s/%s, requeuing. Error: %v", key.Namespace, key.Name, err)
 	}
 	return true
 }
 
-func (gm *GatewayManager) reconcile(namespace, name string) error {
-	gw, err := gm.gatewayLister.Gateways(namespace).Get(name)
+func (gm *GatewayManager) reconcile(entry *v1.Gateway) error {
+	gw, err := gm.gatewayLister.Gateways(entry.Namespace).Get(entry.Name)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// object not found, could have been deleted after
 			// reconcile request, hence don't requeue
-			return nil
+			return gm.deleteGateway(entry.Namespace, entry.Name, entry.Status.Addresses, entry.Annotations["ident-ipam"])
 		}
 		return err
 	}
 	return gm.createGateway(gw)
+}
+
+func (gm *GatewayManager) deleteGateway(ns, name string, addresses []v1.GatewayStatusAddress, identIPAM string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
+	defer cancel()
+
+	ipPool := gm.externalIPPool
+	for _, address := range addresses {
+		ipPool.ReturnIPAddr(address.Value, identIPAM)
+	}
+
+	err := gm.deleteIngressLbService(ctx, ns, name)
+	klog.Infof("gateway %s/%s is deleted.", ns, name)
+
+	return err
 }
 
 func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
@@ -206,6 +218,11 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 		}
 		gw.Labels["ipam-address"] = newIP.String()
 		gw.Labels["implementation"] = implementation
+		if gw.Annotations == nil {
+			gw.Annotations = make(map[string]string)
+		}
+		gw.Annotations["ident-ipam"] = identIPAM
+
 		updatedGw, err = gm.sigsClient.GatewayV1().Gateways(gw.Namespace).Update(ctx, gw, metav1.UpdateOptions{})
 		if err != nil {
 			ipPool.ReturnIPAddr(newIP.String(), identIPAM)
@@ -246,10 +263,106 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 			klog.V(4).Infof("gateway %s is programmed.", updatedGw.Name)
 		}
 	}
-	_, err = gm.sigsClient.GatewayV1().Gateways(updatedGw.Namespace).UpdateStatus(ctx, updatedGw, metav1.UpdateOptions{})
+	newGw, err := gm.sigsClient.GatewayV1().Gateways(updatedGw.Namespace).UpdateStatus(ctx, updatedGw, metav1.UpdateOptions{})
 	if err != nil {
 		klog.Errorf("gateway %s/%s unable to update gateway status. err: %v", updatedGw.Namespace, updatedGw.Name, err)
 	}
 
+	svc, err := gm.createIngressLbService(ctx, newGw)
+	if err != nil {
+		klog.Errorf("gateway %s/%s failed to create service.", updatedGw.Namespace, updatedGw.Name)
+		return err
+	}
+
+	klog.Infof("gateway %s/%s is assigned an IP %v and created a service %s/%s.", updatedGw.Namespace, updatedGw.Name, updatedGw.Status.Addresses, svc.Namespace, svc.Name)
+	klog.Infof("gateway %s/%s is created.", updatedGw.Namespace, updatedGw.Name)
 	return nil
+}
+
+func (gm *GatewayManager) deleteIngressLbService(ctx context.Context, gwNs, gwName string) error {
+	svcList, err := gm.kubeClient.CoreV1().Services(gwNs).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			klog.Infof("Gateway: There is no service to delete.")
+			return nil
+		}
+		klog.Errorf("Gateway: get services list (ns: %s) failure. err: %v", gwNs, err)
+		return err
+	}
+
+	for _, svc := range svcList.Items {
+		if svc.Annotations["gateway-api-controller"] == gm.networkConfig.LoxilbGatewayClass &&
+			svc.Annotations["parent-gateway"] == gwName {
+
+			err = gm.kubeClient.CoreV1().Services(svc.Namespace).Delete(ctx, svc.Name, metav1.DeleteOptions{})
+			if err != nil {
+				klog.Errorf("Gateway: delete loadbalancer service %s/%s failure. err: %v", svc.Namespace, svc.Name, err)
+				return err
+			}
+			klog.Infof("service %s/%s is deleted by gateway %s", svc.Namespace, svc.Name, gwName)
+		}
+	}
+
+	return nil
+}
+
+func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v1.Gateway) (*corev1.Service, error) {
+	newService := corev1.Service{}
+	newService.Name = fmt.Sprintf("%s-ingress-service", gateway.Name)
+	newService.Namespace = gateway.Namespace
+
+	svc, err := gm.kubeClient.CoreV1().Services(newService.Namespace).Get(ctx, newService.Name, metav1.GetOptions{})
+	if err == nil {
+		return svc, nil
+	}
+
+	if len(gateway.Spec.Addresses) == 0 {
+		return nil, fmt.Errorf("gateway has no external IP address")
+	}
+
+	newService.SetAnnotations(gateway.Annotations)
+	if newService.Annotations == nil {
+		newService.Annotations = map[string]string{}
+	}
+
+	newService.Annotations["gateway-api-controller"] = gm.networkConfig.LoxilbGatewayClass
+	newService.Annotations["parent-gateway"] = gateway.Name
+
+	newService.SetLabels(map[string]string{
+		"ipam-address":   gateway.Spec.Addresses[0].Value,
+		"implementation": implementation,
+	})
+
+	loadBalancerClass := gm.networkConfig.LoxilbLoadBalancerClass
+	newService.Spec.Type = corev1.ServiceTypeLoadBalancer
+	newService.Spec.LoadBalancerClass = &loadBalancerClass
+	newService.Spec.LoadBalancerIP = gateway.Status.Addresses[0].Value
+	newService.Spec.Ports = []corev1.ServicePort{
+		{
+			Name:       "http",
+			Port:       int32(httpPort),
+			TargetPort: intstr.FromInt(httpPort),
+		},
+		{
+			Name:       "https",
+			Port:       int32(httpsPort),
+			TargetPort: intstr.FromInt(httpsPort),
+		},
+	}
+
+	if newService.Spec.Selector == nil {
+		newService.Spec.Selector = map[string]string{}
+	}
+	newService.Spec.Selector["app.kubernetes.io/component"] = "controller"
+	//newService.Spec.Selector["app.kubernetes.io/instance"] = "loxilb-ingress"
+	//newService.Spec.Selector["app.kubernetes.io/name"] = "loxilb-ingress"
+	newService.Spec.Selector["app.kubernetes.io/instance"] = "ingress-nginx"
+	newService.Spec.Selector["app.kubernetes.io/name"] = "ingress-nginx"
+
+	svc, err = gm.kubeClient.CoreV1().Services(newService.Namespace).Create(ctx, &newService, metav1.CreateOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	return svc, nil
 }
