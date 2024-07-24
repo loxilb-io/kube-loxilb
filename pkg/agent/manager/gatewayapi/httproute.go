@@ -296,7 +296,7 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 	newIngress.SetLabels(map[string]string{
 		"implementation": implementation,
 	})
-	ingressClass := "nginx"
+	ingressClass := "loxilb.io/loxilb"
 	newIngress.Spec.IngressClassName = &ingressClass
 
 	// If the listener has a hostname, it takes precedence over httpRoute.
