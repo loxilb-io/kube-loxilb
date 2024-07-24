@@ -171,3 +171,14 @@ func (l *LoadBalancerAPI) Delete(ctx context.Context, lbModel LoxiModel) error {
 
 	return nil
 }
+
+func (l *LoadBalancerAPI) DeleteByName(ctx context.Context, name string) error {
+	resp := l.client.DELETE(l.resource).SubResource("name").SubResource(name).Do(ctx)
+	if resp.statusCode != http.StatusOK {
+		if resp.err != nil {
+			return resp.err
+		}
+	}
+
+	return nil
+}

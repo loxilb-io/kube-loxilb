@@ -309,6 +309,19 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 		}
 	}
 
+	// TODO: Currently, only TLS Kind is supported.
+	if listener.TLS != nil {
+		for _, tlsCertRef := range listener.TLS.CertificateRefs {
+			if tlsCertRef.Kind != nil && *tlsCertRef.Kind == v1.Kind("Secret") {
+				newIngressTLS := netv1.IngressTLS{
+					SecretName: string(tlsCertRef.Name),
+					Hosts:      hostnames,
+				}
+				newIngress.Spec.TLS = append(newIngress.Spec.TLS, newIngressTLS)
+			}
+		}
+	}
+
 	for _, rule := range httpRoute.Spec.Rules {
 		var paths []netv1.HTTPIngressPath
 		for _, match := range rule.Matches {
@@ -328,7 +341,6 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 						newIngressPath.Path = *match.Path.Value
 					}
 					if match.Path.Type != nil {
-						klog.Infof("HTTPSRoute: match.Path.Type: %v", *match.Path.Type)
 						switch *match.Path.Type {
 						case v1.PathMatchExact:
 							exactType := netv1.PathTypeExact
