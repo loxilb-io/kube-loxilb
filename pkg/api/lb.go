@@ -74,6 +74,7 @@ type LoadBalancerService struct {
 	Security     int32    `json:"security,omitempty"`
 	Name         string   `json:"name,omitempty"`
 	Oper         LbOP     `json:"oper,omitempty"`
+	Host         string   `json:"host,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
