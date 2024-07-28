@@ -8,23 +8,20 @@ on:
         description: 'Tag Name'
         required: true
         default: 'latest'
-
 jobs:
-
   build:
+    runs-on: ubuntu-latest
     name: docker-ci
-
-    runs-on: ubuntu-20.04
-    permissions:
-      packages: write
-
     steps:
     - uses: actions/checkout@v2
       with:
           submodules: recursive
-    - uses: actions/setup-go@v3
-      with:
-          go-version: '>=1.19.0'
+
+    #- name : Checkout Branch
+    #  if:  github.event.inputs.tagName != ''
+    #  run: |
+    #      git fetch --all --tags
+    #      git checkout ${{ github.event.inputs.tagName }}
 
     - name: Login to GitHub Container Registry
       uses: docker/login-action@v1
@@ -33,25 +30,43 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Build the kube-loxilb image
-      run: make
+    # Setup hardware emulator using QEMU
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2
 
-    - name: Build the latest loxilb Docker image
-      if: github.event.inputs.tagName == ''
-      run: docker build . --tag ghcr.io/loxilb-io/kube-loxilb:latest
+    # Setup Docker Buildx for multi-arch images
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
 
-    - name: Build the kube-loxilb Docker image with given tag
-      if: github.event.inputs.tagName != ''
-      run: docker build . --tag ghcr.io/loxilb-io/kube-loxilb:${{ github.event.inputs.tagName }}
+    - name: Build Check
+      if: |
+          github.repository != 'loxilb-io/kube-loxilb'
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        platforms: linux/amd64, linux/arm64
+        push: false
+        tags: ghcr.io/loxilb-io/kube-loxilb:latest
 
-    - name: Publish the latest loxilb Docker image
+    - name: Build and push to latest
       if: |
           github.repository == 'loxilb-io/kube-loxilb'
           &&  github.event.inputs.tagName == ''
-      run: docker push ghcr.io/loxilb-io/kube-loxilb:latest
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        platforms: linux/amd64, linux/arm64
+        push: true
+        tags: ghcr.io/loxilb-io/kube-loxilb:latest
 
-    - name: Publish the kube-loxilb Docker image with given tag
+    - name: Build and push to given tag
       if: |
           github.repository == 'loxilb-io/kube-loxilb'
           &&  github.event.inputs.tagName != ''
-      run: docker push ghcr.io/loxilb-io/kube-loxilb:${{ github.event.inputs.tagName }}
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        platforms: linux/amd64, linux/arm64
+        push: true
+        build-args: TAG=${{ github.event.inputs.tagName }}
+        tags: ghcr.io/loxilb-io/kube-loxilb:${{ github.event.inputs.tagName }}
