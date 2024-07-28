@@ -74,6 +74,7 @@ type LoadBalancerService struct {
 	Security     int32    `json:"security,omitempty"`
 	Name         string   `json:"name,omitempty"`
 	Oper         LbOP     `json:"oper,omitempty"`
+	Host         string   `json:"host,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
@@ -163,6 +164,17 @@ func (l *LoadBalancerAPI) Delete(ctx context.Context, lbModel LoxiModel) error {
 	}
 
 	resp := l.client.DELETE(l.resource).SubResource(subresources).Query(queryParam).Body(lbModel).Do(ctx)
+	if resp.statusCode != http.StatusOK {
+		if resp.err != nil {
+			return resp.err
+		}
+	}
+
+	return nil
+}
+
+func (l *LoadBalancerAPI) DeleteByName(ctx context.Context, name string) error {
+	resp := l.client.DELETE(l.resource).SubResource("name").SubResource(name).Do(ctx)
 	if resp.statusCode != http.StatusOK {
 		if resp.err != nil {
 			return resp.err
