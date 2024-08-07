@@ -296,7 +296,7 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 	newIngress.SetLabels(map[string]string{
 		"implementation": implementation,
 	})
-	ingressClass := "loxilb.io/loxilb"
+	ingressClass := "loxilb"
 	newIngress.Spec.IngressClassName = &ingressClass
 
 	// If the listener has a hostname, it takes precedence over httpRoute.
@@ -326,6 +326,13 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 		var paths []netv1.HTTPIngressPath
 		for _, match := range rule.Matches {
 			for _, backref := range rule.BackendRefs {
+
+				if backref.Namespace != nil {
+					if newIngress.Namespace != string(*backref.Namespace) {
+						newIngress.Annotations["external-backend-service"] = "true"
+						newIngress.Annotations["service-"+string(backref.Name)+"-namespace"] = string(*backref.Namespace)
+					}
+				}
 
 				newIngressPath := netv1.HTTPIngressPath{
 					Backend: netv1.IngressBackend{
