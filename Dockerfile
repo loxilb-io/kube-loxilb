@@ -1,3 +1,12 @@
+FROM golang:1.22-alpine AS builder
+
+RUN apk update && apk add git && apk add make
+
+WORKDIR /usr/src/app
+COPY . .
+
+RUN make build
+
 FROM golang:1.21
 
 LABEL name="kube-loxilb" \
@@ -9,6 +18,7 @@ LABEL name="kube-loxilb" \
       maintainer="backguyn@netlox.io"
 
 WORKDIR /bin/
-COPY ./bin/kube-loxilb /bin/kube-loxilb
+COPY --from=builder /usr/src/app/bin/kube-loxilb /bin/kube-loxilb
+
 USER root
 RUN chmod +x /bin/kube-loxilb
