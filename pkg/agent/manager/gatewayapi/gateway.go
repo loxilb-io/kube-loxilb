@@ -353,11 +353,7 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	if newService.Spec.Selector == nil {
 		newService.Spec.Selector = map[string]string{}
 	}
-	newService.Spec.Selector["app.kubernetes.io/component"] = "controller"
-	//newService.Spec.Selector["app.kubernetes.io/instance"] = "loxilb-ingress"
-	//newService.Spec.Selector["app.kubernetes.io/name"] = "loxilb-ingress"
-	newService.Spec.Selector["app.kubernetes.io/instance"] = "ingress-nginx"
-	newService.Spec.Selector["app.kubernetes.io/name"] = "ingress-nginx"
+	newService.Spec.Selector["app"] = "loxilb-ingress-app"
 
 	svc, err = gm.kubeClient.CoreV1().Services(newService.Namespace).Create(ctx, &newService, metav1.CreateOptions{})
 	if err != nil {
