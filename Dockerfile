@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 RUN apk update && apk add git && apk add make
 
@@ -7,7 +7,7 @@ COPY . .
 
 RUN make build
 
-FROM golang:1.21
+FROM golang:1.23
 
 LABEL name="kube-loxilb" \
       vendor="loxilb.io" \

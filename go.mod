@@ -1,8 +1,6 @@
 module github.com/loxilb-io/kube-loxilb
 
-go 1.21
-
-toolchain go1.21.5
+go 1.23.0
 
 require (
 	github.com/loxilb-io/loxilib v0.8.9-0.20240315085933-0925d8a579ed
