@@ -94,3 +94,37 @@ func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Servic
 	}
 	return epList, nil
 }
+
+// GetServicePodEndpoints - Get PodIPs of pods belonging to the given service
+func GetServicePodEndpoints(kubeClient clientset.Interface, svc *corev1.Service, addrType string, nodeMatchList []string) ([]string, error) {
+	var epList []string
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	selectorLabelStr := labels.Set(svc.Spec.Selector).String()
+	podList, err := kubeClient.CoreV1().Pods(svc.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
+	if err != nil {
+		return epList, err
+	}
+
+	epMap := make(map[string]struct{})
+	for _, pod := range podList.Items {
+		if pod.Status.PodIP != "" {
+			if addrType == "ipv6" && !tk.IsNetIPv6(pod.Status.PodIP) {
+				continue
+			}
+			if len(nodeMatchList) > 0 && !MatchNodeinNodeList(pod.Status.HostIP, nodeMatchList) {
+				continue
+			}
+			if _, found := epMap[pod.Status.PodIP]; !found {
+				epMap[pod.Status.PodIP] = struct{}{}
+				epList = append(epList, pod.Status.PodIP)
+			}
+		}
+	}
+	if len(epList) <= 0 {
+		return epList, errors.New("no active pod endpoints")
+	}
+	return epList, nil
+}

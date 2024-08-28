@@ -71,6 +71,7 @@ const (
 	zoneSelAnnotation           = "loxilb.io/zoneselect"
 	prefLocalPodAnnotation      = "loxilb.io/prefLocalPod"
 	matchNodeLabelAnnotation    = "loxilb.io/nodelabel"
+	usePodNetworkAnnotation     = "loxilb.io/usepodnetwork"
 	MaxExternalSecondaryIPsNum  = 4
 )
 
@@ -110,7 +111,8 @@ type LbArgs struct {
 	probeRetries  int
 	secIPs        []string
 	endpointIPs   []string
-	needPodEP     bool
+	needMultusEP  bool
+	usePodNetwork bool
 }
 
 type LbModelEnt struct {
@@ -337,8 +339,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	lbClassName := svc.Spec.LoadBalancerClass
 
 	// Check for loxilb specific annotation - Multus Networks
-	_, needPodEP := svc.Annotations[LoxiMultusServiceAnnotation]
-	if lbClassName == nil && !needPodEP {
+	_, needMultusEP := svc.Annotations[LoxiMultusServiceAnnotation]
+	if lbClassName == nil && !needMultusEP {
 		klog.V(4).Infof("service %s/%s missing loadBalancerClass & multus annotation", svc.Namespace, svc.Name)
 		return nil
 	}
@@ -367,9 +369,17 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	prefLocal := false
 	epSelect := api.LbSelRr
 	matchNodeLabel := ""
+	usePodNet := false
 
-	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needPodEP {
+	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needMultusEP {
 		return nil
+	}
+
+	// Check for loxilb specific annotations - usePodNet
+	if upn := svc.Annotations[usePodNetworkAnnotation]; upn != "" {
+		if upn == "yes" {
+			usePodNet = true
+		}
 	}
 
 	// Check for loxilb specific annotations - MatchNodeLabel
@@ -547,7 +557,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		numSecondarySvc = 0
 	}
 
-	endpointIPs, err := m.getEndpoints(svc, needPodEP, addrType, matchNodeLabel)
+	endpointIPs, err := m.getEndpoints(svc, usePodNet, needMultusEP, addrType, matchNodeLabel)
 	if err != nil {
 		klog.Errorf("getEndpoints return error.")
 		klog.V(4).Infof("endpointIPs: %v", endpointIPs)
@@ -843,7 +853,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			probeTimeo:    m.lbCache[cacheKey].ProbeTimeo,
 			probeRetries:  m.lbCache[cacheKey].ProbeRetries,
 			sel:           m.lbCache[cacheKey].EpSelect,
-			needPodEP:     needPodEP,
+			needMultusEP:  needMultusEP,
+			usePodNetwork: usePodNet,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -1097,8 +1108,8 @@ func (m *Manager) getNodeEndpointsWithLabel(addrType string, matchLabel string) 
 // getEndpoints return LB's endpoints IP list.
 // If podEP is true, return multus endpoints list.
 // If false, return worker nodes IP list.
-func (m *Manager) getEndpoints(svc *corev1.Service, podEP bool, addrType, matchNodeLabel string) ([]string, error) {
-	if podEP {
+func (m *Manager) getEndpoints(svc *corev1.Service, usePodNet, useMultusNet bool, addrType, matchNodeLabel string) ([]string, error) {
+	if useMultusNet {
 		//klog.Infof("getEndpoints: Pod end-points")
 		return m.getMultusEndpoints(svc, addrType)
 	}
@@ -1113,6 +1124,10 @@ func (m *Manager) getEndpoints(svc *corev1.Service, podEP bool, addrType, matchN
 		if len(matchNodeList) <= 0 {
 			matchNodeList = append(matchNodeList, "xdeadbeefx")
 		}
+	}
+
+	if usePodNet {
+		return k8s.GetServicePodEndpoints(m.kubeClient, svc, addrType, matchNodeList)
 	}
 
 	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeLocal {
@@ -1552,7 +1567,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 		for _, endpoint := range lbArgs.endpointIPs {
 
 			tport := uint16(port.NodePort)
-			if lbArgs.needPodEP {
+			if lbArgs.needMultusEP || lbArgs.usePodNetwork {
 				portNum, err := k8s.GetServicePortIntValue(m.kubeClient, svc, port)
 				if err != nil {
 					return api.LoadBalancerModel{}, err
