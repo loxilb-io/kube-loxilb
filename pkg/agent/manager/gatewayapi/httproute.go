@@ -200,7 +200,7 @@ func (h *HTTPRouteManager) createHTTPRoute(httpRoute *v1.HTTPRoute) error {
 
 		listener := h.findListener(gateway, parentRef)
 		if listener != nil {
-			err := h.reconcileIngress(ctx, httpRoute, listener)
+			err := h.reconcileIngress(ctx, httpRoute, gateway, listener)
 			if err != nil {
 				klog.Errorf("failure reconcileIngress. err: %v", err)
 				return err
@@ -272,16 +272,16 @@ func (h *HTTPRouteManager) findListener(gateway *v1.Gateway, parentRef v1.Parent
 	return nil
 }
 
-func (h *HTTPRouteManager) reconcileIngress(ctx context.Context, httpRoute *v1.HTTPRoute, listener *v1.Listener) error {
+func (h *HTTPRouteManager) reconcileIngress(ctx context.Context, httpRoute *v1.HTTPRoute, gateway *v1.Gateway, listener *v1.Listener) error {
 	// create ingress
-	_, err := h.createIngress(ctx, httpRoute, listener)
+	_, err := h.createIngress(ctx, httpRoute, gateway, listener)
 	if err != nil {
 		klog.Errorf("HTTPManager: failed to create new ingress %s/%s. err: %v", httpRoute.Namespace, httpRoute.Name, err)
 	}
 	return nil
 }
 
-func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTPRoute, listener *v1.Listener) (*netv1.Ingress, error) {
+func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTPRoute, gateway *v1.Gateway, listener *v1.Listener) (*netv1.Ingress, error) {
 	newIngress := netv1.Ingress{}
 	newIngress.Name = httpRoute.Name
 	newIngress.Namespace = httpRoute.Namespace
@@ -291,6 +291,8 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 		newIngress.Annotations = map[string]string{}
 	}
 	newIngress.Annotations["gateway-api-controller"] = h.gatewayProvider
+	newIngress.Annotations["parent-gateway"] = gateway.Name
+	newIngress.Annotations["parent-gateway-namespace"] = gateway.Namespace
 	newIngress.Annotations["parent-http-route"] = httpRoute.Name
 
 	newIngress.SetLabels(map[string]string{

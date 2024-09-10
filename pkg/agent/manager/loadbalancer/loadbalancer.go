@@ -335,6 +335,11 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 }
 
 func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
+	// check loxilb.
+	if len(m.LoxiClients) == 0 {
+		return fmt.Errorf("service cannot be added because there is no loxilb")
+	}
+
 	// check LoadBalancerClass
 	lbClassName := svc.Spec.LoadBalancerClass
 
@@ -980,11 +985,11 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 		}
 
 		var err error
-		isError := true
+		isError := false
 		for _, errCh := range errChList {
 			err = <-errCh
-			if err == nil {
-				isError = false
+			if err != nil {
+				isError = true
 				break
 			}
 		}
