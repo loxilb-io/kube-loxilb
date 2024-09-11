@@ -564,9 +564,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	endpointIPs, err := m.getEndpoints(svc, usePodNet, needMultusEP, addrType, matchNodeLabel)
 	if err != nil {
-		klog.Errorf("getEndpoints return error.")
-		klog.V(4).Infof("endpointIPs: %v", endpointIPs)
-		return err
+		if strings.Compare("no active endpoints", err.Error()) != 0 {
+			klog.Errorf("getEndpoints return error. err: %v", err)
+			klog.V(4).Infof("endpointIPs: %v", endpointIPs)
+			return err
+		}
 	}
 
 	cacheKey := GenKey(svc.Namespace, svc.Name)
@@ -602,6 +604,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		m.lbCache[cacheKey] = <-addNewLbCacheEntryChan
 		lbCacheEntry = m.lbCache[cacheKey]
 		klog.Infof("New LbCache %s Added", cacheKey)
+	} else {
+		if len(endpointIPs) <= 0 {
+			err := m.deleteLoadBalancer(svc.Namespace, svc.Name, false)
+			if err == nil {
+				m.removeAllCacheEndpoints(cacheKey)
+			}
+			return err
+		}
 	}
 
 	retIPAMOnErr := false
@@ -1793,6 +1803,15 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 		}
 	}
 	m.LoxiPeerClients = tmp1
+}
+
+func (m *Manager) removeAllCacheEndpoints(cacheKey string) {
+	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
+		for i, _ := range sp.LbModelList {
+			sp.LbModelList[i].Endpoints = nil
+		}
+	}
+	klog.V(4).Infof("service %s loxilb rule's endpoints are removed", cacheKey)
 }
 
 func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bool) {
