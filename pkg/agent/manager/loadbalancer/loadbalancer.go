@@ -814,9 +814,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	klog.V(4).Infof("what the hell 11111111")
 	if !update {
-		klog.V(4).Infof("what the hell 2222222222222")
 		update = m.checkUpdateEndpoints(cacheKey, endpointIPs) || m.checkUpdateExternalIP(ingSvcPairs, svc)
 	}
 
