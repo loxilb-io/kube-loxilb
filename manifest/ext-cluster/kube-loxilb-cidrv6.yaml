@@ -117,8 +117,8 @@ spec:
         - /bin/kube-loxilb
         args:
         - --loxiURL=http://12.12.12.1:11111,http://14.14.14.1:11111
-        - --externalCIDR=123.123.123.1/24
-        - --externalCIDR6=3ffe::1/96
+        - --cidrPools=defaultPool=123.123.123.1/24
+        - --cidrPools=defaultPool=3ffe::1/96
         #- --config=/opt/loxilb/agent/kube-loxilb.conf
         #- --logtostderr=false
         #- --log_dir=/var/log/kube-loxilb

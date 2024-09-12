@@ -42,9 +42,9 @@ wget https://github.com/loxilb-io/kube-loxilb/raw/main/manifest/ext-cluster/kube
 ```
         args:
             - --loxiURL=http://12.12.12.1:11111
-            - --externalCIDR=123.123.123.1/24
-            #- --externalSecondaryCIDRs=124.124.124.1/24,125.125.125.1/24
-            #- --externalCIDR6=3ffe::1/96
+            - --cidrPools=defaultPool=123.123.123.1/24
+            #- --cidrPools=defaultPool=123.123.123.1/24,pool2=124.124.124.1/24
+            #- --cidrPools=defaultPool=3ffe::1/96
             #- --monitor
             #- --setBGP=65100
             #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
@@ -59,8 +59,8 @@ The arguments have the following meaning :
 | Name | Description |
 | ----------- | ----------- |
 | loxiURL | API server address of loxilb. This is the docker IP address loxilb docker of Step 1. If unspecified, kube-loxilb assumes loxilb is running in-cluster mode and autoconfigures this. |
-| externalCIDR | CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode) |     
-|externalCIDR6 | Ipv6 CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode) |
+| cidrPools | CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode) |     
+| cidr6Pools | Ipv6 CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode) |
 | monitor | Enable liveness probe for the LB end-points (default : unset) | 
 | setBGP | Use specified BGP AS-ID to advertise this service. If not specified BGP will be disabled. Please check [here](https://github.com/loxilb-io/loxilbdocs/blob/main/docs/integrate_bgp_eng.md) how it works. | 
 | extBGPPeers | Specifies external BGP peers with appropriate remote AS | 
@@ -177,7 +177,7 @@ To run loxilb in-cluster mode, the URL argument in [kube-loxilb.yaml](https://gi
 ```
         args:
             #- --loxiURL=http://12.12.12.1:11111
-            - --externalCIDR=123.123.123.1/24
+            - --cidrPools=defaultPool=123.123.123.1/24
 ```   
 
 This enables a self-discovery mode of kube-loxilb where it can find and reach loxilb pods running inside the cluster. Last but not the least we need to create the loxilb pods in cluster :   
@@ -220,9 +220,9 @@ First of all change the kube-loxilb.yaml arguments. It need to add  `- --enableB
 ```
         args:
             - --loxiURL=http://12.12.12.1:11111
-            - --externalCIDR=123.123.123.1/24
-            #- --externalSecondaryCIDRs=124.124.124.1/24,125.125.125.1/24
-            #- --externalCIDR6=3ffe::1/96
+            - --cidrPools=defaultPool=123.123.123.1/24
+            #- --cidrPools=defaultPool=123.123.123.1/24,pool2=124.124.124.1/24,pool3=125.125.125.1/24
+            #- --cidr6Pools=defaultPool==3ffe::1/96
             #- --monitor
             #- --setBGP=65100
             #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
