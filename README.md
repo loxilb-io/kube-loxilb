@@ -42,9 +42,9 @@ wget https://github.com/loxilb-io/kube-loxilb/raw/main/manifest/ext-cluster/kube
 ```
         args:
             - --loxiURL=http://12.12.12.1:11111
-            - --externalCIDR=123.123.123.1/24
-            #- --externalSecondaryCIDRs=124.124.124.1/24,125.125.125.1/24
-            #- --externalCIDR6=3ffe::1/96
+            - --cidrPools=defaultPool=123.123.123.1/24
+            #- --cidrPools=defaultPool=123.123.123.1/24,pool2=124.124.124.1/24
+            #- --cidrPools=defaultPool=3ffe::1/96
             #- --monitor
             #- --setBGP=65100
             #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
@@ -59,8 +59,8 @@ The arguments have the following meaning :
 | Name | Description |
 | ----------- | ----------- |
 | loxiURL | API server address of loxilb. This is the docker IP address loxilb docker of Step 1. If unspecified, kube-loxilb assumes loxilb is running in-cluster mode and autoconfigures this. |
-| externalCIDR | CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode) |     
-|externalCIDR6 | Ipv6 CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode) |
+| cidrPools | CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode) |     
+| cidr6Pools | Ipv6 CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode) |
 | monitor | Enable liveness probe for the LB end-points (default : unset) | 
 | setBGP | Use specified BGP AS-ID to advertise this service. If not specified BGP will be disabled. Please check [here](https://github.com/loxilb-io/loxilbdocs/blob/main/docs/integrate_bgp_eng.md) how it works. | 
 | extBGPPeers | Specifies external BGP peers with appropriate remote AS | 
@@ -77,8 +77,9 @@ Many of the above flags and arguments can be overriden on a per-service basis ba
 | Annotations | Description |
 | ----------- | ----------- |
 | <b>loxilb.io/multus-nets</b> | When using multus, the multus network can also be used as a service endpoint.Register the multus network name to be used.<br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: multus-service<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/multus-nets: macvlan1,macvlan2<br>spec:<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;app: pod-01<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;- port: 55002<br>&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 5002<br>&nbsp;&nbsp;type: LoadBalancer |
-| <b>loxilb.io/num-secondary-networks</b> | When using the SCTP multi-homing function, you can specify the number of secondary IPs(upto 3) to be assigned to the service. When used with the loxilb.io/secondaryIPs annotation, the value set in loxilb.io/num-secondary-networks is ignored. (loxilb.io/secondaryIPs annotation takes precedence)<br><br><b>Example:</b><br>metadata:<br>&nbsp;&nbsp;name: sctp-lb1<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/num-secondary-networks: “2”<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-test<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 55002<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer |
-| <b>loxilb.io/secondaryIPs</b> | When using the SCTP multi-homing function, specify the secondary IP to be assigned to the service. Multiple IPs(upto 3) can be specified at the same time using a comma(,). When used with the loxilb.io/num-secondary-networks annotation, loxilb.io/secondaryIPs takes priority.)<br><br><b>Example:</b><br>metadata:<br>name: sctp-lb-secips<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/lbmode: "fullnat"<br>loxilb.io/secondaryIPs: "1.1.1.1,2.2.2.2"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb-secips<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;type: LoadBalancer|
+| <b>loxilb.io/poolSelect</b> | You can specify the IP Pool name from which external IP address will be allocated and assigned to the service. If this annotation is not present, it defaults to "defaultPool"<br><br><b>Example:</b><br>metadata:<br>&nbsp;&nbsp;name: sctp-lb1<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/poolSelect: “pool1”<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-test<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 55002<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer |
+| <b>loxilb.io/poolSelectSecondary</b> | When using the SCTP multi-homing function, you can specify the number of secondary IP Pools(upto 3) from which secondary IP address can be assigned to the service. When used with the loxilb.io/secondaryIPs annotation, the value set in loxilb.io/poolSelectSecondary is ignored. (loxilb.io/secondaryIPs annotation takes precedence)<br><br><b>Example:</b><br>metadata:<br>&nbsp;&nbsp;name: sctp-lb1<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/poolSelectSecondary: “pool2,pool3”<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-test<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 55002<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer |
+| <b>loxilb.io/secondaryIPs</b> | When using the SCTP multi-homing function, specify the secondary IP to be assigned to the service. Multiple IPs(upto 3) can be specified at the same time using a comma(,). When used with the loxilb.io/poolSelectSecondary annotation, loxilb.io/secondaryIPs takes priority.)<br><br><b>Example:</b><br>metadata:<br>name: sctp-lb-secips<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/lbmode: "fullnat"<br>loxilb.io/secondaryIPs: "1.1.1.1,2.2.2.2"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb-secips<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;type: LoadBalancer|
 | <b> loxilb.io/staticIP</b> | Specifies the External IP to assign to the LoadBalancer service. By default, an external IP is assigned within the externalCIDR range set in kube-loxilb, but using the annotation, IPs outside the range can also be statically specified. <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb-fullnat<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/lbmode: "fullnat"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/staticIP: "192.168.255.254"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-fullnat-test<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer|
 | <b>loxilb.io/liveness</b> | Set LoxiLB to perform a health check (probe) based endpoint selection(If flag is set, only active endpoints will be selected). The default value is no, and when the value is set to yes, the probe function of the corresponding service is activated.<br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb-fullnat<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-fullnat-test<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer|
 | <b>loxilb.io/lbmode</b> | Set LB mode individually for each service. The values ​​that can be specified: “default”, “onearm”, “fullnat” and "dsr". Please refer to [this](https://loxilb-io.github.io/loxilbdocs/nat/) document for more details.<br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb-fullnat<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/lbmode: "fullnat"<br>&nbsp;&nbsp;&nbsp;&nbsp;spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-fullnat-test<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer |
@@ -125,9 +126,12 @@ kube-system       kube-loxilb-5fb5566999-ll4gs                1/1     Running   
            loxilb.io/lbmode: "default"
            # Specify loxilb IPAM mode - one of ipv4, ipv6 or ipv6to4 
            loxilb.io/ipam: "ipv4"
-           # Specify number of secondary networks for multi-homing
+           # Specify cidr pool for allocating externalIP
+           # If not specified defaults to "defaultPool"
+           # loxilb.io/poolSelect: "pool1"
+           # Specify cidr pool of secondary networks for multi-homing
            # Only valid for SCTP currently
-           # loxilb.io/num-secondary-networks: "2
+           # loxilb.io/poolSelectSecondary: "pool2,pool3"
            # Specify a static externalIP for this service
            # loxilb.io/staticIP: "123.123.123.2"
         spec:
@@ -177,7 +181,7 @@ To run loxilb in-cluster mode, the URL argument in [kube-loxilb.yaml](https://gi
 ```
         args:
             #- --loxiURL=http://12.12.12.1:11111
-            - --externalCIDR=123.123.123.1/24
+            - --cidrPools=defaultPool=123.123.123.1/24
 ```   
 
 This enables a self-discovery mode of kube-loxilb where it can find and reach loxilb pods running inside the cluster. Last but not the least we need to create the loxilb pods in cluster :   
@@ -220,9 +224,9 @@ First of all change the kube-loxilb.yaml arguments. It need to add  `- --enableB
 ```
         args:
             - --loxiURL=http://12.12.12.1:11111
-            - --externalCIDR=123.123.123.1/24
-            #- --externalSecondaryCIDRs=124.124.124.1/24,125.125.125.1/24
-            #- --externalCIDR6=3ffe::1/96
+            - --cidrPools=defaultPool=123.123.123.1/24
+            #- --cidrPools=defaultPool=123.123.123.1/24,pool2=124.124.124.1/24,pool3=125.125.125.1/24
+            #- --cidr6Pools=defaultPool==3ffe::1/96
             #- --monitor
             #- --setBGP=65100
             #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102

@@ -54,7 +54,8 @@ const (
 	defaultWorkers              = 1
 	LoxiMaxWeight               = 10
 	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
-	numSecIPAnnotation          = "loxilb.io/num-secondary-networks"
+	PoolNameAnnotation          = "loxilb.io/poolSelect"
+	SecPoolNameAnnotation       = "loxilb.io/poolSelectSecondary"
 	secIPsAnnotation            = "loxilb.io/secondaryIPs"
 	staticIPAnnotation          = "loxilb.io/staticIP"
 	livenessAnnotation          = "loxilb.io/liveness"
@@ -73,27 +74,25 @@ const (
 	matchNodeLabelAnnotation    = "loxilb.io/nodelabel"
 	usePodNetworkAnnotation     = "loxilb.io/usepodnetwork"
 	MaxExternalSecondaryIPsNum  = 4
+	defaultPoolName             = "defaultPool"
 )
 
 type Manager struct {
-	kubeClient           clientset.Interface
-	LoxiClients          []*api.LoxiClient
-	LoxiPeerClients      []*api.LoxiClient
-	networkConfig        *config.NetworkConfig
-	serviceInformer      coreinformers.ServiceInformer
-	serviceLister        corelisters.ServiceLister
-	serviceListerSynced  cache.InformerSynced
-	nodeInformer         coreinformers.NodeInformer
-	nodeLister           corelisters.NodeLister
-	nodeListerSynced     cache.InformerSynced
-	ExternalIPPool       *ippool.IPPool
-	ExtSecondaryIPPools  []*ippool.IPPool
-	ExternalIP6Pool      *ippool.IPPool
-	ExtSecondaryIP6Pools []*ippool.IPPool
-	ElectionRunOnce      bool
-
-	queue   workqueue.RateLimitingInterface
-	lbCache LbCacheTable
+	kubeClient          clientset.Interface
+	LoxiClients         []*api.LoxiClient
+	LoxiPeerClients     []*api.LoxiClient
+	networkConfig       *config.NetworkConfig
+	serviceInformer     coreinformers.ServiceInformer
+	serviceLister       corelisters.ServiceLister
+	serviceListerSynced cache.InformerSynced
+	nodeInformer        coreinformers.NodeInformer
+	nodeLister          corelisters.NodeLister
+	nodeListerSynced    cache.InformerSynced
+	ElectionRunOnce     bool
+	queue               workqueue.RateLimitingInterface
+	lbCache             LbCacheTable
+	ipPoolTbl           map[string]*ippool.IPPool
+	ip6PoolTbl          map[string]*ippool.IPPool
 }
 
 type LbArgs struct {
@@ -144,11 +143,15 @@ type LbCacheEntry struct {
 	ProbeTimeo     uint32
 	ProbeRetries   int
 	EpSelect       api.EpSelect
+	IPPool         *ippool.IPPool
+	SIPPools       []*ippool.IPPool
 	SecIPs         []string
 	LbServicePairs map[string]*LbServicePairEntry
 }
 
 type LbCacheTable map[string]*LbCacheEntry
+
+type IPPoolTable map[string]*ippool.IPPool
 
 type LbCacheKey struct {
 	Namespace string
@@ -199,30 +202,26 @@ func NewLoadBalancerManager(
 	kubeClient clientset.Interface,
 	loxiClients []*api.LoxiClient,
 	loxiPeerClients []*api.LoxiClient,
-	externalIPPool *ippool.IPPool,
-	externalSecondaryIPPools []*ippool.IPPool,
-	externalIP6Pool *ippool.IPPool,
-	externalSecondaryIP6Pools []*ippool.IPPool,
+	ipPoolTbl map[string]*ippool.IPPool,
+	ip6PoolTbl map[string]*ippool.IPPool,
 	networkConfig *config.NetworkConfig,
 	informerFactory informers.SharedInformerFactory) *Manager {
 
 	serviceInformer := informerFactory.Core().V1().Services()
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	manager := &Manager{
-		kubeClient:           kubeClient,
-		LoxiClients:          loxiClients,
-		LoxiPeerClients:      loxiPeerClients,
-		ExternalIPPool:       externalIPPool,
-		ExtSecondaryIPPools:  externalSecondaryIPPools,
-		ExternalIP6Pool:      externalIP6Pool,
-		ExtSecondaryIP6Pools: externalSecondaryIP6Pools,
-		networkConfig:        networkConfig,
-		serviceInformer:      serviceInformer,
-		serviceLister:        serviceInformer.Lister(),
-		serviceListerSynced:  serviceInformer.Informer().HasSynced,
-		nodeInformer:         nodeInformer,
-		nodeLister:           nodeInformer.Lister(),
-		nodeListerSynced:     nodeInformer.Informer().HasSynced,
+		kubeClient:          kubeClient,
+		LoxiClients:         loxiClients,
+		LoxiPeerClients:     loxiPeerClients,
+		ipPoolTbl:           ipPoolTbl,
+		ip6PoolTbl:          ip6PoolTbl,
+		networkConfig:       networkConfig,
+		serviceInformer:     serviceInformer,
+		serviceLister:       serviceInformer.Lister(),
+		serviceListerSynced: serviceInformer.Informer().HasSynced,
+		nodeInformer:        nodeInformer,
+		nodeLister:          nodeInformer.Lister(),
+		nodeListerSynced:    nodeInformer.Informer().HasSynced,
 
 		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
 		lbCache: make(LbCacheTable),
@@ -380,32 +379,50 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return nil
 	}
 
-	// Check for loxilb specific annotations - usePodNet
-	if upn := svc.Annotations[usePodNetworkAnnotation]; upn != "" {
-		if upn == "yes" {
-			usePodNet = true
+	// Check for loxilb specific annotations - Addressing
+	if lba := svc.Annotations[lbAddressAnnotation]; lba != "" {
+		if lba == "ipv4" || lba == "ipv6" || lba == "ipv6to4" {
+			addrType = lba
+		} else if lba == "ip" || lba == "ip4" {
+			addrType = "ipv4"
+		} else if lba == "ip6" || lba == "nat66" {
+			addrType = "ipv6"
+		} else if lba == "nat64" {
+			addrType = "ipv6to4"
 		}
 	}
 
-	// Check for loxilb specific annotations - MatchNodeLabel
-	if mnl := svc.Annotations[matchNodeLabelAnnotation]; mnl != "" {
-		matchNodeLabel = mnl
-	}
+	var sipPools []*ippool.IPPool
+	ipPool := m.ipPoolTbl[defaultPoolName]
 
-	// Check for loxilb specific annotations - PreferLocalPodAlways
-	if plp := svc.Annotations[prefLocalPodAnnotation]; plp != "" {
-		if plp == "yes" {
-			prefLocal = true
+	// Check for loxilb specific annotations - poolName
+	if pn := svc.Annotations[PoolNameAnnotation]; pn != "" {
+		poolTbl := m.ipPoolTbl
+		if addrType == "ipv6" || addrType == "ipv6to4" {
+			poolTbl = m.ip6PoolTbl
 		}
-	}
-
-	// Check for loxilb specific annotations - Secondary IPs number (auto generated IP)
-	if na := svc.Annotations[numSecIPAnnotation]; na != "" {
-		num, err := strconv.Atoi(na)
-		if err != nil {
-			numSecondarySvc = 0
+		if pool := poolTbl[pn]; pool != nil {
+			ipPool = pool
 		} else {
-			numSecondarySvc = num
+			klog.Errorf("%s pool not found", pn)
+			return errors.New("pool not found")
+		}
+	}
+
+	// Check for loxilb specific annotations - SecondayPoolName
+	if spn := svc.Annotations[SecPoolNameAnnotation]; spn != "" {
+		poolTbl := m.ipPoolTbl
+		if addrType == "ipv6" || addrType == "ipv6to4" {
+			poolTbl = m.ip6PoolTbl
+		}
+		spools := strings.Split(spn, ",")
+		for _, spool := range spools {
+			if pool := poolTbl[spool]; pool != nil {
+				sipPools = append(sipPools, pool)
+			} else {
+				klog.Errorf("%s secondary pool not found", spool)
+				return errors.New("secondary pool not found")
+			}
 		}
 	}
 
@@ -423,6 +440,37 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 					break
 				}
 			}
+		}
+	}
+
+	numSecondarySvc = len(sipPools)
+
+	if addrType != "ipv4" && len(sipPools) != 0 {
+		klog.Infof("SecondaryIP Svc not possible for %v", addrType)
+		return errors.New("SecondaryIP Svc not possible")
+	}
+
+	if len(secIPs) != 0 && len(sipPools) != 0 {
+		klog.Infof("SecondaryIP is specified (%v)", secIPs)
+		return errors.New("Static SecondaryIP is specified with Secondary Pool")
+	}
+
+	// Check for loxilb specific annotations - usePodNet
+	if upn := svc.Annotations[usePodNetworkAnnotation]; upn != "" {
+		if upn == "yes" {
+			usePodNet = true
+		}
+	}
+
+	// Check for loxilb specific annotations - MatchNodeLabel
+	if mnl := svc.Annotations[matchNodeLabelAnnotation]; mnl != "" {
+		matchNodeLabel = mnl
+	}
+
+	// Check for loxilb specific annotations - PreferLocalPodAlways
+	if plp := svc.Annotations[prefLocalPodAnnotation]; plp != "" {
+		if plp == "yes" {
+			prefLocal = true
 		}
 	}
 
@@ -539,29 +587,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
-	// Check for loxilb specific annotations - Addressing
-	if lba := svc.Annotations[lbAddressAnnotation]; lba != "" {
-		if lba == "ipv4" || lba == "ipv6" || lba == "ipv6to4" {
-			addrType = lba
-		} else if lba == "ip" || lba == "ip4" {
-			addrType = "ipv4"
-		} else if lba == "ip6" || lba == "nat66" {
-			addrType = "ipv6"
-		} else if lba == "nat64" {
-			addrType = "ipv6to4"
-		}
-	}
-
-	if addrType != "ipv4" && numSecondarySvc != 0 {
-		klog.Infof("SecondaryIP Svc not possible for %v", addrType)
-		numSecondarySvc = 0
-	}
-
-	if len(secIPs) != 0 && numSecondarySvc != 0 {
-		klog.Infof("SecondaryIP is specified (%v)", secIPs)
-		numSecondarySvc = 0
-	}
-
 	endpointIPs, err := m.getEndpoints(svc, usePodNet, needMultusEP, addrType, matchNodeLabel)
 	if err != nil {
 		if strings.Compare("no active endpoints", err.Error()) != 0 {
@@ -597,6 +622,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				EpSelect:       epSelect,
 				Addr:           addrType,
 				SecIPs:         []string{},
+				IPPool:         ipPool,
+				SIPPools:       sipPools,
 				LbServicePairs: make(map[string]*LbServicePairEntry),
 			}
 		}()
@@ -619,7 +646,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	//oldsvc := svc.DeepCopy()
 
 	// Check if service has ingress IP already allocated
-	ingSvcPairs, err, hasExistingEIP := m.getIngressSvcPairs(svc, addrType, lbCacheEntry)
+	ingSvcPairs, err, hasExistingEIP := m.getIngressSvcPairs(svc, lbCacheEntry)
 
 	if err != nil {
 		if !hasExistingEIP {
@@ -630,12 +657,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// set defer for deallocating IP on error
 	defer func() {
 		if retIPAMOnErr {
-			ipPool := m.ExternalIPPool
-			sipPools := m.ExtSecondaryIPPools
-			if addrType == "ipv6" || addrType == "ipv6to4" {
-				ipPool = m.ExternalIP6Pool
-				sipPools = m.ExtSecondaryIP6Pools
-			}
 			klog.Infof("deallocateOnFailure defer function called by service %s", svc.Name)
 			klog.V(4).Infof("error: %v", err)
 			klog.V(4).Infof("ingSvcPairs: %v", ingSvcPairs)
@@ -784,21 +805,17 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// If the user specifies a secondary IP in the annotation, update the existing secondary IP.
 	if len(secIPs) > 0 {
 		if !added {
-			m.returnSecondaryIPs(svc, m.lbCache[cacheKey].SecIPs, addrType)
+			m.returnSecondaryIPs(svc, m.lbCache[cacheKey].SecIPs, m.lbCache[cacheKey].SIPPools)
 			m.lbCache[cacheKey].SecIPs = secIPs
 		}
 	} else if len(m.lbCache[cacheKey].SecIPs) != numSecondarySvc {
 		update = true
-		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, addrType, m.lbCache[cacheKey])
+		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, m.lbCache[cacheKey])
 		if err != nil {
 			retIPAMOnErr = true
 			return err
 		}
 
-		sipPools := m.ExtSecondaryIPPools
-		if addrType == "ipv6" || addrType == "ipv6to4" {
-			sipPools = m.ExtSecondaryIP6Pools
-		}
 		for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
 			if idx < len(sipPools) {
 				for _, sp := range m.lbCache[cacheKey].LbServicePairs {
@@ -968,12 +985,8 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 		return nil
 	}
 
-	ipPool := m.ExternalIPPool
-	sipPools := m.ExtSecondaryIPPools
-	if lbEntry.Addr == "ipv6" || lbEntry.Addr == "ipv6to4" {
-		ipPool = m.ExternalIP6Pool
-		sipPools = m.ExtSecondaryIP6Pools
-	}
+	ipPool := lbEntry.IPPool
+	sipPools := lbEntry.SIPPools
 
 	for _, sp := range lbEntry.LbServicePairs {
 		var errChList []chan error
@@ -1030,12 +1043,8 @@ func (m *Manager) DeleteAllLoadBalancer() {
 	klog.Infof("Len %d", len(m.lbCache))
 	for _, lbEntry := range m.lbCache {
 
-		ipPool := m.ExternalIPPool
-		sipPools := m.ExtSecondaryIPPools
-		if lbEntry.Addr == "ipv6" || lbEntry.Addr == "ipv6to4" {
-			ipPool = m.ExternalIP6Pool
-			sipPools = m.ExtSecondaryIP6Pools
-		}
+		ipPool := lbEntry.IPPool
+		sipPools := lbEntry.SIPPools
 
 		for _, sp := range lbEntry.LbServicePairs {
 			for _, loxiClient := range m.LoxiClients {
@@ -1392,16 +1401,13 @@ func (m *Manager) getLBIngressSvcPairs(service *corev1.Service) []SvcPair {
 
 // getIngressSvcPairs check validation if service have ingress or externalIPs already.
 // If service have no ingress IP, assign new IP in IP pool
-func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, lbCacheEntry *LbCacheEntry) ([]SvcPair, error, bool) {
+func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCacheEntry) ([]SvcPair, error, bool) {
 	var sPairs []SvcPair
 	inSPairs := m.getLBIngressSvcPairs(service)
 	hasExtIPAllocated := false
 	cacheKey := GenKey(service.Namespace, service.Name)
 
-	ipPool := m.ExternalIPPool
-	if addrType == "ipv6" || addrType == "ipv6to4" {
-		ipPool = m.ExternalIP6Pool
-	}
+	ipPool := lbCacheEntry.IPPool
 
 	// k8s service has ingress IP already
 	if len(inSPairs) >= 1 {
@@ -1465,13 +1471,8 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, addrType string, l
 }
 
 // returnSecondaryIPs
-func (m *Manager) returnSecondaryIPs(service *corev1.Service, secIPs []string, addrType string) error {
+func (m *Manager) returnSecondaryIPs(service *corev1.Service, secIPs []string, sipPools []*ippool.IPPool) error {
 	cacheKey := GenKey(service.Namespace, service.Name)
-
-	sipPools := m.ExtSecondaryIPPools
-	if addrType == "ipv6" || addrType == "ipv6to4" {
-		sipPools = m.ExtSecondaryIP6Pools
-	}
 
 	for idx, ingSecIP := range secIPs {
 		if idx < len(sipPools) {
@@ -1484,38 +1485,11 @@ func (m *Manager) returnSecondaryIPs(service *corev1.Service, secIPs []string, a
 	return nil
 }
 
-// reserveSecondaryIPs registers the secondary IP specified in the annotation in the secondary IP pool.
-func (m *Manager) reserveSecondaryIPs(service *corev1.Service, secIPs []string, addrType string) error {
-	// k8s service has ingress IP already
-	sipPools := m.ExtSecondaryIPPools
-	if addrType == "ipv6" {
-		sipPools = m.ExtSecondaryIP6Pools
-	}
-
-	cacheKey := GenKey(service.Namespace, service.Name)
-
-	if len(secIPs) >= 1 {
-		for i, secIP := range secIPs {
-			for _, port := range service.Spec.Ports {
-				pool := sipPools[i]
-				proto := strings.ToLower(string(port.Protocol))
-				portNum := port.Port
-				pool.CheckAndReserveIP(secIP, cacheKey, uint32(portNum), proto)
-			}
-		}
-	}
-
-	return nil
-}
-
 // getIngressSecSvcPairs returns a set of secondary IPs
-func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary int, addrType string, lbCacheEntry *LbCacheEntry) ([]SvcPair, error) {
+func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary int, lbCacheEntry *LbCacheEntry) ([]SvcPair, error) {
 	var sPairs []SvcPair
 
-	sipPools := m.ExtSecondaryIPPools
-	if addrType == "ipv6" {
-		sipPools = m.ExtSecondaryIP6Pools
-	}
+	sipPools := lbCacheEntry.SIPPools
 
 	if len(sipPools) < numSecondary {
 		klog.Errorf("failed to generate external secondary IP. No IP pools")
@@ -1807,7 +1781,7 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 
 func (m *Manager) removeAllCacheEndpoints(cacheKey string) {
 	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
-		for i, _ := range sp.LbModelList {
+		for i := range sp.LbModelList {
 			sp.LbModelList[i].Endpoints = nil
 		}
 	}

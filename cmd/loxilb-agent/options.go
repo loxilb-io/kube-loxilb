@@ -31,6 +31,8 @@ import (
 
 var (
 	loxiURLFlag     = ""
+	cidrPools       = ""
+	cidr6Pools      = ""
 	secondaryCIDRs  = ""
 	secondaryCIDRs6 = ""
 	extBGPPeers     = ""
@@ -57,10 +59,8 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.configFile, "config", o.configFile, "The path to the configuration file")
 	fs.StringVar(&loxiURLFlag, "loxiURL", loxiURLFlag, "loxilb API server URL(s)")
 	fs.StringVar(&o.config.ExternalCIDR, "externalCIDR", o.config.ExternalCIDR, "External CIDR Range")
-	fs.StringVar(&secondaryCIDRs, "externalSecondaryCIDRs", secondaryCIDRs, "External Secondary CIDR Range(s)")
-	fs.StringVar(&o.config.ExternalCIDR6, "externalCIDR6", o.config.ExternalCIDR6, "External CIDR6 Range")
-	fs.StringVar(&secondaryCIDRs6, "externalSecondaryCIDRs6", secondaryCIDRs6, "External Secondary CIDR6 Range(s)")
-	fs.StringVar(&o.config.LoxilbLoadBalancerClass, "loxilbLoadBalancerClass", o.config.LoxilbLoadBalancerClass, "Load-Balancer Class Name")
+	fs.StringVar(&cidrPools, "cidrPools", cidrPools, "CIDR Pools")
+	fs.StringVar(&cidr6Pools, "cidr6Pools", cidr6Pools, "CIDR6 Pools")
 	fs.BoolVar(&o.config.EnableGatewayAPI, "gatewayAPI", false, "Enable gateway API managers")
 	fs.BoolVar(&o.config.EnableBGPCRDs, "enableBGPCRDs", false, "Enable BGP CRDs")
 	fs.StringVar(&o.config.LoxilbGatewayClass, "loxilbGatewayClass", o.config.LoxilbGatewayClass, "GatewayClass manager Name")
@@ -105,26 +105,34 @@ func (o *Options) validate(args []string) error {
 		}
 	}
 
-	if o.config.ExternalCIDR != "" {
-		if _, _, err := net.ParseCIDR(o.config.ExternalCIDR); err != nil {
-			return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDR)
-		}
-		if !lib.IsNetIPv4(o.config.ExternalCIDR) {
-			return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDR)
+	if len(o.config.ExternalCIDRPoolDefs) > 0 {
+		for _, pool := range o.config.ExternalCIDRPoolDefs {
+			poolStrSlice := strings.Split(pool, "=")
+			// Format is pool1=123.123.123.1/32,pool2=124.124.124.124.1/32
+			if len(poolStrSlice) != 2 {
+				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDRPoolDefs)
+			}
+			if _, _, err := net.ParseCIDR(poolStrSlice[1]); err != nil {
+				return fmt.Errorf("externalCIDR %s config is invalid", poolStrSlice[1])
+			}
+			if !lib.IsNetIPv4(poolStrSlice[1]) {
+				return fmt.Errorf("externalCIDR %s config is invalid", poolStrSlice[1])
+			}
 		}
 	}
 
-	if len(o.config.ExternalSecondaryCIDRs) > 0 {
-		if len(o.config.ExternalSecondaryCIDRs) > 4 {
-			return fmt.Errorf("externalSecondaryCIDR %v config is invalid", o.config.ExternalSecondaryCIDRs)
-		}
-
-		for _, CIDR := range o.config.ExternalSecondaryCIDRs {
-			if _, _, err := net.ParseCIDR(CIDR); err != nil {
-				return fmt.Errorf("externalSecondaryCIDR %s config is invalid", CIDR)
+	if len(o.config.ExternalCIDR6PoolDefs) > 0 {
+		for _, pool := range o.config.ExternalCIDR6PoolDefs {
+			poolStrSlice := strings.Split(pool, "=")
+			// Format is pool1=3ffe1::1/64,pool2=2001::1/64
+			if len(poolStrSlice) != 2 {
+				return fmt.Errorf("externalCIDR6 %s config is invalid", o.config.ExternalCIDR6PoolDefs)
 			}
-			if !lib.IsNetIPv4(CIDR) {
-				return fmt.Errorf("externalSecondaryCIDR %s config is invalid", CIDR)
+			if _, _, err := net.ParseCIDR(poolStrSlice[1]); err != nil {
+				return fmt.Errorf("externalCIDR6 %s config is invalid", poolStrSlice[1])
+			}
+			if !lib.IsNetIPv6(poolStrSlice[1]) {
+				return fmt.Errorf("externalCIDR6 %s config is invalid", poolStrSlice[1])
 			}
 		}
 	}
@@ -147,30 +155,6 @@ func (o *Options) validate(args []string) error {
 			asid, err := strconv.ParseInt(bgpPeer[1], 10, 0)
 			if err != nil || asid == 0 {
 				return fmt.Errorf("bgpURL %s is invalid. asid err", bgpPeer[1])
-			}
-		}
-	}
-
-	if o.config.ExternalCIDR6 != "" {
-		if _, _, err := net.ParseCIDR(o.config.ExternalCIDR6); err != nil {
-			return fmt.Errorf("externalCIDR6 %s config is invalid", o.config.ExternalCIDR6)
-		}
-		if lib.IsNetIPv4(o.config.ExternalCIDR6) {
-			return fmt.Errorf("externalCIDR6 %s config is invalid", o.config.ExternalCIDR6)
-		}
-	}
-
-	if len(o.config.ExternalSecondaryCIDRs6) > 0 {
-		if len(o.config.ExternalSecondaryCIDRs6) > 4 {
-			return fmt.Errorf("externalSecondaryCIDR6 %v config is invalid", o.config.ExternalSecondaryCIDRs6)
-		}
-
-		for _, CIDR := range o.config.ExternalSecondaryCIDRs6 {
-			if _, _, err := net.ParseCIDR(CIDR); err != nil {
-				return fmt.Errorf("externalSecondaryCIDR6 %s config is invalid", CIDR)
-			}
-			if lib.IsNetIPv4(CIDR) {
-				return fmt.Errorf("externalSecondaryCIDR6 %s config is invalid", CIDR)
 			}
 		}
 	}
@@ -239,8 +223,11 @@ func (o *Options) updateConfigFromCommandLine() {
 	if loxiURLFlag != "" {
 		o.config.LoxiURLs = strings.Split(loxiURLFlag, ",")
 	}
-	if secondaryCIDRs != "" {
-		o.config.ExternalSecondaryCIDRs = strings.Split(secondaryCIDRs, ",")
+	if cidrPools != "" {
+		o.config.ExternalCIDRPoolDefs = strings.Split(cidrPools, ",")
+	}
+	if cidr6Pools != "" {
+		o.config.ExternalCIDR6PoolDefs = strings.Split(cidr6Pools, ",")
 	}
 	if extBGPPeers != "" {
 		o.config.ExtBGPPeers = strings.Split(extBGPPeers, ",")
@@ -275,19 +262,19 @@ func (o *Options) setDefaults() {
 		o.config.LoxilbGatewayClass = "loxilb.io/loxilb"
 	}
 
-	if o.config.ExternalCIDR == "" {
-		o.config.ExternalCIDR = "123.123.123.1/24"
+	if o.config.ExternalCIDR != "" {
+		poolStr := fmt.Sprintf("defaultPool=%s", o.config.ExternalCIDR)
+		o.config.ExternalCIDRPoolDefs = []string{poolStr}
+	} else {
+		if o.config.ExternalCIDRPoolDefs == nil {
+			o.config.ExternalCIDRPoolDefs = []string{"defaultPool=123.123.123.1/24"}
+		}
 	}
 
-	if o.config.ExternalSecondaryCIDRs == nil {
-		o.config.ExternalSecondaryCIDRs = []string{}
+	if o.config.ExternalCIDR6PoolDefs == nil {
+		o.config.ExternalCIDR6PoolDefs = []string{"defaultPool=3ffe:cafe::1/96"}
 	}
-	if o.config.ExternalCIDR6 == "" {
-		o.config.ExternalCIDR6 = "3ffe:cafe::1/96"
-	}
-	if o.config.ExternalSecondaryCIDRs6 == nil {
-		o.config.ExternalSecondaryCIDRs6 = []string{}
-	}
+
 	if o.config.ExtBGPPeers == nil {
 		o.config.ExtBGPPeers = []string{}
 	}
