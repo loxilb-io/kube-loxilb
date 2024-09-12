@@ -127,7 +127,7 @@ func run(o *Options) error {
 			}
 
 			if _, ok := ipPoolTbl[poolStrSlice[0]]; ok {
-				return fmt.Errorf("externalCIDR %s arleady exists", poolStrSlice)
+				return fmt.Errorf("externalCIDR %s already exists", poolStrSlice)
 			}
 
 			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), poolStrSlice[1], !o.config.ExclIPAM)
@@ -151,8 +151,8 @@ func run(o *Options) error {
 				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDR6PoolDefs)
 			}
 
-			if _, ok := ipPoolTbl[poolStrSlice[0]]; ok {
-				return fmt.Errorf("externalCIDR %s arleady exists", poolStrSlice)
+			if _, ok := ip6PoolTbl[poolStrSlice[0]]; ok {
+				return fmt.Errorf("externalCIDR %s already exists", poolStrSlice)
 			}
 
 			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), poolStrSlice[1], !o.config.ExclIPAM)
