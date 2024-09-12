@@ -20,10 +20,8 @@ type NetworkConfig struct {
 	LoxilbURLs              []string
 	LoxilbLoadBalancerClass string
 	LoxilbGatewayClass      string
-	ExternalCIDR            string
-	ExternalSecondaryCIDRs  []string
-	ExternalCIDR6           string
-	ExternalSecondaryCIDRs6 []string
+	ExternalCIDRPoolDefs    []string
+	ExternalCIDR6PoolDefs   []string
 	SetBGP                  uint16
 	ListenBGPPort           uint16
 	EBGPMultiHop            bool

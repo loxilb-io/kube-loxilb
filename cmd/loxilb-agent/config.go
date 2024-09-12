@@ -44,12 +44,10 @@ type AgentConfig struct {
 	LoxilbGatewayClass string `yaml:"loxilbGatewayClass,omitempty"`
 	// support LoadBalancer external IP
 	ExternalCIDR string `yaml:"externalCIDR,omitempty"`
-	// support LoadBalancer external secondary IP. This is a comma separated list
-	ExternalSecondaryCIDRs []string `yaml:"externalSecondaryCIDRs,omitempty"`
-	// support LoadBalancer external IP6
-	ExternalCIDR6 string `yaml:"externalCIDR6,omitempty"`
-	// support LoadBalancer external secondary IP6. This is a comma separated list
-	ExternalSecondaryCIDRs6 []string `yaml:"externalSecondaryCIDRs6,omitempty"`
+	// support LoadBalancer external IP Pool Definitions
+	ExternalCIDRPoolDefs []string `yaml:"externalCIDRPools,omitempty"`
+	// support LoadBalancer external IP6 Pool Definitions
+	ExternalCIDR6PoolDefs []string `yaml:"externalCIDR6Pools,omitempty"`
 	// external BGP Peers. This is a comma separated list e.g. IP1:ASID1,IP2:ASID2
 	ExtBGPPeers []string `yaml:"extBGPPeers,omitempty"`
 	// support BGP protocol

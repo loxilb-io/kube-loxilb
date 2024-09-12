@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -84,14 +85,13 @@ func run(o *Options) error {
 
 	klog.Infof("URLs: %v", o.config.LoxiURLs)
 	klog.Infof("LB Class: %s", o.config.LoxilbLoadBalancerClass)
-	klog.Infof("CIDR: %s", o.config.ExternalCIDR)
+	klog.Infof("CIDR Pools: %s", o.config.ExternalCIDRPoolDefs)
 	klog.Infof("SetBGP: %v", o.config.SetBGP)
 	klog.Infof("ListenBGPPort: %v", o.config.ListenBGPPort)
 	klog.Infof("eBGPMultiHop: %v", o.config.EBGPMultiHop)
 	klog.Infof("SetLBMode: %v", o.config.SetLBMode)
 	klog.Infof("ExclIPAM: %v", o.config.ExclIPAM)
 	klog.Infof("Monitor: %v", o.config.Monitor)
-	klog.Infof("SecondaryCIDRs: %v", o.config.ExternalSecondaryCIDRs)
 	klog.Infof("ExtBGPPeers: %v", o.config.ExtBGPPeers)
 	klog.Infof("SetRoles: %s", o.config.SetRoles)
 	klog.Infof("Zone: %s", o.config.Zone)
@@ -101,8 +101,8 @@ func run(o *Options) error {
 		LoxilbURLs:              o.config.LoxiURLs,
 		LoxilbLoadBalancerClass: o.config.LoxilbLoadBalancerClass,
 		LoxilbGatewayClass:      o.config.LoxilbGatewayClass,
-		ExternalCIDR:            o.config.ExternalCIDR,
-		ExternalCIDR6:           o.config.ExternalCIDR6,
+		ExternalCIDRPoolDefs:    o.config.ExternalCIDRPoolDefs,
+		ExternalCIDR6PoolDefs:   o.config.ExternalCIDR6PoolDefs,
 		SetBGP:                  o.config.SetBGP,
 		ListenBGPPort:           o.config.ListenBGPPort,
 		EBGPMultiHop:            o.config.EBGPMultiHop,
@@ -112,60 +112,43 @@ func run(o *Options) error {
 		SetLBMode:               o.config.SetLBMode,
 		Monitor:                 o.config.Monitor,
 		AppendEPs:               o.config.AppendEPs,
-		ExternalSecondaryCIDRs:  o.config.ExternalSecondaryCIDRs,
-		ExternalSecondaryCIDRs6: o.config.ExternalSecondaryCIDRs6,
 		PrivateCIDR:             o.config.PrivateCIDR,
 	}
 
-	ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), networkConfig.ExternalCIDR, !o.config.ExclIPAM)
-	if err != nil {
-		klog.Errorf("failed to create external IP Pool (CIDR: %s)", networkConfig.ExternalCIDR)
-		return err
-	}
+	ipPoolTbl := make(map[string]*ippool.IPPool)
 
-	var sipPools []*ippool.IPPool
-	if len(o.config.ExternalSecondaryCIDRs) != 0 {
-
-		if len(o.config.ExternalSecondaryCIDRs) >= loadbalancer.MaxExternalSecondaryIPsNum {
-			return fmt.Errorf("externalSecondaryCIDR %s config is invalid", o.config.ExternalSecondaryCIDRs)
-		}
-
-		for _, CIDR := range o.config.ExternalSecondaryCIDRs {
-			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), CIDR, !o.config.ExclIPAM)
+	if len(o.config.ExternalCIDRPoolDefs) > 0 {
+		for _, pool := range o.config.ExternalCIDRPoolDefs {
+			poolStrSlice := strings.Split(pool, "-")
+			// Format is pool1-123.123.123.1/32,pool2-124.124.124.124.1/32
+			if len(poolStrSlice) <= 0 || len(poolStrSlice) > 2 {
+				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDRPoolDefs)
+			}
+			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), poolStrSlice[1], !o.config.ExclIPAM)
 			if err != nil {
-				klog.Errorf("failed to create external secondary IP Pool (CIDR: %s)", CIDR)
+				klog.Errorf("failed to create external IP Pool (CIDR: %s)", networkConfig.ExternalCIDRPoolDefs)
 				return err
 			}
 
-			networkConfig.ExternalSecondaryCIDRs = append(networkConfig.ExternalSecondaryCIDRs, CIDR)
-			sipPools = append(sipPools, ipPool)
-			klog.Infof("create external secondary IP Pool (CIDR: %s) %v", CIDR, len(sipPools))
+			ipPoolTbl[poolStrSlice[0]] = ipPool
 		}
 	}
 
-	ipPool6, err := ippool.NewIPPool(tk.IpAllocatorNew(), networkConfig.ExternalCIDR6, !o.config.ExclIPAM)
-	if err != nil {
-		klog.Errorf("failed to create external IP Pool (CIDR: %s)", networkConfig.ExternalCIDR6)
-		return err
-	}
+	ip6PoolTbl := make(map[string]*ippool.IPPool)
 
-	var sipPools6 []*ippool.IPPool
-	if len(o.config.ExternalSecondaryCIDRs6) != 0 {
-
-		if len(o.config.ExternalSecondaryCIDRs6) > 4 {
-			return fmt.Errorf("externalSecondaryCIDR %s config is invalid", o.config.ExternalSecondaryCIDRs6)
-		}
-
-		for _, CIDR := range o.config.ExternalSecondaryCIDRs6 {
-			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), CIDR, !o.config.ExclIPAM)
+	if len(o.config.ExternalCIDRPoolDefs) > 0 {
+		for _, pool := range o.config.ExternalCIDR6PoolDefs {
+			poolStrSlice := strings.Split(pool, "-")
+			// Format is pool1-3ffe::1/64,pool2-2001::1/64
+			if len(poolStrSlice) <= 0 || len(poolStrSlice) > 2 {
+				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDR6PoolDefs)
+			}
+			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), poolStrSlice[1], !o.config.ExclIPAM)
 			if err != nil {
-				klog.Errorf("failed to create external secondary IP Pool (CIDR: %s)", CIDR)
+				klog.Errorf("failed to create external IP Pool (CIDR: %s)", networkConfig.ExternalCIDR6PoolDefs)
 				return err
 			}
-
-			networkConfig.ExternalSecondaryCIDRs = append(networkConfig.ExternalSecondaryCIDRs6, CIDR)
-			sipPools6 = append(sipPools6, ipPool)
-			klog.Infof("create external secondary IP Pool (CIDR: %s) %v", CIDR, len(sipPools6))
+			ip6PoolTbl[poolStrSlice[0]] = ipPool
 		}
 	}
 
@@ -191,10 +174,8 @@ func run(o *Options) error {
 		k8sClient,
 		loxilbClients,
 		loxilbPeerClients,
-		ipPool,
-		sipPools,
-		ipPool6,
-		sipPools6,
+		ipPoolTbl,
+		ip6PoolTbl,
 		networkConfig,
 		informerFactory,
 	)
@@ -270,7 +251,7 @@ func run(o *Options) error {
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
 
 		gatewayManager := gatewayapi.NewGatewayManager(
-			k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
+			k8sClient, sigsClient, networkConfig, ipPoolTbl["defaultPool"], sigsInformerFactory)
 
 		tcpRouteManager := gatewayapi.NewTCPRouteManager(
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
