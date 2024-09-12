@@ -45,9 +45,9 @@ type AgentConfig struct {
 	// support LoadBalancer external IP
 	ExternalCIDR string `yaml:"externalCIDR,omitempty"`
 	// support LoadBalancer external IP Pool Definitions
-	ExternalCIDRPoolDefs []string `yaml:"externalCIDRPools,omitempty"`
+	ExternalCIDRPoolDefs []string `yaml:"cidrPools,omitempty"`
 	// support LoadBalancer external IP6 Pool Definitions
-	ExternalCIDR6PoolDefs []string `yaml:"externalCIDR6Pools,omitempty"`
+	ExternalCIDR6PoolDefs []string `yaml:"cidr6Pools,omitempty"`
 	// external BGP Peers. This is a comma separated list e.g. IP1:ASID1,IP2:ASID2
 	ExtBGPPeers []string `yaml:"extBGPPeers,omitempty"`
 	// support BGP protocol

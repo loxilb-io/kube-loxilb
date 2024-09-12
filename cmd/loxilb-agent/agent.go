@@ -119,8 +119,8 @@ func run(o *Options) error {
 
 	if len(o.config.ExternalCIDRPoolDefs) > 0 {
 		for _, pool := range o.config.ExternalCIDRPoolDefs {
-			poolStrSlice := strings.Split(pool, "-")
-			// Format is pool1-123.123.123.1/32,pool2-124.124.124.124.1/32
+			poolStrSlice := strings.Split(pool, "=")
+			// Format is pool1=123.123.123.1/32,pool2=124.124.124.124.1/32
 			if len(poolStrSlice) <= 0 || len(poolStrSlice) > 2 {
 				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDRPoolDefs)
 			}
@@ -138,8 +138,8 @@ func run(o *Options) error {
 
 	if len(o.config.ExternalCIDRPoolDefs) > 0 {
 		for _, pool := range o.config.ExternalCIDR6PoolDefs {
-			poolStrSlice := strings.Split(pool, "-")
-			// Format is pool1-3ffe::1/64,pool2-2001::1/64
+			poolStrSlice := strings.Split(pool, "=")
+			// Format is pool1=3ffe::1/64,pool2=2001::1/64
 			if len(poolStrSlice) <= 0 || len(poolStrSlice) > 2 {
 				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDR6PoolDefs)
 			}
@@ -247,11 +247,18 @@ func run(o *Options) error {
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {
+		var ipPool *ippool.IPPool
+
+		for _, pool := range ipPoolTbl {
+			ipPool = pool
+			break
+		}
+
 		gatewayClassManager := gatewayapi.NewGatewayClassManager(
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
 
 		gatewayManager := gatewayapi.NewGatewayManager(
-			k8sClient, sigsClient, networkConfig, ipPoolTbl["defaultPool"], sigsInformerFactory)
+			k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
 
 		tcpRouteManager := gatewayapi.NewTCPRouteManager(
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)

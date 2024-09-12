@@ -105,11 +105,14 @@ func (o *Options) validate(args []string) error {
 		}
 	}
 
+	fmt.Errorf("ExternalCIDRPoolDefs %v", o.config.ExternalCIDRPoolDefs)
+
 	if len(o.config.ExternalCIDRPoolDefs) > 0 {
 		for _, pool := range o.config.ExternalCIDRPoolDefs {
-			poolStrSlice := strings.Split(pool, "-")
-			// Format is pool1-123.123.123.1/32,pool2-124.124.124.124.1/32
-			if len(poolStrSlice) <= 0 || len(poolStrSlice) > 2 {
+			fmt.Errorf("ExternalCIDRPoolDefs Pool %s", pool)
+			poolStrSlice := strings.Split(pool, "=")
+			// Format is pool1=123.123.123.1/32,pool2=124.124.124.124.1/32
+			if len(poolStrSlice) != 2 {
 				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDRPoolDefs)
 			}
 			if _, _, err := net.ParseCIDR(poolStrSlice[1]); err != nil {
@@ -123,9 +126,9 @@ func (o *Options) validate(args []string) error {
 
 	if len(o.config.ExternalCIDR6PoolDefs) > 0 {
 		for _, pool := range o.config.ExternalCIDR6PoolDefs {
-			poolStrSlice := strings.Split(pool, "-")
-			// Format is pool1-3ffe1::1/64,pool2-2001::1/64
-			if len(poolStrSlice) <= 0 || len(poolStrSlice) > 2 {
+			poolStrSlice := strings.Split(pool, "=")
+			// Format is pool1=3ffe1::1/64,pool2=2001::1/64
+			if len(poolStrSlice) != 2 {
 				return fmt.Errorf("externalCIDR6 %s config is invalid", o.config.ExternalCIDR6PoolDefs)
 			}
 			if _, _, err := net.ParseCIDR(poolStrSlice[1]); err != nil {
@@ -263,16 +266,16 @@ func (o *Options) setDefaults() {
 	}
 
 	if o.config.ExternalCIDR != "" {
-		poolStr := fmt.Sprintf("defaultPool:%s", o.config.ExternalCIDR)
+		poolStr := fmt.Sprintf("defaultPool=%s", o.config.ExternalCIDR)
 		o.config.ExternalCIDRPoolDefs = []string{poolStr}
 	} else {
 		if o.config.ExternalCIDRPoolDefs == nil {
-			o.config.ExternalCIDRPoolDefs = []string{"defaultPool:123.123.123.1/24"}
+			o.config.ExternalCIDRPoolDefs = []string{"defaultPool=123.123.123.1/24"}
 		}
 	}
 
 	if o.config.ExternalCIDR6PoolDefs == nil {
-		o.config.ExternalCIDR6PoolDefs = []string{"defaultPool:3ffe:cafe::1/96"}
+		o.config.ExternalCIDR6PoolDefs = []string{"defaultPool=3ffe:cafe::1/96"}
 	}
 
 	if o.config.ExtBGPPeers == nil {
