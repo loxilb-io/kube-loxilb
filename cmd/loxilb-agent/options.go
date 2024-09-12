@@ -105,11 +105,8 @@ func (o *Options) validate(args []string) error {
 		}
 	}
 
-	fmt.Errorf("ExternalCIDRPoolDefs %v", o.config.ExternalCIDRPoolDefs)
-
 	if len(o.config.ExternalCIDRPoolDefs) > 0 {
 		for _, pool := range o.config.ExternalCIDRPoolDefs {
-			fmt.Errorf("ExternalCIDRPoolDefs Pool %s", pool)
 			poolStrSlice := strings.Split(pool, "=")
 			// Format is pool1=123.123.123.1/32,pool2=124.124.124.124.1/32
 			if len(poolStrSlice) != 2 {

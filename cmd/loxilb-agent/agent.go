@@ -86,6 +86,7 @@ func run(o *Options) error {
 	klog.Infof("URLs: %v", o.config.LoxiURLs)
 	klog.Infof("LB Class: %s", o.config.LoxilbLoadBalancerClass)
 	klog.Infof("CIDR Pools: %s", o.config.ExternalCIDRPoolDefs)
+	klog.Infof("CIDR6 Pools: %s", o.config.ExternalCIDR6PoolDefs)
 	klog.Infof("SetBGP: %v", o.config.SetBGP)
 	klog.Infof("ListenBGPPort: %v", o.config.ListenBGPPort)
 	klog.Infof("eBGPMultiHop: %v", o.config.EBGPMultiHop)
@@ -121,9 +122,14 @@ func run(o *Options) error {
 		for _, pool := range o.config.ExternalCIDRPoolDefs {
 			poolStrSlice := strings.Split(pool, "=")
 			// Format is pool1=123.123.123.1/32,pool2=124.124.124.124.1/32
-			if len(poolStrSlice) <= 0 || len(poolStrSlice) > 2 {
+			if len(poolStrSlice) != 2 {
 				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDRPoolDefs)
 			}
+
+			if _, ok := ipPoolTbl[poolStrSlice[0]]; ok {
+				return fmt.Errorf("externalCIDR %s arleady exists", poolStrSlice)
+			}
+
 			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), poolStrSlice[1], !o.config.ExclIPAM)
 			if err != nil {
 				klog.Errorf("failed to create external IP Pool (CIDR: %s)", networkConfig.ExternalCIDRPoolDefs)
@@ -131,24 +137,31 @@ func run(o *Options) error {
 			}
 
 			ipPoolTbl[poolStrSlice[0]] = ipPool
+			klog.Infof("created external IP Pool (CIDR: %s:%s)", poolStrSlice[0], poolStrSlice[1])
 		}
 	}
 
 	ip6PoolTbl := make(map[string]*ippool.IPPool)
 
-	if len(o.config.ExternalCIDRPoolDefs) > 0 {
+	if len(o.config.ExternalCIDR6PoolDefs) > 0 {
 		for _, pool := range o.config.ExternalCIDR6PoolDefs {
 			poolStrSlice := strings.Split(pool, "=")
 			// Format is pool1=3ffe::1/64,pool2=2001::1/64
-			if len(poolStrSlice) <= 0 || len(poolStrSlice) > 2 {
+			if len(poolStrSlice) != 2 {
 				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDR6PoolDefs)
 			}
+
+			if _, ok := ipPoolTbl[poolStrSlice[0]]; ok {
+				return fmt.Errorf("externalCIDR %s arleady exists", poolStrSlice)
+			}
+
 			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), poolStrSlice[1], !o.config.ExclIPAM)
 			if err != nil {
 				klog.Errorf("failed to create external IP Pool (CIDR: %s)", networkConfig.ExternalCIDR6PoolDefs)
 				return err
 			}
 			ip6PoolTbl[poolStrSlice[0]] = ipPool
+			klog.Infof("created external IP6 Pool (CIDR: %s:%s)", poolStrSlice[0], poolStrSlice[1])
 		}
 	}
 
