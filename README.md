@@ -44,7 +44,7 @@ wget https://github.com/loxilb-io/kube-loxilb/raw/main/manifest/ext-cluster/kube
             - --loxiURL=http://12.12.12.1:11111
             - --cidrPools=defaultPool=123.123.123.1/24
             #- --cidrPools=defaultPool=123.123.123.1/24,pool2=124.124.124.1/24
-            #- --cidrPools=defaultPool=3ffe::1/96
+            #- --cidr6Pools=defaultPool=3ffe::1/96
             #- --monitor
             #- --setBGP=65100
             #- --extBGPPeers=50.50.50.1:65101,51.51.51.1:65102
