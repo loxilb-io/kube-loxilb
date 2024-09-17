@@ -44,6 +44,7 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
+	tk "github.com/loxilb-io/loxilib"
 )
 
 const (
@@ -1405,18 +1406,22 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 	var sPairs []SvcPair
 	inSPairs := m.getLBIngressSvcPairs(service)
 	hasExtIPAllocated := false
+	poolReserved := false
 	cacheKey := GenKey(service.Namespace, service.Name)
 
 	ipPool := lbCacheEntry.IPPool
 
 	// k8s service has ingress IP already
 	if len(inSPairs) >= 1 {
+		poolReserved = false
 		klog.V(4).Infof("getIngressSvcPairs: service %s has servicePairs: %v", cacheKey, inSPairs)
 		klog.V(4).Infof("getIngressSvcPairs: service %s has externalIP: %v", cacheKey, service.Status.LoadBalancer.Ingress)
 	checkSvcPortLoop:
 		for _, inSPair := range inSPairs {
 
 			hasExtIPAllocated = true
+			inRange := false
+			identStr := ""
 			for _, sp := range lbCacheEntry.LbServicePairs {
 				if GenSPKey(inSPair.IPString, uint16(inSPair.Port), inSPair.Protocol) == GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol) {
 					oldsp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, inSPair.K8sSvcPort}
@@ -1426,10 +1431,20 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 				}
 			}
 
-			inRange, _, identStr := ipPool.CheckAndReserveIP(inSPair.IPString, cacheKey, uint32(inSPair.Port), inSPair.Protocol)
-			newsp := SvcPair{inSPair.IPString, inSPair.Port, inSPair.Protocol, inRange, true, identStr, true, inSPair.K8sSvcPort}
+			if !poolReserved {
+				inRange, _, identStr = ipPool.CheckAndReserveIP(inSPair.IPString, cacheKey, uint32(inSPair.Port), inSPair.Protocol)
+			} else {
+				identStr = tk.IPAMNoIdent
+				if ipPool.Shared {
+					identStr = tk.MakeIPAMIdent("", uint32(inSPair.Port), inSPair.Protocol)
+				}
+			}
+			newsp := SvcPair{inSPair.IPString, inSPair.Port, inSPair.Protocol, inRange, true, identStr, !poolReserved, inSPair.K8sSvcPort}
 			klog.V(4).Infof("getIngressSvcPairs: LB cache %s is added servicePairs: %v", cacheKey, newsp)
 			sPairs = append(sPairs, newsp)
+			if inRange && !poolReserved {
+				poolReserved = true
+			}
 		}
 	}
 
@@ -1438,6 +1453,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 
 	// If hasExtIPAllocated is false, that means k8s service has no ingress IP
 	if !hasExtIPAllocated {
+		poolReserved = false
 		klog.V(4).Infof("getIngressSvcPairs: service %s has no externalIP: %v", cacheKey, service.Status.LoadBalancer.Ingress)
 	checkServicePortLoop:
 		for _, port := range service.Spec.Ports {
@@ -1453,18 +1469,31 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 				}
 			}
 
-			newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
-			if newIP == nil {
-				errMsg := fmt.Sprintf("failed to generate external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
-				klog.Errorf(errMsg)
-				klog.Exit("kube-loxilb cant run optimally anymore")
-				return nil, errors.New(errMsg), hasExtIPAllocated
+			if !poolReserved {
+				newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
+				if newIP == nil {
+					errMsg := fmt.Sprintf("failed to generate external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
+					klog.Errorf(errMsg)
+					klog.Exit("kube-loxilb cant run optimally anymore")
+					return nil, errors.New(errMsg), hasExtIPAllocated
+				}
+
+				klog.V(4).Infof("getIngressSvcPairs: service %s :%s generated new externalIP: %s", cacheKey, identIPAM, newIP.String())
+
+			} else {
+				identIPAM = tk.IPAMNoIdent
+				if ipPool.Shared {
+					identIPAM = tk.MakeIPAMIdent("", uint32(portNum), proto)
+				}
+
+				klog.V(4).Infof("getIngressSvcPairs: service %s :%s reuse externalIP: %s", cacheKey, identIPAM, newIP.String())
 			}
 
-			klog.V(4).Infof("getIngressSvcPairs: service %s is generated new externalIP: %s", cacheKey, newIP.String())
-
-			newsp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}
+			newsp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, !poolReserved, port}
 			sPairs = append(sPairs, newsp)
+			if !poolReserved {
+				poolReserved = true
+			}
 		}
 	}
 	return sPairs, nil, hasExtIPAllocated
