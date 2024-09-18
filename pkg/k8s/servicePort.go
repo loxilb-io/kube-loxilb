@@ -55,7 +55,7 @@ func GetServicePortIntValue(kubeClient clientset.Interface, svc *corev1.Service,
 	return 0, fmt.Errorf("not found port name %s in service %s", port.TargetPort.String(), svc.Name)
 }
 
-func GetServiceEndPoints(kubeClient clientset.Interface, name string, ns string) ([]net.IP, error) {
+func GetServiceEndPoints(kubeClient clientset.Interface, name string, ns string, nodeMatchList []string) ([]net.IP, error) {
 	var retIPs []net.IP
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
@@ -69,6 +69,9 @@ func GetServiceEndPoints(kubeClient clientset.Interface, name string, ns string)
 		for _, addr := range ep.Addresses {
 			IP := net.ParseIP(addr.IP)
 			if IP != nil {
+				if len(nodeMatchList) > 0 && !MatchNodeinNodeList(IP.String(), nodeMatchList) {
+					continue
+				}
 				retIPs = append(retIPs, IP)
 			}
 		}

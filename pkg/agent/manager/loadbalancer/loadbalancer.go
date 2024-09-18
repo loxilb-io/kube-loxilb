@@ -76,6 +76,7 @@ const (
 	usePodNetworkAnnotation     = "loxilb.io/usepodnetwork"
 	MaxExternalSecondaryIPsNum  = 4
 	defaultPoolName             = "defaultPool"
+	loxilbZoneLabelKey          = "loxilb.io/zonelabel"
 )
 
 type Manager struct {
@@ -335,9 +336,17 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 }
 
 func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
-	// check loxilb.
+
+	zone := svc.Annotations[zoneSelAnnotation]
+	if zone != "" {
+		if m.networkConfig.Zone != zone {
+			return nil
+		}
+	}
+
+	// check loxilb
 	if len(m.LoxiClients) == 0 {
-		return fmt.Errorf("service cannot be added because there is no loxilb")
+		return fmt.Errorf("service cannot be added because there are no loxilb instances")
 	}
 
 	// check LoadBalancerClass
@@ -349,15 +358,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.V(4).Infof("service %s/%s missing loadBalancerClass & multus annotation", svc.Namespace, svc.Name)
 		return nil
 	}
-
-	zone := svc.Annotations[zoneSelAnnotation]
-	if zone != "" {
-		if m.networkConfig.Zone != zone {
-			return nil
-		}
-	} /*else if m.networkConfig.Zone != "" {
-		return nil
-	}*/
 
 	var secIPs []string
 	numSecondarySvc := 0
@@ -1103,7 +1103,7 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 
 // getNodeEndpointsWithLabel returns the IP list of nodes available with match labels
 func (m *Manager) getNodeEndpointsWithLabel(addrType string, matchLabel string) ([]string, error) {
-	klog.Infof("getNodeEndpointsWithLabel: label %s", matchLabel)
+	klog.V(4).Infof("getNodeEndpointsWithLabel: label %s", matchLabel)
 	req, err := labels.NewRequirement(matchLabel, selection.Exists, []string{})
 	if err != nil {
 		klog.Infof("getNodeEndpointsWithLabel: failed to make label requirement. err: %v", err)
@@ -1123,7 +1123,36 @@ func (m *Manager) getNodeEndpointsWithLabel(addrType string, matchLabel string) 
 			klog.Errorf(err.Error())
 			continue
 		}
-		klog.Infof("getNodeEndpointsWithLabel: found node %s with label %s", addr, matchLabel)
+		klog.V(4).Infof("getNodeEndpointsWithLabel: found node %s with label %s", addr, matchLabel)
+		endpoints = append(endpoints, addr)
+	}
+
+	return endpoints, nil
+}
+
+// getNodeEndpointsWithLabelWithKey returns the IP list of nodes available with match labels
+func (m *Manager) getNodeEndpointsWithLabelWithKey(addrType string, key, matchLabel string) ([]string, error) {
+	klog.V(4).Infof("getNodeEndpointsWithLabelWithKey: label %s:%s", key, matchLabel)
+	req, err := labels.NewRequirement(key, selection.In, []string{matchLabel})
+	if err != nil {
+		klog.Infof("getNodeEndpointsWithLabelWithKey: failed to make label requirement. err: %v", err)
+		return nil, err
+	}
+
+	nodes, err := m.nodeLister.List(labels.NewSelector().Add(*req))
+	if err != nil {
+		klog.Infof("getNodeEndpointsWithLabelWithKey: failed to get nodeList. err: %v", err)
+		return nil, err
+	}
+
+	var endpoints []string
+	for _, node := range nodes {
+		addr, err := m.getNodeAddress(*node, addrType)
+		if err != nil {
+			klog.Errorf(err.Error())
+			continue
+		}
+		klog.V(4).Infof("getNodeEndpointsWithLabelWithKey: found node %s with label %s:%s", addr, key, matchLabel)
 		endpoints = append(endpoints, addr)
 	}
 
@@ -1699,9 +1728,17 @@ func (m *Manager) addIngress(service *corev1.Service, newIP net.IP) {
 
 func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient, excludeList []string) {
 	var tmploxilbClients []*api.LoxiClient
+	var matchNodeList []string
+	if m.networkConfig.Zone != "" && m.networkConfig.Zone != "llb" {
+		matchNodeList, _ = m.getNodeEndpointsWithLabelWithKey("ipv4", loxilbZoneLabelKey, m.networkConfig.Zone)
+		if len(matchNodeList) <= 0 {
+			matchNodeList = append(matchNodeList, "xdeadbeefx")
+		}
+	}
+
 	// DNS lookup (not used now)
 	// ips, err := net.LookupIP("loxilb-lb-service")
-	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-lb-service", "kube-system")
+	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-lb-service", "kube-system", matchNodeList)
 	if err != nil {
 		ips = []net.IP{}
 	}
@@ -1760,7 +1797,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 
 func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
 	var tmploxilbPeerClients []*api.LoxiClient
-	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "kube-system")
+	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "kube-system", []string{})
 	if len(ips) > 0 {
 		klog.Infof("loxilb-peer-service end-points:  %v", ips)
 	}
