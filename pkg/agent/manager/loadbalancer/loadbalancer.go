@@ -1738,8 +1738,9 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 
 	// DNS lookup (not used now)
 	// ips, err := net.LookupIP("loxilb-lb-service")
-	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-lb-service", "kube-system", matchNodeList)
+	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-lb-service", "", matchNodeList)
 	if err != nil {
+		klog.Infof("loxilb-service failed: %s", err)
 		ips = []net.IP{}
 	}
 
@@ -1797,7 +1798,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 
 func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
 	var tmploxilbPeerClients []*api.LoxiClient
-	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "kube-system", []string{})
+	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "", []string{})
 	if len(ips) > 0 {
 		klog.Infof("loxilb-peer-service end-points:  %v", ips)
 	}

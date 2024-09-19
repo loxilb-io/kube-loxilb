@@ -19,13 +19,12 @@ package k8s
 import (
 	"context"
 	"fmt"
-	"net"
-	"time"
-
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	clientset "k8s.io/client-go/kubernetes"
+	"net"
+	"time"
 )
 
 func GetServicePortIntValue(kubeClient clientset.Interface, svc *corev1.Service, port corev1.ServicePort) (int, error) {
@@ -60,19 +59,30 @@ func GetServiceEndPoints(kubeClient clientset.Interface, name string, ns string,
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
-	eps, err := kubeClient.CoreV1().Endpoints(ns).Get(ctx, name, metav1.GetOptions{})
+	nsList, err := kubeClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
 
-	for _, ep := range eps.Subsets {
-		for _, addr := range ep.Addresses {
-			IP := net.ParseIP(addr.IP)
-			if IP != nil {
-				if len(nodeMatchList) > 0 && !MatchNodeinNodeList(IP.String(), nodeMatchList) {
-					continue
+	for _, nsItem := range nsList.Items {
+		if ns != "" && nsItem.Name != ns {
+			continue
+		}
+
+		eps, err := kubeClient.CoreV1().Endpoints(nsItem.Name).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			continue
+		}
+
+		for _, ep := range eps.Subsets {
+			for _, addr := range ep.Addresses {
+				IP := net.ParseIP(addr.IP)
+				if IP != nil {
+					if len(nodeMatchList) > 0 && !MatchNodeinNodeList(IP.String(), nodeMatchList) {
+						continue
+					}
+					retIPs = append(retIPs, IP)
 				}
-				retIPs = append(retIPs, IP)
 			}
 		}
 	}
