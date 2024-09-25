@@ -20,15 +20,15 @@ spec:
         operator: Exists
       - key: "node-role.kubernetes.io/control-plane"
         operator: Exists
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: "node-role.kubernetes.io/master"
-                operator: Exists
-              - key: "node-role.kubernetes.io/control-plane"
-                operator: Exists
+      #affinity:
+      #  nodeAffinity:
+      #    requiredDuringSchedulingIgnoredDuringExecution:
+      #      nodeSelectorTerms:
+      #      - matchExpressions:
+      #        - key: "node-role.kubernetes.io/master"
+      #          operator: Exists
+      #        - key: "node-role.kubernetes.io/control-plane"
+      #          operator: Exists
       containers:
       - name: loxilb-app
         image: "ghcr.io/loxilb-io/loxilb:latest"
