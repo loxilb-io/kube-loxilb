@@ -588,17 +588,18 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	cacheKey := GenKey(svc.Namespace, svc.Name)
+	lbCacheEntry, added := m.lbCache[cacheKey]
+
 	endpointIPs, err := m.getEndpoints(svc, usePodNet, needMultusEP, addrType, matchNodeLabel)
 	if err != nil {
-		if strings.Compare("no active endpoints", err.Error()) != 0 {
+		if !added {
 			klog.Errorf("getEndpoints return error. err: %v", err)
 			klog.V(4).Infof("endpointIPs: %v", endpointIPs)
 			return err
 		}
 	}
 
-	cacheKey := GenKey(svc.Namespace, svc.Name)
-	lbCacheEntry, added := m.lbCache[cacheKey]
 	if !added {
 		if len(endpointIPs) <= 0 {
 			return errors.New("no active endpoints")
