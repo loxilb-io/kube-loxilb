@@ -425,6 +425,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				return errors.New("secondary pool not found")
 			}
 		}
+		numSecondarySvc = len(spools)
 	}
 
 	// Check for loxilb specific annotations - Secondary IPs (user specified)
@@ -443,8 +444,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			}
 		}
 	}
-
-	numSecondarySvc = len(sipPools)
 
 	if addrType != "ipv4" && len(sipPools) != 0 {
 		klog.Infof("SecondaryIP Svc not possible for %v", addrType)
@@ -1556,35 +1555,31 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 	}
 
 	cacheKey := GenKey(service.Namespace, service.Name)
+	poolReserved := false
 
 	for i := 0; i < numSecondary; i++ {
-	checkServicePortLoop:
+		poolReserved = false
 		for _, port := range service.Spec.Ports {
 			pool := sipPools[i]
 			proto := strings.ToLower(string(port.Protocol))
 			portNum := port.Port
 
-			for _, sp := range lbCacheEntry.LbServicePairs {
-				if sp.Port == uint16(portNum) && proto == sp.Protocol {
-					oldsp := SvcPair{sp.ExternalIP, int32(sp.Port), sp.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, port}
-					sPairs = append(sPairs, oldsp)
-					continue checkServicePortLoop
+			if !poolReserved {
+				newIP, identIPAM := pool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
+				if newIP == nil {
+					for j := 0; j < i; j++ {
+						rpool := sipPools[j]
+						rpool.ReturnIPAddr(sPairs[j].IPString, sPairs[j].IdentIPAM)
+					}
+					errMsg := fmt.Sprintf("failed to generate secondary external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
+					klog.Errorf(errMsg)
+					klog.Exit("kube-loxilb cant run optimally anymore")
+					return nil, errors.New(errMsg)
 				}
+				newsp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}
+				sPairs = append(sPairs, newsp)
+				poolReserved = true
 			}
-
-			newIP, identIPAM := pool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
-			if newIP == nil {
-				for j := 0; j < i; j++ {
-					rpool := sipPools[j]
-					rpool.ReturnIPAddr(sPairs[j].IPString, sPairs[j].IdentIPAM)
-				}
-				errMsg := fmt.Sprintf("failed to generate secondary external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
-				klog.Errorf(errMsg)
-				klog.Exit("kube-loxilb cant run optimally anymore")
-				return nil, errors.New(errMsg)
-			}
-			newsp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}
-			sPairs = append(sPairs, newsp)
 		}
 	}
 
