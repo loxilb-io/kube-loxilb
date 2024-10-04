@@ -132,7 +132,7 @@ func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
 		return &LoxiResponse{statusCode: resp.StatusCode, err: err}
 	}
 
-	if resp.StatusCode == http.StatusOK {
+	if resp.StatusCode == http.StatusOK && req.Method != http.MethodGet {
 		if err := json.Unmarshal(respByte, &result); err != nil {
 			return &LoxiResponse{statusCode: resp.StatusCode, err: err}
 		}

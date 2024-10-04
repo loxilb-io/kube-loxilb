@@ -132,8 +132,8 @@ func (l *LoadBalancerAPI) Get(ctx context.Context, name string) (LoxiModel, erro
 	return lbModel, nil
 }
 
-func (l *LoadBalancerAPI) List(ctx context.Context) (LoxiModel, error) {
-	lbListModel := l.GetListModel()
+func (l *LoadBalancerAPI) List(ctx context.Context) (*LoadBalancerListModel, error) {
+	lbListModel := &LoadBalancerListModel{}
 
 	resp := l.client.GET(l.resource).SubResource("all").Do(ctx).UnMarshal(lbListModel)
 	if resp.err != nil {
