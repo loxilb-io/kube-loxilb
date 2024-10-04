@@ -921,13 +921,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 
 		var loxilbAPIErr error
+		errCount := 0
 		for _, errCh := range errChList {
 			err := <-errCh
 			if err != nil {
 				loxilbAPIErr = err
+				errCount++
 			}
 		}
-		if loxilbAPIErr != nil {
+		if loxilbAPIErr != nil && errCount >= len(m.LoxiClients) {
 			retIPAMOnErr = true
 			klog.Errorf("failed to add load-balancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
 			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
@@ -986,6 +988,8 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 		return nil
 	}
 
+	var rErr error
+	isError := false
 	ipPool := lbEntry.IPPool
 	sipPools := lbEntry.SIPPools
 
@@ -1009,18 +1013,22 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 		}
 
 		var err error
-		isError := false
+
 		for _, errCh := range errChList {
 			err = <-errCh
 			if err != nil {
 				isError = true
+				rErr = err
 				break
 			}
 		}
-		if isError {
-			return fmt.Errorf("failed to delete loxiLB LoadBalancer. err: %v", err)
-		}
+	}
 
+	if isError {
+		return fmt.Errorf("failed to delete loxiLB LoadBalancer. err: %v", rErr)
+	}
+
+	for _, sp := range lbEntry.LbServicePairs {
 		if releaseAll {
 			if sp.InRange {
 				ipPool.ReturnIPAddr(sp.ExternalIP, sp.IdentIPAM)
