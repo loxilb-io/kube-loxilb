@@ -29,9 +29,9 @@ import (
 	crdLister "github.com/loxilb-io/kube-loxilb/pkg/klb-client/listers/loxiurl/v1"
 	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	urllib "net/url"
 	"strings"
 	"time"
-
 	//v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -256,6 +256,13 @@ func (m *Manager) addLoxiLBURL(url *crdv1.LoxiURL) error {
 
 	newloxiURLS := strings.Split(url.Spec.LoxiURL, ",")
 
+	for _, u := range newloxiURLS {
+		if _, err := urllib.Parse(u); err != nil {
+			klog.Errorf("loxiURL %s is invalid. err: %v", u, err)
+			return fmt.Errorf("loxiURL %s is invalid. err: %v", u, err)
+		}
+	}
+
 	urlChg := false
 nextURL:
 	for _, nurl := range newloxiURLS {
@@ -304,6 +311,13 @@ func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
 	}
 
 	deletedloxiURLS := strings.Split(url.Spec.LoxiURL, ",")
+
+	for _, u := range deletedloxiURLS {
+		if _, err := urllib.Parse(u); err != nil {
+			klog.Errorf("loxiURL %s is invalid. err: %v", u, err)
+			return fmt.Errorf("loxiURL %s is invalid. err: %v", u, err)
+		}
+	}
 
 	matchCount := 0
 nextURL:
