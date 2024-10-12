@@ -31,10 +31,12 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppolicydefinition"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/gatewayapi"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loxiurl"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
-	crdinformers "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions"
+	bgpCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
+	klbCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions"
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
 
 	"k8s.io/client-go/informers"
@@ -62,17 +64,20 @@ func run(o *Options) error {
 	klog.Infof("  Build: %s", BuildInfo)
 
 	// create k8s Clientset, CRD Clientset and SharedInformerFactory for the given config.
-	k8sClient, _, crdClient, _, sigsClient, err := k8s.CreateClients(o.config.ClientConnection, "")
+	k8sClient, _, bgpCRDClient, klbCRDClient, k8sExtClient, sigsClient, err := k8s.CreateClients(o.config.ClientConnection, "")
 	if err != nil {
 		return fmt.Errorf("error creating k8s clients: %v", err)
 	}
 
 	informerFactory := informers.NewSharedInformerFactory(k8sClient, informerDefaultResync)
-	crdInformerFactory := crdinformers.NewSharedInformerFactory(crdClient, informerDefaultResync)
-	BGPPeerInformer := crdInformerFactory.Bgppeer().V1().BGPPeerServices()
-	BGPPolicyDefinedSetInformer := crdInformerFactory.Bgppolicydefinedsets().V1().BGPPolicyDefinedSetsServices()
-	BGPPolicyDefinitionInformer := crdInformerFactory.Bgppolicydefinition().V1().BGPPolicyDefinitionServices()
-	BGPPolicyApplyInformer := crdInformerFactory.Bgppolicyapply().V1().BGPPolicyApplyServices()
+	bgpCRDInformerFactory := bgpCRDinformers.NewSharedInformerFactory(bgpCRDClient, informerDefaultResync)
+	BGPPeerInformer := bgpCRDInformerFactory.Bgppeer().V1().BGPPeerServices()
+	BGPPolicyDefinedSetInformer := bgpCRDInformerFactory.Bgppolicydefinedsets().V1().BGPPolicyDefinedSetsServices()
+	BGPPolicyDefinitionInformer := bgpCRDInformerFactory.Bgppolicydefinition().V1().BGPPolicyDefinitionServices()
+	BGPPolicyApplyInformer := bgpCRDInformerFactory.Bgppolicyapply().V1().BGPPolicyApplyServices()
+
+	loxilbURLInformerFactory := klbCRDinformers.NewSharedInformerFactory(klbCRDClient, informerDefaultResync)
+	loxilbURLInformer := loxilbURLInformerFactory.Loxiurl().V1().LoxiURLs()
 	sigsInformerFactory := sigsInformer.NewSharedInformerFactory(sigsClient, informerDefaultResync)
 
 	// networkReadyCh is used to notify that the Node's network is ready.
@@ -195,7 +200,7 @@ func run(o *Options) error {
 
 	BgpPeerManager := bgppeer.NewBGPPeerManager(
 		k8sClient,
-		crdClient,
+		bgpCRDClient,
 		networkConfig,
 		BGPPeerInformer,
 		lbManager,
@@ -203,7 +208,7 @@ func run(o *Options) error {
 
 	BGPPolicyDefinedSetsManager := bgppolicydefinedsets.NewBGPPolicyDefinedSetsManager(
 		k8sClient,
-		crdClient,
+		bgpCRDClient,
 		networkConfig,
 		BGPPolicyDefinedSetInformer,
 		lbManager,
@@ -211,16 +216,25 @@ func run(o *Options) error {
 
 	BGPPolicyDefinitionManager := bgppolicydefinition.NewBGPPolicyDefinitionManager(
 		k8sClient,
-		crdClient,
+		bgpCRDClient,
 		networkConfig,
 		BGPPolicyDefinitionInformer,
 		lbManager,
 	)
 	BGPPolicyApplyManager := bgppolicyapply.NewBGPPolicyApplyManager(
 		k8sClient,
-		crdClient,
+		bgpCRDClient,
 		networkConfig,
 		BGPPolicyApplyInformer,
+		lbManager,
+	)
+
+	loxilbURLMgr := loxiurl.NewLoxiLBURLManager(
+		k8sClient,
+		k8sExtClient,
+		klbCRDClient,
+		networkConfig,
+		loxilbURLInformer,
 		lbManager,
 	)
 
@@ -251,12 +265,14 @@ func run(o *Options) error {
 
 	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 	if o.config.EnableBGPCRDs {
-		crdInformerFactory.Start(stopCh)
+		bgpCRDInformerFactory.Start(stopCh)
 		go BgpPeerManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 		go BGPPolicyDefinedSetsManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 		go BGPPolicyDefinitionManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 		go BGPPolicyApplyManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 	}
+
+	go loxilbURLMgr.Start(loxilbURLInformerFactory, stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {
