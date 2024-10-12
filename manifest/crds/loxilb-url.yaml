@@ -1,0 +1,6 @@
+apiVersion: "loxiurl.loxilb.io/v1"
+kind: LoxiURL
+metadata:
+  name: llb
+spec:
+  loxiURL: http://10.10.10.1:11111

@@ -1,0 +1,314 @@
+/*
+ * Copyright (c) 2024 NetLOX Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package loxiurl
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
+	"github.com/loxilb-io/kube-loxilb/pkg/api"
+	crdv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/loxiurl/v1"
+	"github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
+	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions/loxiurl/v1"
+	crdLister "github.com/loxilb-io/kube-loxilb/pkg/klb-client/listers/loxiurl/v1"
+
+	//v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog/v2"
+)
+
+const (
+	mgrName        = "LoxiLBURLManager"
+	defaultWorkers = 1
+	resyncPeriod   = 60 * time.Second
+	minRetryDelay  = 2 * time.Second
+	maxRetryDelay  = 120 * time.Second
+)
+
+type Manager struct {
+	kubeClient            kubernetes.Interface
+	crdClient             versioned.Interface
+	loxiLBURLInformer     crdInformer.LoxiURLInformer
+	loxiLBURLLister       crdLister.LoxiURLLister
+	loxiLBURLListerSynced cache.InformerSynced
+	queue                 workqueue.RateLimitingInterface
+	networkConfig         *config.NetworkConfig
+	lbManager             *loadbalancer.Manager
+	loxiLBURLPurgeCh      chan *api.LoxiClient
+	loxiLBURLAliveCh      chan *api.LoxiClient
+	loxiLBURLDeadCh       chan struct{}
+	crdControlOn          bool
+}
+
+// Create and Init Manager.
+// Manager is called by kube-loxilb when k8s service is created & updated.
+func NewLoxiLBURLManager(
+	kubeClient kubernetes.Interface,
+	crdClient versioned.Interface,
+	networkConfig *config.NetworkConfig,
+	loxLBURLInformer crdInformer.LoxiURLInformer,
+	lbManager *loadbalancer.Manager,
+) *Manager {
+
+	manager := &Manager{
+
+		kubeClient:            kubeClient,
+		crdClient:             crdClient,
+		loxiLBURLInformer:     loxLBURLInformer,
+		loxiLBURLLister:       loxLBURLInformer.Lister(),
+		loxiLBURLListerSynced: loxLBURLInformer.Informer().HasSynced,
+		networkConfig:         networkConfig,
+		lbManager:             lbManager,
+
+		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
+	}
+
+	loxLBURLInformer.Informer().AddEventHandlerWithResyncPeriod(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(cur interface{}) {
+				manager.enqueueService(cur)
+			},
+			UpdateFunc: func(old, cur interface{}) {
+				manager.enqueueService(cur)
+			},
+			DeleteFunc: func(old interface{}) {
+				manager.enqueueService(old)
+			},
+		},
+		resyncPeriod,
+	)
+
+	return manager
+}
+
+func (m *Manager) enqueueService(obj interface{}) {
+	lb, ok := obj.(*crdv1.LoxiURL)
+	if !ok {
+		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			klog.Errorf("Received unexpected object: %v", obj)
+			return
+		}
+		lb, ok = deletedState.Obj.(*crdv1.LoxiURL)
+		if !ok {
+			klog.Errorf("DeletedFinalStateUnknown contains non-BGPPeerService object: %v", deletedState.Obj)
+		}
+	}
+
+	m.queue.Add(lb)
+}
+
+func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
+	defer m.queue.ShutDown()
+
+	if m.loxiLBURLPurgeCh == nil {
+		m.loxiLBURLPurgeCh = loxiLBPurgeCh
+	}
+
+	if m.loxiLBURLAliveCh == nil {
+		m.loxiLBURLAliveCh = loxiLBLiveCh
+	}
+
+	if m.loxiLBURLDeadCh == nil {
+		m.loxiLBURLDeadCh = loxiLBDeadCh
+	}
+
+	klog.Infof("Starting %s", mgrName)
+	defer klog.Infof("Shutting down %s", mgrName)
+
+	if !cache.WaitForNamedCacheSync(
+		mgrName,
+		stopCh,
+		m.loxiLBURLListerSynced) {
+		return
+	}
+
+	for i := 0; i < defaultWorkers; i++ {
+		go wait.Until(m.worker, time.Second, stopCh)
+	}
+	<-stopCh
+}
+
+func (m *Manager) worker() {
+	for m.processNextWorkItem() {
+	}
+}
+
+func (m *Manager) processNextWorkItem() bool {
+	obj, quit := m.queue.Get()
+	if quit {
+		return false
+	}
+
+	defer m.queue.Done(obj)
+
+	if lburl, ok := obj.(*crdv1.LoxiURL); !ok {
+		m.queue.Forget(obj)
+		klog.Errorf("Expected string in work queue but got %#v", obj)
+		return true
+	} else if err := m.syncLBURLs(lburl); err == nil {
+		m.queue.Forget(obj)
+	} else {
+		m.queue.AddRateLimited(obj)
+		klog.Errorf("Error syncing CRD LoxiURL %s, requeuing. Error: %v", lburl.Name, err)
+	}
+	return true
+}
+
+func (m *Manager) syncLBURLs(url *crdv1.LoxiURL) error {
+	startTime := time.Now()
+	defer func() {
+		klog.V(4).Infof("Finished syncing syncLBURLs %s. (%v)", url.Name, time.Since(startTime))
+	}()
+	_, err := m.loxiLBURLLister.Get(url.Name)
+	if err != nil {
+		return m.deleteLoxiLBURL(url)
+	}
+	return m.addLoxiLBURL(url)
+}
+
+func (m *Manager) clearAllURLs() error {
+	for _, v := range m.lbManager.LoxiClients {
+		v.StopLoxiHealthCheckChan()
+		klog.Infof("loxilb-service(%v) removed", v.Host)
+		m.loxiLBURLPurgeCh <- v
+	}
+	return nil
+}
+
+func (m *Manager) updateLoxiLBURL(url *crdv1.LoxiURL) error {
+	fmt.Println(m.loxiLBURLLister.Get(url.Name))
+	return nil
+}
+
+func (m *Manager) addLoxiLBURL(url *crdv1.LoxiURL) error {
+	var tmploxilbClients []*api.LoxiClient
+	var currLoxiURLs []string
+	var validLoxiURLs []string
+
+	if len(m.networkConfig.LoxilbURLs) <= 0 {
+		klog.Infof("loxilb-url crd add (%v) : incompatible with incluster mode", url)
+		return nil
+	}
+
+	if !strings.Contains(url.Name, m.networkConfig.Zone) {
+		return nil
+	}
+
+	if !m.crdControlOn {
+		m.clearAllURLs()
+		m.lbManager.LoxiClients = nil
+		m.crdControlOn = true
+	}
+
+	for _, client := range m.lbManager.LoxiClients {
+		currLoxiURLs = append(currLoxiURLs, client.Url)
+	}
+
+	newloxiURLS := strings.Split(url.Spec.LoxiURL, ",")
+
+	urlChg := false
+nextURL:
+	for _, nurl := range newloxiURLS {
+		for _, ourl := range currLoxiURLs {
+			if ourl == nurl {
+				continue nextURL
+			}
+		}
+		validLoxiURLs = append(validLoxiURLs, nurl)
+		urlChg = true
+	}
+
+	if urlChg {
+		klog.Infof("loxilb-url Add (%v)", url)
+		for _, nurl := range validLoxiURLs {
+			client, err2 := api.NewLoxiClient(nurl, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false)
+			if err2 != nil {
+				continue
+			}
+			tmploxilbClients = append(tmploxilbClients, client)
+		}
+
+		m.lbManager.LoxiClients = append(m.lbManager.LoxiClients, tmploxilbClients...)
+	}
+
+	return nil
+}
+
+func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
+	var currLoxiURLs []string
+	var validLoxiURLs []string
+
+	if len(m.networkConfig.LoxilbURLs) <= 0 {
+		klog.Infof("loxilb-url crd del (%v) : incompatible with incluster mode", url)
+		return nil
+	}
+
+	if !strings.Contains(url.Name, m.networkConfig.Zone) {
+		return nil
+	}
+
+	klog.Infof("loxilb-url Delete (%v)", url)
+
+	for _, client := range m.lbManager.LoxiClients {
+		currLoxiURLs = append(currLoxiURLs, client.Url)
+	}
+
+	deletedloxiURLS := strings.Split(url.Spec.LoxiURL, ",")
+
+	matchCount := 0
+nextURL:
+	for _, durl := range deletedloxiURLS {
+		for _, ourl := range currLoxiURLs {
+			if ourl == durl {
+				matchCount++
+				continue nextURL
+			}
+		}
+	}
+
+nextURL1:
+	for _, ourl := range currLoxiURLs {
+		for _, durl := range deletedloxiURLS {
+			if ourl == durl {
+				continue nextURL1
+			}
+		}
+		validLoxiURLs = append(validLoxiURLs, ourl)
+	}
+
+	if matchCount == len(deletedloxiURLS) {
+		m.clearAllURLs()
+
+		m.lbManager.LoxiClients = nil
+		for _, nurl := range validLoxiURLs {
+			client, err2 := api.NewLoxiClient(nurl, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false)
+			if err2 != nil {
+				continue
+			}
+			m.lbManager.LoxiClients = append(m.lbManager.LoxiClients, client)
+		}
+	}
+
+	return nil
+}
