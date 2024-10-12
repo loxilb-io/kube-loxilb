@@ -17,7 +17,7 @@
 package k8s
 
 import (
-	crdclientset "github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned"
+	crdclientset "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/clientset/versioned"
 	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"

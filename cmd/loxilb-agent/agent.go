@@ -32,7 +32,7 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/gatewayapi"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
-	crdinformers "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions"
+	crdinformers "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	"github.com/loxilb-io/kube-loxilb/pkg/log"

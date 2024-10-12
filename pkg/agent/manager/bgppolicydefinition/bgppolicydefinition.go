@@ -25,9 +25,9 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
-	"github.com/loxilb-io/kube-loxilb/pkg/client/clientset/versioned"
-	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/client/informers/externalversions/bgppolicydefinition/v1"
-	crdLister "github.com/loxilb-io/kube-loxilb/pkg/client/listers/bgppolicydefinition/v1"
+	"github.com/loxilb-io/kube-loxilb/pkg/bgp-client/clientset/versioned"
+	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions/bgppolicydefinition/v1"
+	crdLister "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/listers/bgppolicydefinition/v1"
 	crdv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/bgppolicydefinition/v1"
 
 	//v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
