@@ -17,17 +17,20 @@
 package loxiurl
 
 import (
+	"context"
 	"fmt"
-	"strings"
-	"time"
-
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	crdv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/loxiurl/v1"
 	"github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
+	klbCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions"
 	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions/loxiurl/v1"
 	crdLister "github.com/loxilb-io/kube-loxilb/pkg/klb-client/listers/loxiurl/v1"
+	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"strings"
+	"time"
 
 	//v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -47,6 +50,7 @@ const (
 
 type Manager struct {
 	kubeClient            kubernetes.Interface
+	kubeExtClient         apiextensionclientset.Interface
 	crdClient             versioned.Interface
 	loxiLBURLInformer     crdInformer.LoxiURLInformer
 	loxiLBURLLister       crdLister.LoxiURLLister
@@ -64,6 +68,7 @@ type Manager struct {
 // Manager is called by kube-loxilb when k8s service is created & updated.
 func NewLoxiLBURLManager(
 	kubeClient kubernetes.Interface,
+	kubeExtClient apiextensionclientset.Interface,
 	crdClient versioned.Interface,
 	networkConfig *config.NetworkConfig,
 	loxLBURLInformer crdInformer.LoxiURLInformer,
@@ -73,6 +78,7 @@ func NewLoxiLBURLManager(
 	manager := &Manager{
 
 		kubeClient:            kubeClient,
+		kubeExtClient:         kubeExtClient,
 		crdClient:             crdClient,
 		loxiLBURLInformer:     loxLBURLInformer,
 		loxiLBURLLister:       loxLBURLInformer.Lister(),
@@ -118,6 +124,21 @@ func (m *Manager) enqueueService(obj interface{}) {
 	m.queue.Add(lb)
 }
 
+func (m *Manager) WaitForLoxiURLCRDCreation(stopCh <-chan struct{}) {
+
+	wait.PollImmediateUntil(time.Second*5,
+		func() (bool, error) {
+			_, err := m.kubeExtClient.ApiextensionsV1().CustomResourceDefinitions().
+				Get(context.TODO(), "loxiurls.loxiurl.loxilb.io", metav1.GetOptions{})
+			if err != nil {
+				return false, nil
+			}
+			klog.Infof("loxilb-url crd created")
+			return true, nil
+		},
+		stopCh)
+}
+
 func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
 	defer m.queue.ShutDown()
 
@@ -133,7 +154,7 @@ func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient,
 		m.loxiLBURLDeadCh = loxiLBDeadCh
 	}
 
-	klog.Infof("Starting %s", mgrName)
+	klog.Infof("Running %s", mgrName)
 	defer klog.Infof("Shutting down %s", mgrName)
 
 	if !cache.WaitForNamedCacheSync(
@@ -147,6 +168,14 @@ func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient,
 		go wait.Until(m.worker, time.Second, stopCh)
 	}
 	<-stopCh
+}
+
+func (m *Manager) Start(informer klbCRDinformers.SharedInformerFactory, stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
+	klog.Infof("Starting %s", mgrName)
+
+	m.WaitForLoxiURLCRDCreation(stopCh)
+	informer.Start(stopCh)
+	m.Run(stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 }
 
 func (m *Manager) worker() {

@@ -64,7 +64,7 @@ func run(o *Options) error {
 	klog.Infof("  Build: %s", BuildInfo)
 
 	// create k8s Clientset, CRD Clientset and SharedInformerFactory for the given config.
-	k8sClient, _, bgpCRDClient, klbCRDClient, _, sigsClient, err := k8s.CreateClients(o.config.ClientConnection, "")
+	k8sClient, _, bgpCRDClient, klbCRDClient, k8sExtClient, sigsClient, err := k8s.CreateClients(o.config.ClientConnection, "")
 	if err != nil {
 		return fmt.Errorf("error creating k8s clients: %v", err)
 	}
@@ -231,6 +231,7 @@ func run(o *Options) error {
 
 	loxilbURLMgr := loxiurl.NewLoxiLBURLManager(
 		k8sClient,
+		k8sExtClient,
 		klbCRDClient,
 		networkConfig,
 		loxilbURLInformer,
@@ -271,8 +272,7 @@ func run(o *Options) error {
 		go BGPPolicyApplyManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
 	}
 
-	loxilbURLInformerFactory.Start(stopCh)
-	go loxilbURLMgr.Run(stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
+	go loxilbURLMgr.Start(loxilbURLInformerFactory, stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {
