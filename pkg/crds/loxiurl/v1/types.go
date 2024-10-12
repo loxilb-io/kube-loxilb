@@ -46,5 +46,5 @@ type LoxiURLList struct {
 }
 
 type LoxiURLSpec struct {
-	LoxiURL int `json:"loxiurl"`
+	LoxiURL string `json:"loxiURL"`
 }
