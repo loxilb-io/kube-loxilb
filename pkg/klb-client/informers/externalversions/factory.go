@@ -23,13 +23,13 @@ import (
 	sync "sync"
 	time "time"
 
+	versioned "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
+	internalinterfaces "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions/internalinterfaces"
+	loxiurl "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions/loxiurl"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	cache "k8s.io/client-go/tools/cache"
-	versioned "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
-	internalinterfaces "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions/internalinterfaces"
-	loxiurl "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions/loxiurl"
 )
 
 // SharedInformerOption defines the functional option type for SharedInformerFactory.

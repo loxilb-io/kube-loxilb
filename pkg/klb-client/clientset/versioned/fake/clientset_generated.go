@@ -19,14 +19,14 @@ limitations under the License.
 package fake
 
 import (
+	clientset "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
+	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/typed/loxiurl/v1"
+	fakeloxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/typed/loxiurl/v1/fake"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/testing"
-	clientset "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
-	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/typed/loxiurl/v1"
-	fakeloxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/typed/loxiurl/v1/fake"
 )
 
 // NewSimpleClientset returns a clientset that will respond with the provided objects.

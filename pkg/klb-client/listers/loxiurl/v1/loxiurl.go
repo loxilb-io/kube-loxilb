@@ -19,10 +19,10 @@ limitations under the License.
 package v1
 
 import (
+	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/loxiurl/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
 	listers "k8s.io/client-go/listers"
 	cache "k8s.io/client-go/tools/cache"
-	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-crds/loxiurl/v1"
 )
 
 // LoxiURLLister helps list LoxiURLs.

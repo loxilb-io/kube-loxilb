@@ -19,9 +19,9 @@ limitations under the License.
 package fake
 
 import (
+	v1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/typed/loxiurl/v1"
 	rest "k8s.io/client-go/rest"
 	testing "k8s.io/client-go/testing"
-	v1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/typed/loxiurl/v1"
 )
 
 type FakeLoxiurlV1 struct {

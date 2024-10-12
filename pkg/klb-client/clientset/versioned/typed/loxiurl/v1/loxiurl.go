@@ -21,12 +21,12 @@ package v1
 import (
 	context "context"
 
+	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/loxiurl/v1"
+	scheme "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/scheme"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	gentype "k8s.io/client-go/gentype"
-	scheme "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/scheme"
-	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-crds/loxiurl/v1"
 )
 
 // LoxiURLsGetter has a method to return a LoxiURLInterface.

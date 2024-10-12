@@ -22,10 +22,10 @@ import (
 	fmt "fmt"
 	http "net/http"
 
+	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/typed/loxiurl/v1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"
-	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/typed/loxiurl/v1"
 )
 
 type Interface interface {

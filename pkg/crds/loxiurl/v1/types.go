@@ -34,7 +34,7 @@ type LoxiURL struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec LoxiURLSpec   `json:"spec"`
+	Spec   LoxiURLSpec       `json:"spec"`
 	Status LoxiURLSpecStatus `json:"status,omitempty"`
 }
 

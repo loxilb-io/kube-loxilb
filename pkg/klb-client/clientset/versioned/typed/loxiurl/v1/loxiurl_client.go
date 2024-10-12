@@ -21,9 +21,9 @@ package v1
 import (
 	http "net/http"
 
-	rest "k8s.io/client-go/rest"
+	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/loxiurl/v1"
 	scheme "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned/scheme"
-	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-crds/loxiurl/v1"
+	rest "k8s.io/client-go/rest"
 )
 
 type LoxiurlV1Interface interface {

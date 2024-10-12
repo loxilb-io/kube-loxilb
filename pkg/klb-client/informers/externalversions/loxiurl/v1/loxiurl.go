@@ -22,14 +22,14 @@ import (
 	context "context"
 	time "time"
 
+	klbcrdsloxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/loxiurl/v1"
+	versioned "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
+	internalinterfaces "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions/internalinterfaces"
+	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/listers/loxiurl/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
-	versioned "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
-	internalinterfaces "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions/internalinterfaces"
-	loxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-client/listers/loxiurl/v1"
-	klbcrdsloxiurlv1 "github.com/loxilb-io/kube-loxilb/pkg/klb-crds/loxiurl/v1"
 )
 
 // LoxiURLInformer provides access to a shared informer and lister for
