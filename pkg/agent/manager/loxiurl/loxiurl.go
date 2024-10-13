@@ -240,12 +240,17 @@ func (m *Manager) addLoxiLBURL(url *crdv1.LoxiURL) error {
 		return nil
 	}
 
+	if url.Spec.LoxiURLType != "" && url.Spec.LoxiURLType != "default" {
+		klog.Errorf("loxilb-url crd %s add (%s) type not support", url.Name, url.Spec.LoxiURLType)
+		return nil
+	}
+
 	if len(m.networkConfig.LoxilbURLs) <= 0 {
 		klog.Infof("loxilb-url crd add (%v) : incompatible with incluster mode", url)
 		return nil
 	}
 
-	if !strings.Contains(url.Name, m.networkConfig.Zone) {
+	if url.Spec.LoxiZone != "" && url.Spec.LoxiZone != m.networkConfig.Zone {
 		return nil
 	}
 
@@ -301,20 +306,25 @@ func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
 	var validLoxiURLs []string
 
 	if url.Spec.LoxiURLType == "cidr" {
-		klog.Infof("loxilb-url crd add (%v) type cidr : not implemented", url)
+		klog.Infof("loxilb-url crd delete (%v) type cidr : not implemented", url)
+		return nil
+	}
+
+	if url.Spec.LoxiURLType != "" && url.Spec.LoxiURLType != "default" {
+		klog.Errorf("loxilb-url crd %s delete (%s) type not support", url.Name, url.Spec.LoxiURLType)
 		return nil
 	}
 
 	if len(m.networkConfig.LoxilbURLs) <= 0 {
-		klog.Infof("loxilb-url crd del (%v) : incompatible with incluster mode", url)
+		klog.Infof("loxilb-url crd delete (%v) : incompatible with incluster mode", url)
 		return nil
 	}
 
-	if !strings.Contains(url.Name, m.networkConfig.Zone) {
+	if url.Spec.LoxiZone != "" && url.Spec.LoxiZone != m.networkConfig.Zone {
 		return nil
 	}
 
-	klog.Infof("loxilb-url Delete (%v)", url)
+	klog.Infof("loxilb-url delete (%v)", url)
 
 	for _, client := range m.lbManager.LoxiClients {
 		currLoxiURLs = append(currLoxiURLs, client.Url)
