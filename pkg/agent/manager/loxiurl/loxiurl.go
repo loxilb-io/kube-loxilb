@@ -235,6 +235,11 @@ func (m *Manager) addLoxiLBURL(url *crdv1.LoxiURL) error {
 	var currLoxiURLs []string
 	var validLoxiURLs []string
 
+	if url.Spec.LoxiURLType == "cidr" {
+		klog.Infof("loxilb-url crd add (%v) type cidr : not implemented", url)
+		return nil
+	}
+
 	if len(m.networkConfig.LoxilbURLs) <= 0 {
 		klog.Infof("loxilb-url crd add (%v) : incompatible with incluster mode", url)
 		return nil
@@ -294,6 +299,11 @@ nextURL:
 func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
 	var currLoxiURLs []string
 	var validLoxiURLs []string
+
+	if url.Spec.LoxiURLType == "cidr" {
+		klog.Infof("loxilb-url crd add (%v) type cidr : not implemented", url)
+		return nil
+	}
 
 	if len(m.networkConfig.LoxilbURLs) <= 0 {
 		klog.Infof("loxilb-url crd del (%v) : incompatible with incluster mode", url)
