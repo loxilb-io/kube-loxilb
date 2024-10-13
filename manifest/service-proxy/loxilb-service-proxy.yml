@@ -50,6 +50,14 @@ rules:
       - watch
       - list
   - apiGroups:
+      - apiextensions.k8s.io
+    resources:
+      - customresourcedefinitions
+    verbs:
+      - get
+      - watch
+      - list
+  - apiGroups:
       - authentication.k8s.io
     resources:
       - tokenreviews

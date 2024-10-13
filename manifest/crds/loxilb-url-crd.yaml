@@ -1,0 +1,35 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.13.0
+  name: loxiurls.loxiurl.loxilb.io
+spec:
+  group: loxiurl.loxilb.io
+  names:
+    kind: LoxiURL
+    listKind: LoxiURLList
+    plural: loxiurls
+    singular: loxiurl
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                loxiURL:
+                  type: string
+              required:
+                - loxiURL
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

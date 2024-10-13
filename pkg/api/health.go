@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 )
 
 type HealthCheckAPI struct {
@@ -23,7 +22,7 @@ func newHealthCheckAPI(r *RESTClient) *HealthCheckAPI {
 func (h *HealthCheckAPI) Get(ctx context.Context, name string) (LoxiModel, error) {
 	resp := h.client.GET(h.resource).SubResource(name).Do(ctx)
 	if resp.err != nil {
-		fmt.Println(resp.err)
+		//fmt.Println(resp.err)
 		return nil, resp.err
 	}
 
