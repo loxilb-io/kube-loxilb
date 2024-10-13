@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -30,11 +32,15 @@ type LoxiClient struct {
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
 func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struct{}, peerOnly bool, noRole bool) (*LoxiClient, error) {
 
-	client := &http.Client{}
-
 	base, err := url.Parse(apiServer)
 	if err != nil {
 		fmt.Printf("failed to parse url %s. err: %s", apiServer, err.Error())
+		return nil, err
+	}
+
+	client, err := CreateHTTPClient(base)
+	if err != nil {
+		fmt.Printf("failed to create HTTP client: %v", err.Error())
 		return nil, err
 	}
 
@@ -68,6 +74,33 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struc
 	klog.Infof("NewLoxiClient Created: %s", apiServer)
 
 	return lc, nil
+}
+
+func CreateHTTPClient(baseURL *url.URL) (*http.Client, error) {
+
+	client := &http.Client{}
+
+	if baseURL.Scheme == "https" {
+
+		rootCAs, err := x509.SystemCertPool()
+		if err != nil || rootCAs == nil {
+			baseURL.Scheme = "http"
+			klog.Infof("HTTPS not supported: %s", baseURL)
+			return client, nil
+		}
+
+		tlsConfig := &tls.Config{
+			RootCAs:            rootCAs,
+			InsecureSkipVerify: false,
+		}
+
+		transport := &http.Transport{
+			TLSClientConfig: tlsConfig,
+		}
+		client.Transport = transport
+	}
+
+	return client, nil
 }
 
 func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh chan struct{}) {
