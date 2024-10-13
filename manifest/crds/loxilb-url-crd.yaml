@@ -28,6 +28,10 @@ spec:
               properties:
                 loxiURL:
                   type: string
+                type:
+                  type: string
+                zone:
+                  type: string
               required:
                 - loxiURL
             status:
