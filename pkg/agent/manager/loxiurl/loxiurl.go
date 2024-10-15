@@ -216,13 +216,36 @@ func (m *Manager) syncLBURLs(url *crdv1.LoxiURL) error {
 	return m.addLoxiLBURL(url)
 }
 
-func (m *Manager) clearAllURLs() error {
+func (m *Manager) deleteAllLoxiClients() error {
 	for _, v := range m.lbManager.LoxiClients {
 		v.StopLoxiHealthCheckChan()
-		klog.Infof("loxilb-service(%v) removed", v.Host)
+		klog.Infof("loxi-client (%v) removed", v.Host)
 		m.loxiLBURLPurgeCh <- v
 	}
+	m.lbManager.LoxiClients = nil
 	return nil
+}
+
+func (m *Manager) deleteSingleLoxiClientsWithName(name string) bool {
+	var validLoxiClients []*api.LoxiClient
+
+	match := false
+	for _, v := range m.lbManager.LoxiClients {
+		if v.Name == name {
+			match = true
+			v.StopLoxiHealthCheckChan()
+			klog.Infof("loxi-client (%v) removed", v.Host)
+			m.loxiLBURLPurgeCh <- v
+		} else {
+			validLoxiClients = append(validLoxiClients, v)
+		}
+	}
+
+	if match {
+		m.lbManager.LoxiClients = validLoxiClients
+	}
+
+	return match
 }
 
 func (m *Manager) updateLoxiLBURL(url *crdv1.LoxiURL) error {
@@ -255,8 +278,7 @@ func (m *Manager) addLoxiLBURL(url *crdv1.LoxiURL) error {
 	}
 
 	if !m.crdControlOn {
-		m.clearAllURLs()
-		m.lbManager.LoxiClients = nil
+		m.deleteAllLoxiClients()
 		m.crdControlOn = true
 	}
 
@@ -286,9 +308,10 @@ nextURL:
 	}
 
 	if urlChg {
+		m.deleteSingleLoxiClientsWithName(url.Name)
 		klog.Infof("loxilb-url Add (%v)", url)
 		for _, nurl := range validLoxiURLs {
-			client, err2 := api.NewLoxiClient(nurl, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false)
+			client, err2 := api.NewLoxiClient(nurl, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false, url.Name)
 			if err2 != nil {
 				continue
 			}
@@ -302,8 +325,13 @@ nextURL:
 }
 
 func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
-	var currLoxiURLs []string
-	var validLoxiURLs []string
+	type validLoxiURLwName struct {
+		url  string
+		name string
+	}
+	var validLoxiURLs []validLoxiURLwName
+	var currLoxiURLs []validLoxiURLwName
+	var deletedloxiURLS []validLoxiURLwName
 
 	if url.Spec.LoxiURLType == "cidr" {
 		klog.Infof("loxilb-url crd delete (%v) type cidr : not implemented", url)
@@ -327,16 +355,17 @@ func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
 	klog.Infof("loxilb-url delete (%v)", url)
 
 	for _, client := range m.lbManager.LoxiClients {
-		currLoxiURLs = append(currLoxiURLs, client.Url)
+		currLoxiURLs = append(currLoxiURLs, validLoxiURLwName{url: client.Url, name: client.Name})
 	}
 
-	deletedloxiURLS := strings.Split(url.Spec.LoxiURL, ",")
+	deleted := strings.Split(url.Spec.LoxiURL, ",")
 
-	for _, u := range deletedloxiURLS {
+	for _, u := range deleted {
 		if _, err := urllib.Parse(u); err != nil {
 			klog.Errorf("loxiURL %s is invalid. err: %v", u, err)
 			return fmt.Errorf("loxiURL %s is invalid. err: %v", u, err)
 		}
+		deletedloxiURLS = append(deletedloxiURLS, validLoxiURLwName{url: u, name: url.Name})
 	}
 
 	matchCount := 0
@@ -361,11 +390,10 @@ nextURL1:
 	}
 
 	if matchCount == len(deletedloxiURLS) {
-		m.clearAllURLs()
+		m.deleteAllLoxiClients()
 
-		m.lbManager.LoxiClients = nil
 		for _, nurl := range validLoxiURLs {
-			client, err2 := api.NewLoxiClient(nurl, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false)
+			client, err2 := api.NewLoxiClient(nurl.url, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false, nurl.name)
 			if err2 != nil {
 				continue
 			}

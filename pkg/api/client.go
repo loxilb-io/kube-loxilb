@@ -27,10 +27,11 @@ type LoxiClient struct {
 	Purge       bool
 	Stop        chan struct{}
 	NoRole      bool
+	Name        string
 }
 
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
-func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struct{}, peerOnly bool, noRole bool) (*LoxiClient, error) {
+func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struct{}, peerOnly bool, noRole bool, name string) (*LoxiClient, error) {
 
 	base, err := url.Parse(apiServer)
 	if err != nil {
@@ -56,6 +57,10 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struc
 		return nil, err
 	}
 
+	if name == "" {
+		name = host
+	}
+
 	stop := make(chan struct{})
 
 	lc := &LoxiClient{
@@ -67,6 +72,7 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struc
 		PeeringOnly: peerOnly,
 		DeadSigTs:   time.Now(),
 		NoRole:      noRole,
+		Name:        name,
 	}
 
 	lc.StartLoxiHealthCheckChan(aliveCh, deadCh)

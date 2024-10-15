@@ -180,7 +180,7 @@ func run(o *Options) error {
 
 	if len(networkConfig.LoxilbURLs) > 0 {
 		for _, lbURL := range networkConfig.LoxilbURLs {
-			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, loxiLBDeadCh, false, false)
+			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, loxiLBDeadCh, false, false, "")
 			if err != nil {
 				return err
 			}
