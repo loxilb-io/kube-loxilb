@@ -2205,7 +2205,7 @@ loop:
 	}
 }
 
-func (m *Manager) addLoxiInstAddr(name string, IP net.IP) error {
+func (m *Manager) AddLoxiInstAddr(name string, IP net.IP) error {
 
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
@@ -2220,10 +2220,11 @@ func (m *Manager) addLoxiInstAddr(name string, IP net.IP) error {
 
 	m.loxiInstAddrMap[name] = IP
 	m.instAddrApplyCh <- struct{}{}
+	klog.Infof("added cidr host name: %s:%s", name, IP.String())
 	return nil
 }
 
-func (m *Manager) deleteLoxiInstAddr(name string) error {
+func (m *Manager) DeleteLoxiInstAddr(name string) error {
 
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
@@ -2234,5 +2235,6 @@ func (m *Manager) deleteLoxiInstAddr(name string) error {
 
 	delete(m.loxiInstAddrMap, name)
 	m.instAddrApplyCh <- struct{}{}
+	klog.Infof("removed cidr host name: %s", name)
 	return nil
 }
