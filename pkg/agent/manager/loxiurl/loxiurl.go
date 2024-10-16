@@ -19,6 +19,11 @@ package loxiurl
 import (
 	"context"
 	"fmt"
+	"net"
+	urllib "net/url"
+	"strings"
+	"time"
+
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -29,9 +34,7 @@ import (
 	crdLister "github.com/loxilb-io/kube-loxilb/pkg/klb-client/listers/loxiurl/v1"
 	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	urllib "net/url"
-	"strings"
-	"time"
+
 	//v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -258,9 +261,17 @@ func (m *Manager) addLoxiLBURL(url *crdv1.LoxiURL) error {
 	var currLoxiURLs []string
 	var validLoxiURLs []string
 
-	if url.Spec.LoxiURLType == "cidr" {
-		klog.Infof("loxilb-url crd add (%v) type cidr : not implemented", url)
+	if url.Spec.LoxiZone != "" && url.Spec.LoxiZone != m.networkConfig.Zone {
 		return nil
+	}
+
+	if url.Spec.LoxiURLType == "hostcidr" {
+		ip := net.ParseIP(url.Spec.LoxiURL)
+		if ip == nil {
+			klog.Infof("loxilb-url crd add (%s) host cidr parse failed", url.Spec.LoxiURL)
+			return fmt.Errorf("loxilb-url crd add (%s) host cidr parse failed", url.Spec.LoxiURL)
+		}
+		return m.lbManager.AddLoxiInstAddr(url.Name, ip)
 	}
 
 	if url.Spec.LoxiURLType != "" && url.Spec.LoxiURLType != "default" {
@@ -270,10 +281,6 @@ func (m *Manager) addLoxiLBURL(url *crdv1.LoxiURL) error {
 
 	if len(m.networkConfig.LoxilbURLs) <= 0 {
 		klog.Infof("loxilb-url crd add (%v) : incompatible with incluster mode", url)
-		return nil
-	}
-
-	if url.Spec.LoxiZone != "" && url.Spec.LoxiZone != m.networkConfig.Zone {
 		return nil
 	}
 
@@ -333,9 +340,17 @@ func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
 	var currLoxiURLs []validLoxiURLwName
 	var deletedloxiURLS []validLoxiURLwName
 
-	if url.Spec.LoxiURLType == "cidr" {
-		klog.Infof("loxilb-url crd delete (%v) type cidr : not implemented", url)
+	if url.Spec.LoxiZone != "" && url.Spec.LoxiZone != m.networkConfig.Zone {
 		return nil
+	}
+
+	if url.Spec.LoxiURLType == "hostcidr" {
+		ip := net.ParseIP(url.Spec.LoxiURL)
+		if ip == nil {
+			klog.Infof("loxilb-url crd add (%s) host cidr parse failed", url.Spec.LoxiURL)
+			return fmt.Errorf("loxilb-url crd add (%s) host cidr parse failed", url.Spec.LoxiURL)
+		}
+		return m.lbManager.DeleteLoxiInstAddr(url.Name)
 	}
 
 	if url.Spec.LoxiURLType != "" && url.Spec.LoxiURLType != "default" {
@@ -345,10 +360,6 @@ func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
 
 	if len(m.networkConfig.LoxilbURLs) <= 0 {
 		klog.Infof("loxilb-url crd delete (%v) : incompatible with incluster mode", url)
-		return nil
-	}
-
-	if url.Spec.LoxiZone != "" && url.Spec.LoxiZone != m.networkConfig.Zone {
 		return nil
 	}
 

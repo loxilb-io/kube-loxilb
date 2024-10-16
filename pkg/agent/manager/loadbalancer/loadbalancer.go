@@ -24,6 +24,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -80,6 +81,7 @@ const (
 )
 
 type Manager struct {
+	mtx                 sync.RWMutex
 	kubeClient          clientset.Interface
 	LoxiClients         []*api.LoxiClient
 	LoxiPeerClients     []*api.LoxiClient
@@ -95,6 +97,8 @@ type Manager struct {
 	lbCache             LbCacheTable
 	ipPoolTbl           map[string]*ippool.IPPool
 	ip6PoolTbl          map[string]*ippool.IPPool
+	instAddrApplyCh     chan struct{}
+	loxiInstAddrMap     map[string]net.IP
 }
 
 type LbArgs struct {
@@ -187,15 +191,21 @@ func GenSPKey(IPString string, Port uint16, Protocol string) string {
 	return fmt.Sprintf("%s:%v:%s", IPString, Port, Protocol)
 }
 
-func (m *Manager) genExtIPName(ipStr string) string {
+func (m *Manager) genExtIPName(ipStr string) []string {
+	var hosts []string
 	prefix := m.networkConfig.Zone + "-"
 	IP := net.ParseIP(ipStr)
 	if IP != nil {
 		if IP.IsUnspecified() {
-			return "llbanyextip"
+			m.mtx.Lock()
+			defer m.mtx.Unlock()
+			for _, host := range m.loxiInstAddrMap {
+				hosts = append(hosts, host.String())
+			}
+			return hosts
 		}
 	}
-	return prefix + ipStr
+	return []string{prefix + ipStr}
 }
 
 // Create and Init Manager.
@@ -224,6 +234,8 @@ func NewLoadBalancerManager(
 		nodeInformer:        nodeInformer,
 		nodeLister:          nodeInformer.Lister(),
 		nodeListerSynced:    nodeInformer.Informer().HasSynced,
+		instAddrApplyCh:     make(chan struct{}),
+		loxiInstAddrMap:     make(map[string]net.IP),
 
 		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
 		lbCache: make(LbCacheTable),
@@ -964,9 +976,18 @@ func (m *Manager) updateService(svcNs, svcName string, ingSvcPairs []SvcPair) er
 
 	for _, ingSvcPair := range ingSvcPairs {
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
-			retIngress := corev1.LoadBalancerIngress{Hostname: m.genExtIPName(ingSvcPair.IPString)}
-			if !m.checkServiceIngressIPExists(cur, retIngress.Hostname) {
-				cur.Status.LoadBalancer.Ingress = append(cur.Status.LoadBalancer.Ingress, retIngress)
+			retIPs := m.genExtIPName(ingSvcPair.IPString)
+			for _, retIP := range retIPs {
+				var retIngress corev1.LoadBalancerIngress
+				validIP := net.ParseIP(retIP)
+				if validIP == nil {
+					retIngress = corev1.LoadBalancerIngress{Hostname: retIP}
+				} else {
+					retIngress = corev1.LoadBalancerIngress{IP: retIP}
+				}
+				if !m.checkServiceIngressIPExists(cur, retIP) {
+					cur.Status.LoadBalancer.Ingress = append(cur.Status.LoadBalancer.Ingress, retIngress)
+				}
 			}
 		}
 	}
@@ -978,6 +999,57 @@ func (m *Manager) updateService(svcNs, svcName string, ingSvcPairs []SvcPair) er
 	}
 
 	return err
+}
+
+func (m *Manager) updateAllLoxiLBServiceStatus() error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	nsList, err := m.kubeClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.Errorf("failed to list service in namespace err: %s", err)
+		return err
+	}
+
+	for _, ns := range nsList.Items {
+		svcList, err := m.kubeClient.CoreV1().Services(ns.Name).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			// Service is deleted
+			continue
+		}
+
+		for _, svc := range svcList.Items {
+			if svc.Spec.LoadBalancerClass != nil && *svc.Spec.LoadBalancerClass == m.networkConfig.LoxilbLoadBalancerClass {
+				update := false
+
+				hasZeroCIDR := m.serviceHasZeroCIDRPool(&svc)
+				if !hasZeroCIDR {
+					continue
+				}
+
+				retIPs := m.genExtIPName("0.0.0.0")
+				update = true
+
+				svc.Status.LoadBalancer.Ingress = nil
+
+				for _, retIP := range retIPs {
+					retIngress := corev1.LoadBalancerIngress{IP: retIP}
+					svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
+				}
+
+				klog.Infof("service %s:%s : updating status : retIngress %v", ns.Name, svc.Name, svc.Status.LoadBalancer.Ingress)
+
+				if update {
+					_, err = m.kubeClient.CoreV1().Services(svc.Namespace).UpdateStatus(ctx, &svc, metav1.UpdateOptions{})
+					if err != nil {
+						klog.Errorf("failed to update service %s:%s err: %s", ns.Name, svc.Name, err)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
@@ -1287,10 +1359,12 @@ func (m *Manager) getEndpointsForLB(nodes []*corev1.Node, addrType string, nodeM
 func (m *Manager) checkUpdateExternalIP(ingSvcPairs []SvcPair, svc *corev1.Service) bool {
 	for _, ingSvcPair := range ingSvcPairs {
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
-			retIngress := corev1.LoadBalancerIngress{Hostname: m.genExtIPName(ingSvcPair.IPString)}
-			if !m.checkServiceIngressIPExists(svc, retIngress.Hostname) {
-				klog.V(4).Infof("checkUpdateExternalIP: ingSvcPair %v has external IP but service %s has no IP. need update.", ingSvcPair, svc.Name)
-				return true
+			retIPs := m.genExtIPName(ingSvcPair.IPString)
+			for _, retIP := range retIPs {
+				if !m.checkServiceIngressIPExists(svc, retIP) {
+					klog.V(4).Infof("checkUpdateExternalIP: ingSvcPair %v has external IP but service %s has no IP. need update.", ingSvcPair, svc.Name)
+					return true
+				}
 			}
 		}
 	}
@@ -1353,16 +1427,58 @@ func (m *Manager) checkServiceIngressIPExists(service *corev1.Service, newIngres
 	return false
 }
 
+func (m *Manager) serviceHasZeroCIDRPool(service *corev1.Service) bool {
+	poolName := defaultPoolName
+
+	// Check for loxilb specific annotations - poolName
+	if pn := service.Annotations[PoolNameAnnotation]; pn != "" {
+		poolName = pn
+	}
+
+	hasZeroCIDR := false
+	for _, pool := range m.networkConfig.ExternalCIDRPoolDefs {
+		poolStrSlice := strings.Split(pool, "=")
+		if len(poolStrSlice) != 2 {
+			break
+		}
+
+		if poolName != poolStrSlice[0] {
+			continue
+		}
+
+		_, ipn, err := net.ParseCIDR(poolStrSlice[1])
+		if err != nil {
+			break
+		}
+
+		if ipn.IP.String() == "0.0.0.0" {
+			if lba := service.Annotations[lbAddressAnnotation]; lba != "" {
+				if lba == "ipv6" || lba == "ip6" || lba == "nat66" {
+					break
+				}
+			}
+			hasZeroCIDR = true
+		}
+	}
+
+	return hasZeroCIDR
+}
+
 func (m *Manager) getServiceIngressIPs(service *corev1.Service) []string {
 	var ingressIPs []string
+
+	hasZeroCIDR := m.serviceHasZeroCIDRPool(service)
 
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
 		var ingressIP string
 		if ingress.IP != "" {
-			ingressIP = ingress.IP
-
+			if hasZeroCIDR {
+				ingressIP = "0.0.0.0"
+			} else {
+				ingressIP = ingress.IP
+			}
 		} else if ingress.Hostname != "" {
-			if ingress.Hostname == "llbanyextip" {
+			if ingress.Hostname == "llbanyextip" || hasZeroCIDR {
 				ingressIP = "0.0.0.0"
 			} else {
 				llbHost := strings.Split(ingress.Hostname, "-")
@@ -1917,6 +2033,8 @@ loop:
 		select {
 		case <-stopCh:
 			break loop
+		case <-m.instAddrApplyCh:
+			m.updateAllLoxiLBServiceStatus()
 		case <-masterEventCh:
 			for _, lc := range m.LoxiClients {
 				if !lc.IsAlive {
@@ -2122,4 +2240,39 @@ loop:
 			}
 		}
 	}
+}
+
+func (m *Manager) AddLoxiInstAddr(name string, IP net.IP) error {
+
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	if ip, exists := m.loxiInstAddrMap[name]; exists {
+		if ip.Equal(IP) {
+			return nil
+		}
+		m.loxiInstAddrMap[name] = IP
+		klog.Infof("updated cidr host name: %s:%s", name, IP.String())
+		return nil
+	}
+
+	m.loxiInstAddrMap[name] = IP
+	m.instAddrApplyCh <- struct{}{}
+	klog.Infof("added cidr host name: %s:%s", name, IP.String())
+	return nil
+}
+
+func (m *Manager) DeleteLoxiInstAddr(name string) error {
+
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	if _, exists := m.loxiInstAddrMap[name]; !exists {
+		return nil
+	}
+
+	delete(m.loxiInstAddrMap, name)
+	m.instAddrApplyCh <- struct{}{}
+	klog.Infof("removed cidr host name: %s", name)
+	return nil
 }

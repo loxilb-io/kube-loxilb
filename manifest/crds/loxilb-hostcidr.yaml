@@ -1,0 +1,8 @@
+apiVersion: "loxiurl.loxilb.io/v1"
+kind: LoxiURL
+metadata:
+  name: llb-10.10.10.1
+spec:
+  loxiURL: 10.10.10.1
+  zone: llb
+  type: hostcidr
