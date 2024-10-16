@@ -235,6 +235,7 @@ func NewLoadBalancerManager(
 		nodeLister:          nodeInformer.Lister(),
 		nodeListerSynced:    nodeInformer.Informer().HasSynced,
 		instAddrApplyCh:     make(chan struct{}),
+		loxiInstAddrMap:     make(map[string]net.IP),
 
 		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
 		lbCache: make(LbCacheTable),
@@ -977,8 +978,14 @@ func (m *Manager) updateService(svcNs, svcName string, ingSvcPairs []SvcPair) er
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
 			retIPs := m.genExtIPName(ingSvcPair.IPString)
 			for _, retIP := range retIPs {
-				retIngress := corev1.LoadBalancerIngress{Hostname: retIP}
-				if !m.checkServiceIngressIPExists(cur, retIngress.Hostname) {
+				var retIngress corev1.LoadBalancerIngress
+				validIP := net.ParseIP(retIP)
+				if validIP == nil {
+					retIngress = corev1.LoadBalancerIngress{Hostname: retIP}
+				} else {
+					retIngress = corev1.LoadBalancerIngress{IP: retIP}
+				}
+				if !m.checkServiceIngressIPExists(cur, retIP) {
 					cur.Status.LoadBalancer.Ingress = append(cur.Status.LoadBalancer.Ingress, retIngress)
 				}
 			}
@@ -1012,11 +1019,17 @@ func (m *Manager) updateAllLoxiLBServiceStatus() error {
 		}
 
 		for _, svc := range svcList.Items {
-			if *svc.Spec.LoadBalancerClass == m.networkConfig.LoxilbLoadBalancerClass {
+			if svc.Spec.LoadBalancerClass != nil && *svc.Spec.LoadBalancerClass == m.networkConfig.LoxilbLoadBalancerClass {
 				update := false
+
+				hasZeroCIDR := m.serviceHasZeroCIDRPool(&svc)
+				if !hasZeroCIDR {
+					continue
+				}
+
 				retIPs := m.genExtIPName("0.0.0.0")
 				for _, retIP := range retIPs {
-					retIngress := corev1.LoadBalancerIngress{Hostname: retIP}
+					retIngress := corev1.LoadBalancerIngress{IP: retIP}
 					svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
 					update = true
 				}
@@ -1343,8 +1356,7 @@ func (m *Manager) checkUpdateExternalIP(ingSvcPairs []SvcPair, svc *corev1.Servi
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
 			retIPs := m.genExtIPName(ingSvcPair.IPString)
 			for _, retIP := range retIPs {
-				retIngress := corev1.LoadBalancerIngress{Hostname: retIP}
-				if !m.checkServiceIngressIPExists(svc, retIngress.Hostname) {
+				if !m.checkServiceIngressIPExists(svc, retIP) {
 					klog.V(4).Infof("checkUpdateExternalIP: ingSvcPair %v has external IP but service %s has no IP. need update.", ingSvcPair, svc.Name)
 					return true
 				}
@@ -1410,14 +1422,23 @@ func (m *Manager) checkServiceIngressIPExists(service *corev1.Service, newIngres
 	return false
 }
 
-func (m *Manager) getServiceIngressIPs(service *corev1.Service) []string {
-	var ingressIPs []string
+func (m *Manager) serviceHasZeroCIDRPool(service *corev1.Service) bool {
+	poolName := defaultPoolName
+
+	// Check for loxilb specific annotations - poolName
+	if pn := service.Annotations[PoolNameAnnotation]; pn != "" {
+		poolName = pn
+	}
 
 	hasZeroCIDR := false
 	for _, pool := range m.networkConfig.ExternalCIDRPoolDefs {
 		poolStrSlice := strings.Split(pool, "=")
 		if len(poolStrSlice) != 2 {
 			break
+		}
+
+		if poolName != poolStrSlice[0] {
+			continue
 		}
 
 		_, ipn, err := net.ParseCIDR(poolStrSlice[1])
@@ -1435,11 +1456,22 @@ func (m *Manager) getServiceIngressIPs(service *corev1.Service) []string {
 		}
 	}
 
+	return hasZeroCIDR
+}
+
+func (m *Manager) getServiceIngressIPs(service *corev1.Service) []string {
+	var ingressIPs []string
+
+	hasZeroCIDR := m.serviceHasZeroCIDRPool(service)
+
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
 		var ingressIP string
 		if ingress.IP != "" {
-			ingressIP = ingress.IP
-
+			if hasZeroCIDR {
+				ingressIP = "0.0.0.0"
+			} else {
+				ingressIP = ingress.IP
+			}
 		} else if ingress.Hostname != "" {
 			if ingress.Hostname == "llbanyextip" || hasZeroCIDR {
 				ingressIP = "0.0.0.0"
@@ -2212,9 +2244,10 @@ func (m *Manager) AddLoxiInstAddr(name string, IP net.IP) error {
 
 	if ip, exists := m.loxiInstAddrMap[name]; exists {
 		if ip.Equal(IP) {
-			return errors.New("addr exists")
+			return nil
 		}
 		m.loxiInstAddrMap[name] = IP
+		klog.Infof("updated cidr host name: %s:%s", name, IP.String())
 		return nil
 	}
 
@@ -2230,7 +2263,7 @@ func (m *Manager) DeleteLoxiInstAddr(name string) error {
 	defer m.mtx.Unlock()
 
 	if _, exists := m.loxiInstAddrMap[name]; !exists {
-		return errors.New("addr does not exist")
+		return nil
 	}
 
 	delete(m.loxiInstAddrMap, name)
