@@ -1028,11 +1028,16 @@ func (m *Manager) updateAllLoxiLBServiceStatus() error {
 				}
 
 				retIPs := m.genExtIPName("0.0.0.0")
+				update = true
+
+				svc.Status.LoadBalancer.Ingress = nil
+
 				for _, retIP := range retIPs {
 					retIngress := corev1.LoadBalancerIngress{IP: retIP}
 					svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, retIngress)
-					update = true
 				}
+
+				klog.Infof("service %s:%s : updating status : retIngress %v", ns.Name, svc.Name, svc.Status.LoadBalancer.Ingress)
 
 				if update {
 					_, err = m.kubeClient.CoreV1().Services(svc.Namespace).UpdateStatus(ctx, &svc, metav1.UpdateOptions{})
