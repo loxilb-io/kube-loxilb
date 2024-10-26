@@ -119,6 +119,7 @@ func run(o *Options) error {
 		Monitor:                 o.config.Monitor,
 		AppendEPs:               o.config.AppendEPs,
 		PrivateCIDR:             o.config.PrivateCIDR,
+		ExclIPAM:                o.config.ExclIPAM,
 	}
 
 	ipPoolTbl := make(map[string]*ippool.IPPool)

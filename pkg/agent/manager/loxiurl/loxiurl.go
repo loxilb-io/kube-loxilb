@@ -265,6 +265,10 @@ func (m *Manager) addLoxiLBURL(url *crdv1.LoxiURL) error {
 		return nil
 	}
 
+	if url.Spec.LoxiURLType == "cidrpool" {
+		return m.lbManager.AddLoxiCIDRPool(url.Name, url.Spec.LoxiURL)
+	}
+
 	if url.Spec.LoxiURLType == "hostcidr" {
 		ip := net.ParseIP(url.Spec.LoxiURL)
 		if ip == nil {
@@ -342,6 +346,10 @@ func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
 
 	if url.Spec.LoxiZone != "" && url.Spec.LoxiZone != m.networkConfig.Zone {
 		return nil
+	}
+
+	if url.Spec.LoxiURLType == "cidrpool" {
+		return m.lbManager.DeleteLoxiCIDRPool(url.Name, url.Spec.LoxiURL)
 	}
 
 	if url.Spec.LoxiURLType == "hostcidr" {
