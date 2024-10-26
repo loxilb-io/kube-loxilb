@@ -1,0 +1,8 @@
+apiVersion: "loxiurl.loxilb.io/v1"
+kind: LoxiURL
+metadata:
+  name: pool5
+spec:
+  loxiURL: 12.12.12.0/24
+  zone: llb
+  type: cidrpool

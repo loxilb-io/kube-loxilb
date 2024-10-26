@@ -2276,3 +2276,99 @@ func (m *Manager) DeleteLoxiInstAddr(name string) error {
 	klog.Infof("removed cidr host name: %s", name)
 	return nil
 }
+
+func (m *Manager) AddLoxiCIDRPool(poolName string, cidr string) error {
+
+	addr, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		klog.Errorf("failed to parse (CIDR: %s)", cidr)
+		return err
+	}
+
+	newIPPoolTbl := make(map[string]*ippool.IPPool)
+
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	currIPPoolTbl := m.ipPoolTbl
+
+	if tk.IsNetIPv6(addr.String()) {
+		currIPPoolTbl = m.ip6PoolTbl
+	}
+
+	for key, value := range currIPPoolTbl {
+		newIPPoolTbl[key] = value
+	}
+
+	if _, ok := newIPPoolTbl[poolName]; ok {
+		if newIPPoolTbl[poolName].CIDR != cidr {
+			ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), cidr, !m.networkConfig.ExclIPAM)
+			if err != nil {
+				klog.Errorf("failed to create updated external IP Pool (CIDR: %s)", cidr)
+				return err
+			}
+			newIPPoolTbl[poolName] = ipPool
+			klog.Infof("cidr pool: %s:%s updated", poolName, cidr)
+			return nil
+		}
+		//klog.Infof("cidr pool: %s:%s exists", poolName, cidr)
+		return nil
+	}
+
+	ipPool, err := ippool.NewIPPool(tk.IpAllocatorNew(), cidr, !m.networkConfig.ExclIPAM)
+	if err != nil {
+		klog.Errorf("failed to create external IP Pool (CIDR: %s)", cidr)
+		return err
+	}
+
+	newIPPoolTbl[poolName] = ipPool
+
+	if tk.IsNetIPv6(addr.String()) {
+		m.ip6PoolTbl = newIPPoolTbl
+	} else {
+		m.ipPoolTbl = newIPPoolTbl
+	}
+
+	klog.Infof("added new cidr pool %s:%s", poolName, cidr)
+	return nil
+}
+
+func (m *Manager) DeleteLoxiCIDRPool(poolName string, cidr string) error {
+
+	addr, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		klog.Errorf("failed to parse (CIDR: %s)", cidr)
+		return err
+	}
+
+	newIPPoolTbl := make(map[string]*ippool.IPPool)
+
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	currIPPoolTbl := m.ipPoolTbl
+
+	if tk.IsNetIPv6(addr.String()) {
+		currIPPoolTbl = m.ip6PoolTbl
+	}
+
+	for key, value := range currIPPoolTbl {
+		newIPPoolTbl[key] = value
+	}
+
+	if _, ok := newIPPoolTbl[poolName]; !ok {
+		klog.Infof("cidr pool: %s:%s does not exists", poolName, cidr)
+		return nil
+	}
+
+	delete(newIPPoolTbl, poolName)
+
+	if tk.IsNetIPv6(addr.String()) {
+		m.ip6PoolTbl = newIPPoolTbl
+	} else {
+		m.ipPoolTbl = newIPPoolTbl
+	}
+
+	klog.Infof("deleted cidr pool %s:%s", poolName, cidr)
+	return nil
+}

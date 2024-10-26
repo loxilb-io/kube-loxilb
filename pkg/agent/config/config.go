@@ -32,4 +32,5 @@ type NetworkConfig struct {
 	SetRoles                string
 	Zone                    string
 	PrivateCIDR             string
+	ExclIPAM                bool
 }
