@@ -104,6 +104,7 @@ type Manager struct {
 	zoneInstRoleMap     map[string]*LoxiInstRole
 	instAddrApplyCh     chan struct{}
 	loxiInstAddrMap     map[string]net.IP
+	instIDAllocd        int
 }
 
 type LbArgs struct {
@@ -123,6 +124,7 @@ type LbArgs struct {
 	endpointIPs   []string
 	needMultusEP  bool
 	usePodNetwork bool
+	inst          string
 }
 
 type LbModelEnt struct {
@@ -144,6 +146,7 @@ type LbCacheEntry struct {
 	Timeout        int
 	ActCheck       bool
 	PrefLocal      bool
+	Inst           string
 	Addr           string
 	State          string
 	NodeLabel      string
@@ -356,6 +359,10 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 		return m.deleteLoadBalancer(svcNs, svcName, true)
 	}
 	return m.addLoadBalancer(svc)
+}
+
+func (m *Manager) getInstName() string {
+	return fmt.Sprintf("%s-%s%d", m.networkConfig.Zone, "zn", m.instIDAllocd%m.networkConfig.NumZoneInst)
 }
 
 func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
@@ -648,12 +655,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				SecIPs:         []string{},
 				IPPool:         ipPool,
 				SIPPools:       sipPools,
+				Inst:           m.getInstName(),
 				LbServicePairs: make(map[string]*LbServicePairEntry),
 			}
 		}()
 
 		m.lbCache[cacheKey] = <-addNewLbCacheEntryChan
 		lbCacheEntry = m.lbCache[cacheKey]
+		m.instIDAllocd++
 		klog.Infof("New LbCache %s Added", cacheKey)
 	} else {
 		if len(endpointIPs) <= 0 {
@@ -909,6 +918,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			probeTimeo:    m.lbCache[cacheKey].ProbeTimeo,
 			probeRetries:  m.lbCache[cacheKey].ProbeRetries,
 			sel:           m.lbCache[cacheKey].EpSelect,
+			inst:          m.lbCache[cacheKey].Inst,
 			needMultusEP:  needMultusEP,
 			usePodNetwork: usePodNet,
 		}
@@ -1799,7 +1809,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			ProbeTimeout: lbArgs.probeTimeo,
 			ProbeRetries: int32(lbArgs.probeRetries),
 			Sel:          lbArgs.sel,
-			Name:         fmt.Sprintf("%s_%s", svc.Namespace, svc.Name),
+			Name:         fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
 		},
 		SecondaryIPs: loxiSecIPModelList,
 		Endpoints:    loxiEndpointModelList,
