@@ -33,4 +33,5 @@ type NetworkConfig struct {
 	Zone                    string
 	PrivateCIDR             string
 	ExclIPAM                bool
+	NumZoneInst             int
 }

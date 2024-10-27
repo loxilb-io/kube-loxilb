@@ -75,4 +75,6 @@ type AgentConfig struct {
 	PrivateCIDR string `yaml:"privateCIDR,omitempty"`
 	// enable Gateway API
 	EnableBGPCRDs bool `yaml:"enableBGPCRDs,omitempty"`
+	// Number of zone instances for HA
+	NumZoneInst int `yaml:"numZoneInstances,omitempty"`
 }

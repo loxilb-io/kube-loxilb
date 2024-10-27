@@ -14,9 +14,13 @@ import (
 	"k8s.io/klog/v2"
 )
 
+type LoxiZoneInst struct {
+	MasterLB bool
+}
+
 type LoxiClient struct {
 	RestClient  *RESTClient
-	MasterLB    bool
+	InstRoles   map[string]*LoxiZoneInst
 	PeeringOnly bool
 	Url         string
 	Host        string
@@ -31,7 +35,7 @@ type LoxiClient struct {
 }
 
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
-func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struct{}, peerOnly bool, noRole bool, name string) (*LoxiClient, error) {
+func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struct{}, peerOnly bool, noRole bool, name string, zone string, numZoneInst int) (*LoxiClient, error) {
 
 	base, err := url.Parse(apiServer)
 	if err != nil {
@@ -75,6 +79,13 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struc
 		Name:        name,
 	}
 
+	lc.InstRoles = make(map[string]*LoxiZoneInst)
+
+	for i := 0; i < numZoneInst; i++ {
+		instName := fmt.Sprintf("%s-%s%d", zone, "zn", i)
+		lc.InstRoles[instName] = &LoxiZoneInst{}
+	}
+
 	lc.StartLoxiHealthCheckChan(aliveCh, deadCh)
 
 	klog.Infof("NewLoxiClient Created: %s", apiServer)
@@ -109,6 +120,15 @@ func CreateHTTPClient(baseURL *url.URL) (*http.Client, error) {
 	return client, nil
 }
 
+func (l *LoxiClient) LoxiClientHasMaterInst() bool {
+	for _, val := range l.InstRoles {
+		if val.MasterLB {
+			return true
+		}
+	}
+	return false
+}
+
 func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh chan struct{}) {
 	l.IsAlive = false
 
@@ -117,7 +137,7 @@ func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh c
 			if l.IsAlive {
 				klog.Infof("LoxiHealthCheckChan: loxilb-lb(%s) is down", l.Host)
 				l.IsAlive = false
-				if time.Duration(time.Since(l.DeadSigTs).Seconds()) >= 3 && l.MasterLB {
+				if time.Duration(time.Since(l.DeadSigTs).Seconds()) >= 3 && l.LoxiClientHasMaterInst() {
 					klog.Infof("LoxiHealthCheckChan: loxilb-lb(%s) master down", l.Host)
 					l.DeadSigTs = time.Now()
 					deadCh <- struct{}{}

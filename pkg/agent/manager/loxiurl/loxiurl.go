@@ -322,7 +322,7 @@ nextURL:
 		m.deleteSingleLoxiClientsWithName(url.Name)
 		klog.Infof("loxilb-url Add (%v)", url)
 		for _, nurl := range validLoxiURLs {
-			client, err2 := api.NewLoxiClient(nurl, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false, url.Name)
+			client, err2 := api.NewLoxiClient(nurl, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false, url.Name, m.networkConfig.Zone, m.networkConfig.NumZoneInst)
 			if err2 != nil {
 				continue
 			}
@@ -412,7 +412,7 @@ nextURL1:
 		m.deleteAllLoxiClients()
 
 		for _, nurl := range validLoxiURLs {
-			client, err2 := api.NewLoxiClient(nurl.url, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false, nurl.name)
+			client, err2 := api.NewLoxiClient(nurl.url, m.loxiLBURLAliveCh, m.loxiLBURLDeadCh, false, false, nurl.name, m.networkConfig.Zone, m.networkConfig.NumZoneInst)
 			if err2 != nil {
 				continue
 			}

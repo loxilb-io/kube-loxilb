@@ -76,6 +76,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.config.PrivateCIDR, "privateCIDR", o.config.PrivateCIDR, "Specify aws secondary IP. Used when configuring HA in AWS and associate with EIP.")
 	fs.StringVar(&excludeRoleList, "excludeRoleList", excludeRoleList, "List of nodes to exclude in role-selection")
 	fs.BoolVar(&o.config.AppendEPs, "appendEPs", o.config.AppendEPs, "Attach and detach end-points of LB rule")
+	fs.IntVar(&o.config.NumZoneInst, "numZoneInstances", o.config.NumZoneInst, "Number of HA instances per zone")
 }
 
 // complete completes all the required optionst
@@ -284,4 +285,8 @@ func (o *Options) setDefaults() {
 	if o.config.Zone == "" {
 		o.config.Zone = "llb"
 	}
+	if o.config.NumZoneInst == 0 {
+		o.config.NumZoneInst = 2
+	}
+
 }
