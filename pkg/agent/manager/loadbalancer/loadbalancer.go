@@ -2135,9 +2135,9 @@ loop:
 					m.SelectLoxiLBRoles(false, nil)
 				}
 
-				cisModel, err := m.makeLoxiLBCIStatusModel("default", m.networkConfig.SetRoles, aliveClient)
-				if err == nil {
-					for instName, vi := range aliveClient.InstRoles {
+				for instName, vi := range aliveClient.InstRoles {
+					cisModel, err := m.makeLoxiLBCIStatusModel(instName, m.networkConfig.SetRoles, aliveClient)
+					if err == nil {
 						for retry := 0; retry < 5; retry++ {
 							err = func(cisModel *api.CIStatusModel) error {
 								ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
