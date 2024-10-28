@@ -78,6 +78,7 @@ const (
 	MaxExternalSecondaryIPsNum  = 4
 	defaultPoolName             = "defaultPool"
 	loxilbZoneLabelKey          = "loxilb.io/zonelabel"
+	loxilbZoneInstance          = "loxilb.io/zoneinstance"
 )
 
 type LoxiInstRole struct {
@@ -104,7 +105,7 @@ type Manager struct {
 	zoneInstRoleMap     map[string]*LoxiInstRole
 	instAddrApplyCh     chan struct{}
 	loxiInstAddrMap     map[string]net.IP
-	zoneInstID          int
+	zoneInstSelHint     int
 }
 
 type LbArgs struct {
@@ -362,7 +363,7 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 }
 
 func (m *Manager) getZoneInstName() string {
-	return api.GenZoneInstName(m.networkConfig.Zone, m.zoneInstID%m.networkConfig.NumZoneInst)
+	return api.GenZoneInstName(m.networkConfig.Zone, m.zoneInstSelHint%m.networkConfig.NumZoneInst)
 }
 
 func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
@@ -406,6 +407,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	matchNodeLabel := ""
 	usePodNet := false
 	hasSharedPool := false
+	overrideZoneInst := ""
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needMultusEP {
 		return nil
@@ -497,6 +499,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	if upn := svc.Annotations[usePodNetworkAnnotation]; upn != "" {
 		if upn == "yes" {
 			usePodNet = true
+		}
+	}
+
+	// Check for loxilb specific annotations - loxilbZoneInstance
+	if zni := svc.Annotations[loxilbZoneInstance]; zni != "" {
+		overrideZoneInst = zni
+		if _, found := m.zoneInstRoleMap[zni]; !found {
+			klog.Infof("zone-instance(%s) not found", zni)
+			return errors.New("zone-instance not found")
 		}
 	}
 
@@ -645,9 +656,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		addNewLbCacheEntryChan := make(chan *LbCacheEntry)
 		defer close(addNewLbCacheEntryChan)
 		go func() {
+
 			zoneInstName := "default"
-			if !hasSharedPool {
-				zoneInstName = m.getZoneInstName()
+			if overrideZoneInst != "" {
+				zoneInstName = overrideZoneInst
+			} else {
+				if !hasSharedPool {
+					zoneInstName = m.getZoneInstName()
+				}
 			}
 			addNewLbCacheEntryChan <- &LbCacheEntry{
 				LbMode:         lbMode,
@@ -674,7 +690,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 		m.lbCache[cacheKey] = <-addNewLbCacheEntryChan
 		lbCacheEntry = m.lbCache[cacheKey]
-		m.zoneInstID++
+		m.zoneInstSelHint++
 		klog.Infof("New LbCache %s Added", cacheKey)
 	} else {
 		if len(endpointIPs) <= 0 {
