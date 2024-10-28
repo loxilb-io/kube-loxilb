@@ -104,7 +104,7 @@ type Manager struct {
 	zoneInstRoleMap     map[string]*LoxiInstRole
 	instAddrApplyCh     chan struct{}
 	loxiInstAddrMap     map[string]net.IP
-	instIDAllocd        int
+	zoneInstID          int
 }
 
 type LbArgs struct {
@@ -251,8 +251,8 @@ func NewLoadBalancerManager(
 	}
 
 	for i := 0; i < networkConfig.NumZoneInst; i++ {
-		instName := fmt.Sprintf("%s-%s%d", networkConfig.Zone, "zn", i)
-		manager.zoneInstRoleMap[instName] = &LoxiInstRole{instID: i}
+		name := api.GenZoneInstName(networkConfig.Zone, i)
+		manager.zoneInstRoleMap[name] = &LoxiInstRole{instID: i}
 	}
 
 	serviceInformer.Informer().AddEventHandlerWithResyncPeriod(
@@ -361,8 +361,8 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 	return m.addLoadBalancer(svc)
 }
 
-func (m *Manager) getInstName() string {
-	return fmt.Sprintf("%s-%s%d", m.networkConfig.Zone, "zn", m.instIDAllocd%m.networkConfig.NumZoneInst)
+func (m *Manager) getZoneInstName() string {
+	return api.GenZoneInstName(m.networkConfig.Zone, m.zoneInstID%m.networkConfig.NumZoneInst)
 }
 
 func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
@@ -405,6 +405,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	epSelect := api.LbSelRr
 	matchNodeLabel := ""
 	usePodNet := false
+	hasSharedPool := false
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needMultusEP {
 		return nil
@@ -440,6 +441,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	if ipPool.Shared {
+		hasSharedPool = true
+	}
+
 	// Check for loxilb specific annotations - SecondayPoolName
 	if spn := svc.Annotations[SecPoolNameAnnotation]; spn != "" {
 		poolTbl := m.ipPoolTbl
@@ -450,6 +455,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		for _, spool := range spools {
 			if pool := poolTbl[spool]; pool != nil {
 				sipPools = append(sipPools, pool)
+				if pool.Shared {
+					hasSharedPool = true
+				}
 			} else {
 				klog.Errorf("%s secondary pool not found", spool)
 				return errors.New("secondary pool not found")
@@ -477,12 +485,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	if addrType != "ipv4" && len(sipPools) != 0 {
 		klog.Infof("SecondaryIP Svc not possible for %v", addrType)
-		return errors.New("SecondaryIP Svc not possible")
+		return errors.New("secondaryip svc not possible for addrtype")
 	}
 
 	if len(secIPs) != 0 && len(sipPools) != 0 {
 		klog.Infof("SecondaryIP is specified (%v)", secIPs)
-		return errors.New("Static SecondaryIP is specified with Secondary Pool")
+		return errors.New("static secondaryip is specified with secondary pool")
 	}
 
 	// Check for loxilb specific annotations - usePodNet
@@ -637,6 +645,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		addNewLbCacheEntryChan := make(chan *LbCacheEntry)
 		defer close(addNewLbCacheEntryChan)
 		go func() {
+			zoneInstName := "default"
+			if !hasSharedPool {
+				zoneInstName = m.getZoneInstName()
+			}
 			addNewLbCacheEntryChan <- &LbCacheEntry{
 				LbMode:         lbMode,
 				ActCheck:       livenessCheck,
@@ -655,14 +667,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				SecIPs:         []string{},
 				IPPool:         ipPool,
 				SIPPools:       sipPools,
-				Inst:           m.getInstName(),
+				Inst:           zoneInstName,
 				LbServicePairs: make(map[string]*LbServicePairEntry),
 			}
 		}()
 
 		m.lbCache[cacheKey] = <-addNewLbCacheEntryChan
 		lbCacheEntry = m.lbCache[cacheKey]
-		m.instIDAllocd++
+		m.zoneInstID++
 		klog.Infof("New LbCache %s Added", cacheKey)
 	} else {
 		if len(endpointIPs) <= 0 {
@@ -2046,10 +2058,46 @@ func (m *Manager) SelectInstLoxiLBRoles(instName string, selhint int) (bool, int
 	return selMaster, sel
 }
 
+func (m *Manager) ResetRolesOnNeedRebalanceInstLoxiLBRoles() bool {
+
+	numInstRoles := len(m.zoneInstRoleMap)
+	maxMasterPerClient := 0
+	activeClients := 0
+	for _, client := range m.LoxiClients {
+		if client.IsAlive {
+			activeClients++
+		}
+		masterRoles := 0
+		for _, val := range client.InstRoles {
+			if val.MasterLB {
+				masterRoles++
+			}
+		}
+		if masterRoles > maxMasterPerClient {
+			maxMasterPerClient = masterRoles
+		}
+	}
+
+	if activeClients >= numInstRoles && maxMasterPerClient >= numInstRoles {
+		for _, client := range m.LoxiClients {
+			for _, val := range client.InstRoles {
+				if val.MasterLB {
+					val.MasterLB = false
+				}
+			}
+		}
+		klog.Infof("set-roles need rebalance (%d:%d)", activeClients, maxMasterPerClient)
+		return true
+	}
+
+	return false
+}
+
 func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bool) {
 	selMaster := false
 	pselhint := 0
 	if m.networkConfig.SetRoles != "" {
+		m.ResetRolesOnNeedRebalanceInstLoxiLBRoles()
 		for inst, val := range m.zoneInstRoleMap {
 			sel := false
 			if pselhint == 0 {
