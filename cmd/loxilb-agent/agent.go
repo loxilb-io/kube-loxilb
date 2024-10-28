@@ -101,6 +101,7 @@ func run(o *Options) error {
 	klog.Infof("ExtBGPPeers: %v", o.config.ExtBGPPeers)
 	klog.Infof("SetRoles: %s", o.config.SetRoles)
 	klog.Infof("Zone: %s", o.config.Zone)
+	klog.Infof("Zone instances %v", o.config.NumZoneInst)
 	klog.Infof("AppendEPs: %v", o.config.AppendEPs)
 
 	networkConfig := &config.NetworkConfig{
@@ -120,6 +121,7 @@ func run(o *Options) error {
 		AppendEPs:               o.config.AppendEPs,
 		PrivateCIDR:             o.config.PrivateCIDR,
 		ExclIPAM:                o.config.ExclIPAM,
+		NumZoneInst:             o.config.NumZoneInst,
 	}
 
 	ipPoolTbl := make(map[string]*ippool.IPPool)
@@ -181,7 +183,7 @@ func run(o *Options) error {
 
 	if len(networkConfig.LoxilbURLs) > 0 {
 		for _, lbURL := range networkConfig.LoxilbURLs {
-			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, loxiLBDeadCh, false, false, "")
+			loxilbClient, err := api.NewLoxiClient(lbURL, loxiLBLiveCh, loxiLBDeadCh, false, false, "", o.config.Zone, o.config.NumZoneInst)
 			if err != nil {
 				return err
 			}

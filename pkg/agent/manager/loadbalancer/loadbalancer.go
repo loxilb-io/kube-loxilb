@@ -78,7 +78,12 @@ const (
 	MaxExternalSecondaryIPsNum  = 4
 	defaultPoolName             = "defaultPool"
 	loxilbZoneLabelKey          = "loxilb.io/zonelabel"
+	loxilbZoneInstance          = "loxilb.io/zoneinstance"
 )
+
+type LoxiInstRole struct {
+	instID int
+}
 
 type Manager struct {
 	mtx                 sync.RWMutex
@@ -97,8 +102,10 @@ type Manager struct {
 	lbCache             LbCacheTable
 	ipPoolTbl           map[string]*ippool.IPPool
 	ip6PoolTbl          map[string]*ippool.IPPool
+	zoneInstRoleMap     map[string]*LoxiInstRole
 	instAddrApplyCh     chan struct{}
 	loxiInstAddrMap     map[string]net.IP
+	zoneInstSelHint     int
 }
 
 type LbArgs struct {
@@ -118,6 +125,7 @@ type LbArgs struct {
 	endpointIPs   []string
 	needMultusEP  bool
 	usePodNetwork bool
+	inst          string
 }
 
 type LbModelEnt struct {
@@ -139,6 +147,7 @@ type LbCacheEntry struct {
 	Timeout        int
 	ActCheck       bool
 	PrefLocal      bool
+	Inst           string
 	Addr           string
 	State          string
 	NodeLabel      string
@@ -236,9 +245,15 @@ func NewLoadBalancerManager(
 		nodeListerSynced:    nodeInformer.Informer().HasSynced,
 		instAddrApplyCh:     make(chan struct{}),
 		loxiInstAddrMap:     make(map[string]net.IP),
+		zoneInstRoleMap:     make(map[string]*LoxiInstRole),
 
 		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
 		lbCache: make(LbCacheTable),
+	}
+
+	for i := 0; i < networkConfig.NumZoneInst; i++ {
+		name := api.GenZoneInstName(networkConfig.Zone, i)
+		manager.zoneInstRoleMap[name] = &LoxiInstRole{instID: i}
 	}
 
 	serviceInformer.Informer().AddEventHandlerWithResyncPeriod(
@@ -347,6 +362,10 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 	return m.addLoadBalancer(svc)
 }
 
+func (m *Manager) getZoneInstName() string {
+	return api.GenZoneInstName(m.networkConfig.Zone, m.zoneInstSelHint%m.networkConfig.NumZoneInst)
+}
+
 func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	zone := svc.Annotations[zoneSelAnnotation]
@@ -387,6 +406,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	epSelect := api.LbSelRr
 	matchNodeLabel := ""
 	usePodNet := false
+	hasSharedPool := false
+	overrideZoneInst := ""
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needMultusEP {
 		return nil
@@ -422,6 +443,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	if ipPool.Shared {
+		hasSharedPool = true
+	}
+
 	// Check for loxilb specific annotations - SecondayPoolName
 	if spn := svc.Annotations[SecPoolNameAnnotation]; spn != "" {
 		poolTbl := m.ipPoolTbl
@@ -432,6 +457,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		for _, spool := range spools {
 			if pool := poolTbl[spool]; pool != nil {
 				sipPools = append(sipPools, pool)
+				if pool.Shared {
+					hasSharedPool = true
+				}
 			} else {
 				klog.Errorf("%s secondary pool not found", spool)
 				return errors.New("secondary pool not found")
@@ -459,18 +487,27 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	if addrType != "ipv4" && len(sipPools) != 0 {
 		klog.Infof("SecondaryIP Svc not possible for %v", addrType)
-		return errors.New("SecondaryIP Svc not possible")
+		return errors.New("secondaryip svc not possible for addrtype")
 	}
 
 	if len(secIPs) != 0 && len(sipPools) != 0 {
 		klog.Infof("SecondaryIP is specified (%v)", secIPs)
-		return errors.New("Static SecondaryIP is specified with Secondary Pool")
+		return errors.New("static secondaryip is specified with secondary pool")
 	}
 
 	// Check for loxilb specific annotations - usePodNet
 	if upn := svc.Annotations[usePodNetworkAnnotation]; upn != "" {
 		if upn == "yes" {
 			usePodNet = true
+		}
+	}
+
+	// Check for loxilb specific annotations - loxilbZoneInstance
+	if zni := svc.Annotations[loxilbZoneInstance]; zni != "" {
+		overrideZoneInst = zni
+		if _, found := m.zoneInstRoleMap[zni]; !found {
+			klog.Infof("zone-instance(%s) not found", zni)
+			return errors.New("zone-instance not found")
 		}
 	}
 
@@ -619,6 +656,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		addNewLbCacheEntryChan := make(chan *LbCacheEntry)
 		defer close(addNewLbCacheEntryChan)
 		go func() {
+
+			zoneInstName := "default"
+			if overrideZoneInst != "" {
+				zoneInstName = overrideZoneInst
+			} else {
+				if !hasSharedPool {
+					zoneInstName = m.getZoneInstName()
+				}
+			}
 			addNewLbCacheEntryChan <- &LbCacheEntry{
 				LbMode:         lbMode,
 				ActCheck:       livenessCheck,
@@ -637,12 +683,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				SecIPs:         []string{},
 				IPPool:         ipPool,
 				SIPPools:       sipPools,
+				Inst:           zoneInstName,
 				LbServicePairs: make(map[string]*LbServicePairEntry),
 			}
 		}()
 
 		m.lbCache[cacheKey] = <-addNewLbCacheEntryChan
 		lbCacheEntry = m.lbCache[cacheKey]
+		m.zoneInstSelHint++
 		klog.Infof("New LbCache %s Added", cacheKey)
 	} else {
 		if len(endpointIPs) <= 0 {
@@ -898,6 +946,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			probeTimeo:    m.lbCache[cacheKey].ProbeTimeo,
 			probeRetries:  m.lbCache[cacheKey].ProbeRetries,
 			sel:           m.lbCache[cacheKey].EpSelect,
+			inst:          m.lbCache[cacheKey].Inst,
 			needMultusEP:  needMultusEP,
 			usePodNetwork: usePodNet,
 		}
@@ -1788,7 +1837,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			ProbeTimeout: lbArgs.probeTimeo,
 			ProbeRetries: int32(lbArgs.probeRetries),
 			Sel:          lbArgs.sel,
-			Name:         fmt.Sprintf("%s_%s", svc.Namespace, svc.Name),
+			Name:         fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
 		},
 		SecondaryIPs: loxiSecIPModelList,
 		Endpoints:    loxiEndpointModelList,
@@ -1798,9 +1847,13 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 func (m *Manager) makeLoxiLBCIStatusModel(instance, vip string, client *api.LoxiClient) (api.CIStatusModel, error) {
 
 	state := "BACKUP"
-	if client.MasterLB {
-		state = "MASTER"
+	inst, found := client.InstRoles[instance]
+	if found {
+		if inst.MasterLB {
+			state = "MASTER"
+		}
 	}
+
 	if vip == "" {
 		vip = "0.0.0.0"
 	}
@@ -1893,7 +1946,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, false, noRole, "")
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, false, noRole, "", m.networkConfig.Zone, m.networkConfig.NumZoneInst)
 			if err2 != nil {
 				continue
 			}
@@ -1943,7 +1996,7 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, true, true, "")
+			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, true, true, "", m.networkConfig.Zone, m.networkConfig.NumZoneInst)
 			if err2 != nil {
 				continue
 			}
@@ -1975,42 +2028,109 @@ func (m *Manager) removeAllCacheEndpoints(cacheKey string) {
 	klog.V(4).Infof("service %s loxilb rule's endpoints are removed", cacheKey)
 }
 
-func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bool) {
-	if m.networkConfig.SetRoles != "" {
-		reElect := false
-		hasMaster := false
-		for i := range m.LoxiClients {
-			v := m.LoxiClients[i]
-			if v.MasterLB && !v.IsAlive {
-				v.MasterLB = false
-				reElect = true
-			} else if v.MasterLB {
-				hasMaster = true
-			}
+func (m *Manager) SelectInstLoxiLBRoles(instName string, selhint int) (bool, int) {
+	reElect := false
+	hasMaster := false
+
+	for i := range m.LoxiClients {
+		v := m.LoxiClients[i]
+		vi := v.InstRoles[instName]
+		if vi == nil {
+			return false, 0
 		}
-		if reElect || !hasMaster {
-			selMaster := false
-			for i := range m.LoxiClients {
-				v := m.LoxiClients[i]
-				if v.NoRole {
-					continue
-				}
-				if selMaster {
-					v.MasterLB = false
-					continue
-				}
-				if v.IsAlive {
-					v.MasterLB = true
-					selMaster = true
-					klog.Infof("loxilb-lb(%v): set-role master", v.Host)
-				}
+		if vi.MasterLB && !v.IsAlive {
+			vi.MasterLB = false
+			reElect = true
+		} else if vi.MasterLB {
+			hasMaster = true
+		}
+	}
+	sel := -1
+	selMaster := false
+	if reElect || !hasMaster {
+		nproc := 0
+		for i := selhint; nproc < len(m.LoxiClients); i++ {
+			nproc++
+			if i >= len(m.LoxiClients) {
+				i = 0
+			}
+			v := m.LoxiClients[i]
+			vi := v.InstRoles[instName]
+			if v.NoRole {
+				continue
 			}
 			if selMaster {
-				m.ElectionRunOnce = true
-				if sendSigCh {
-					loxiLBSelMasterEvent <- true
+				vi.MasterLB = false
+				continue
+			}
+			if v.IsAlive {
+				vi.MasterLB = true
+				selMaster = true
+				sel = i
+				klog.Infof("loxilb-lb(%v): %s set-role master", instName, v.Host)
+			}
+		}
+	}
+	return selMaster, sel
+}
+
+func (m *Manager) ResetRolesOnNeedRebalanceInstLoxiLBRoles() bool {
+
+	numInstRoles := len(m.zoneInstRoleMap)
+	maxMasterPerClient := 0
+	activeClients := 0
+	for _, client := range m.LoxiClients {
+		if client.IsAlive {
+			activeClients++
+		}
+		masterRoles := 0
+		for _, val := range client.InstRoles {
+			if val.MasterLB {
+				masterRoles++
+			}
+		}
+		if masterRoles > maxMasterPerClient {
+			maxMasterPerClient = masterRoles
+		}
+	}
+
+	if activeClients >= numInstRoles && maxMasterPerClient >= numInstRoles {
+		for _, client := range m.LoxiClients {
+			for _, val := range client.InstRoles {
+				if val.MasterLB {
+					val.MasterLB = false
 				}
 			}
+		}
+		klog.Infof("set-roles need rebalance (%d:%d)", activeClients, maxMasterPerClient)
+		return true
+	}
+
+	return false
+}
+
+func (m *Manager) SelectLoxiLBRoles(sendSigCh bool, loxiLBSelMasterEvent chan bool) {
+	selMaster := false
+	pselhint := 0
+	if m.networkConfig.SetRoles != "" {
+		m.ResetRolesOnNeedRebalanceInstLoxiLBRoles()
+		for inst, val := range m.zoneInstRoleMap {
+			sel := false
+			if pselhint == 0 {
+				pselhint = val.instID
+			} else {
+				pselhint++
+			}
+			sel, pselhint = m.SelectInstLoxiLBRoles(inst, pselhint)
+			if sel {
+				selMaster = true
+			}
+		}
+	}
+	if selMaster {
+		m.ElectionRunOnce = true
+		if sendSigCh {
+			loxiLBSelMasterEvent <- true
 		}
 	}
 }
@@ -2040,20 +2160,22 @@ loop:
 				if !lc.IsAlive {
 					continue
 				}
-				cisModel, err := m.makeLoxiLBCIStatusModel("default", m.networkConfig.SetRoles, lc)
-				if err == nil {
-					for retry := 0; retry < 5; retry++ {
-						err = func(cisModel *api.CIStatusModel) error {
-							ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-							defer cancel()
-							return lc.CIStatus().Create(ctx, cisModel)
-						}(&cisModel)
-						if err == nil {
-							klog.Infof("loxilb-lb(%s): set-role-master(%v) - OK", lc.Host, lc.MasterLB)
-							break
-						} else {
-							klog.Infof("loxilb-lb(%s): set-role-master(%v) - failed(%d)", lc.Host, lc.MasterLB, retry)
-							time.Sleep(1 * time.Second)
+				for instName, vi := range lc.InstRoles {
+					cisModel, err := m.makeLoxiLBCIStatusModel(instName, m.networkConfig.SetRoles, lc)
+					if err == nil {
+						for retry := 0; retry < 5; retry++ {
+							err = func(cisModel *api.CIStatusModel) error {
+								ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+								defer cancel()
+								return lc.CIStatus().Create(ctx, cisModel)
+							}(&cisModel)
+							if err == nil {
+								klog.Infof("loxilb-lb(%s): set-role-master(%s:%v) - OK", lc.Host, instName, vi.MasterLB)
+								break
+							} else {
+								klog.Infof("loxilb-lb(%s): set-role-master(%s:%v) - failed(%d)", lc.Host, instName, vi.MasterLB, retry)
+								time.Sleep(1 * time.Second)
+							}
 						}
 					}
 				}
@@ -2087,20 +2209,22 @@ loop:
 					m.SelectLoxiLBRoles(false, nil)
 				}
 
-				cisModel, err := m.makeLoxiLBCIStatusModel("default", m.networkConfig.SetRoles, aliveClient)
-				if err == nil {
-					for retry := 0; retry < 5; retry++ {
-						err = func(cisModel *api.CIStatusModel) error {
-							ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-							defer cancel()
-							return aliveClient.CIStatus().Create(ctx, cisModel)
-						}(&cisModel)
-						if err == nil {
-							klog.Infof("loxilb-lb(%s): set-role-master(%v) - OK", aliveClient.Host, aliveClient.MasterLB)
-							break
-						} else {
-							klog.Infof("loxilb-lb(%s): set-role-master(%v) - failed(%d)", aliveClient.Host, aliveClient.MasterLB, retry)
-							time.Sleep(1 * time.Second)
+				for instName, vi := range aliveClient.InstRoles {
+					cisModel, err := m.makeLoxiLBCIStatusModel(instName, m.networkConfig.SetRoles, aliveClient)
+					if err == nil {
+						for retry := 0; retry < 5; retry++ {
+							err = func(cisModel *api.CIStatusModel) error {
+								ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+								defer cancel()
+								return aliveClient.CIStatus().Create(ctx, cisModel)
+							}(&cisModel)
+							if err == nil {
+								klog.Infof("loxilb-lb(%s): set-role-master(%s:%v) - OK", aliveClient.Host, instName, vi.MasterLB)
+								break
+							} else {
+								klog.Infof("loxilb-lb(%s): set-role-master(%s:%v) - failed(%d)", aliveClient.Host, instName, vi.MasterLB, retry)
+								time.Sleep(1 * time.Second)
+							}
 						}
 					}
 				}
