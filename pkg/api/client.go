@@ -34,6 +34,15 @@ type LoxiClient struct {
 	Name        string
 }
 
+// GenZoneInstName generate zone instance name
+func GenZoneInstName(zone string, id int) string {
+	instName := "default"
+	if id != 0 {
+		instName = fmt.Sprintf("%s-%s%d", zone, "inst", id)
+	}
+	return instName
+}
+
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
 func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struct{}, peerOnly bool, noRole bool, name string, zone string, numZoneInst int) (*LoxiClient, error) {
 
@@ -82,7 +91,7 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struc
 	lc.InstRoles = make(map[string]*LoxiZoneInst)
 
 	for i := 0; i < numZoneInst; i++ {
-		instName := fmt.Sprintf("%s-%s%d", zone, "zn", i)
+		instName := GenZoneInstName(zone, i)
 		lc.InstRoles[instName] = &LoxiZoneInst{}
 	}
 
