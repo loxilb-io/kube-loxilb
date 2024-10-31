@@ -2094,7 +2094,7 @@ func (m *Manager) ResetRolesOnNeedRebalanceInstLoxiLBRoles() bool {
 		}
 	}
 
-	if activeClients >= numInstRoles && maxMasterPerClient >= numInstRoles {
+	if activeClients >= numInstRoles && maxMasterPerClient >= numInstRoles && m.networkConfig.ExclIPAM {
 		for _, client := range m.LoxiClients {
 			for _, val := range client.InstRoles {
 				if val.MasterLB {
