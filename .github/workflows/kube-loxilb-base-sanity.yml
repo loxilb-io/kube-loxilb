@@ -78,7 +78,7 @@ jobs:
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
-      - if: ${{ steps.get_results_json.outputs.TCPROUTE_PASSED != 'llb-123.123.123.1' }}
+      - if: ${{ steps.get_results_json.outputs.TCPROUTE_PASSED != 'llb-192.168.80.90' }}
         run: |
           echo "tcpRoute external IP: ${{ steps.get_results_json.outputs.TCPROUTE_PASSED }}"
           kubectl get pods -A
@@ -87,7 +87,7 @@ jobs:
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
-      - if: ${{ steps.get_results_json.outputs.UDPROUTE_PASSED != 'llb-123.123.123.1' }}
+      - if: ${{ steps.get_results_json.outputs.UDPROUTE_PASSED != 'llb-192.168.80.90' }}
         run: |
           echo "udpRoute external IP: ${{ steps.get_results_json.outputs.UDPROUTE_PASSED }}"
           kubectl get pods -A
@@ -115,14 +115,14 @@ jobs:
           UDP_PASSED=$(kubectl get svc udp-lb1 -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
           echo "UDP_PASSED=$UDP_PASSED" >> $GITHUB_OUTPUT
 
-      - if: ${{ steps.get_svc_results_json.outputs.IPERF_PASSED != 'llb-123.123.123.1' }}
+      - if: ${{ steps.get_svc_results_json.outputs.IPERF_PASSED != 'llb-192.168.80.90' }}
         run: |
           echo "iperf-service external IP: ${{ steps.get_results_json.outputs.IPERF_PASSED }}"
           kubectl get pods -A
           kubectl get svc -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
-      - if: ${{ steps.get_svc_results_json.outputs.SCTP_PASSED != 'llb-123.123.123.1' }}
+      - if: ${{ steps.get_svc_results_json.outputs.SCTP_PASSED != 'llb-192.168.80.90' }}
         run: |
           echo "iperf-service external IP: ${{ steps.get_results_json.outputs.SCTP_PASSED }}"
           kubectl get pods -A
@@ -130,7 +130,7 @@ jobs:
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
-      - if: ${{ steps.get_svc_results_json.outputs.UDP_PASSED != 'llb-123.123.123.1' }}
+      - if: ${{ steps.get_svc_results_json.outputs.UDP_PASSED != 'llb-192.168.80.90' }}
         run: |
           echo "iperf-service external IP: ${{ steps.get_results_json.outputs.UDP_PASSED }}"
           kubectl get pods -A
