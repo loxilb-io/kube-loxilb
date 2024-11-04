@@ -18,10 +18,10 @@ package main
 
 import (
 	"flag"
-	"os"
-
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
+	"os"
+	"os/exec"
 
 	"github.com/spf13/cobra"
 
@@ -51,10 +51,28 @@ func Execute() {
 	}
 }
 
+// RunCommand - Run a bash command
+func RunCommand(command string, isFatal bool) (int, error) {
+	cmd := exec.Command("bash", "-c", command)
+	err := cmd.Run()
+	if err != nil {
+		if isFatal {
+			os.Exit(1)
+		}
+		return 0, err
+	}
+
+	return 0, nil
+}
+
 func main() {
 
 	logs.InitLogs()
 	defer logs.FlushLogs()
+
+	if _, err := os.Stat("/etc/ssl/certs/loxilbCA.pem"); err == nil {
+		RunCommand("update-ca-certificates", true)
+	}
 
 	command := newAgentCommand()
 	if err := command.Execute(); err != nil {
