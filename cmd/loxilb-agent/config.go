@@ -77,4 +77,6 @@ type AgentConfig struct {
 	EnableBGPCRDs bool `yaml:"enableBGPCRDs,omitempty"`
 	// Number of zone instances for HA
 	NumZoneInst int `yaml:"numZoneInstances,omitempty"`
+	// If true, direct traffic forwarding from the LoxiLB to pods without NodePort
+	UsePodNetwork bool `yaml:"usePodNetwork,omitempty"`
 }
