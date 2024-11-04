@@ -496,9 +496,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	// Check for loxilb specific annotations - usePodNet
+	usePodNet = m.networkConfig.UsePodNetwork
 	if upn := svc.Annotations[usePodNetworkAnnotation]; upn != "" {
 		if upn == "yes" {
 			usePodNet = true
+		} else if upn == "no" {
+			usePodNet = false
 		}
 	}
 

@@ -34,4 +34,5 @@ type NetworkConfig struct {
 	PrivateCIDR             string
 	ExclIPAM                bool
 	NumZoneInst             int
+	UsePodNetwork           bool
 }

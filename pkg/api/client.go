@@ -48,25 +48,25 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struc
 
 	base, err := url.Parse(apiServer)
 	if err != nil {
-		fmt.Printf("failed to parse url %s. err: %s", apiServer, err.Error())
+		klog.Errorf("failed to parse url %s. err: %s", apiServer, err.Error())
 		return nil, err
 	}
 
 	client, err := CreateHTTPClient(base)
 	if err != nil {
-		fmt.Printf("failed to create HTTP client: %v", err.Error())
+		klog.Errorf("failed to create HTTP client: %v", err.Error())
 		return nil, err
 	}
 
 	restClient, err := NewRESTClient(base, "netlox", "v1", client)
 	if err != nil {
-		fmt.Printf("failed to call NewRESTClient. err: %s", err.Error())
+		klog.Errorf("failed to call NewRESTClient. err: %s", err.Error())
 		return nil, err
 	}
 
 	host, port, err := net.SplitHostPort(base.Host)
 	if err != nil {
-		fmt.Printf("failed to parse host,port %s. err: %s", base.Host, err.Error())
+		klog.Errorf("failed to parse host,port %s. err: %s", base.Host, err.Error())
 		return nil, err
 	}
 
