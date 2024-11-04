@@ -53,20 +53,20 @@ jobs:
       - name: check status of gateway resources
         id: get_results_json
         run: |
-          GC_PASSED=$(kubectl get gatewayclass -o json | jq -r '.items[0].status.conditions[0] | select(.type | test("Accepted")).status')
+          GC_PASSED=$(kubectl get gatewayclass -A -o json | jq -r '.items[0].status.conditions[0] | select(.type | test("Accepted")).status')
           echo "GC_PASSED=$GC_PASSED" >> $GITHUB_OUTPUT
-          GW_PASSED=$(kubectl get gateway -o json | jq -r '.items[0].status.conditions[] | select(.type | test("Programmed")).status')
+          GW_PASSED=$(kubectl get gateway -A -o json | jq -r '.items[0].status.conditions[] | select(.type | test("Programmed")).status')
           echo "GW_PASSED=$GW_PASSED" >> $GITHUB_OUTPUT
-          TCPROUTE_PASSED=$(kubectl get svc tcproute-lb-service -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
+          TCPROUTE_PASSED=$(kubectl get svc tcproute-lb-service -A -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
           echo "TCPROUTE_PASSED=$TCPROUTE_PASSED" >> $GITHUB_OUTPUT
-          UDPROUTE_PASSED=$(kubectl get svc udproute-lb-service -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
+          UDPROUTE_PASSED=$(kubectl get svc udproute-lb-service -A -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
           echo "UDPROUTE_PASSED=$UDPROUTE_PASSED" >> $GITHUB_OUTPUT
 
       - if: ${{ steps.get_results_json.outputs.GC_PASSED != 'True' }}
         run: |
           echo "gatewayClass passed: ${{ steps.get_results_json.outputs.GC_PASSED }}"
           kubectl get pods -A
-          kubectl get gatewayclass
+          kubectl get gatewayclass -A
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
@@ -74,7 +74,7 @@ jobs:
         run: |
           echo "gateway passed: ${{ steps.get_results_json.outputs.GW_PASSED }}"
           kubectl get pods -A
-          kubectl get gateway
+          kubectl get gateway -A
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
@@ -82,8 +82,8 @@ jobs:
         run: |
           echo "tcpRoute external IP: ${{ steps.get_results_json.outputs.TCPROUTE_PASSED }}"
           kubectl get pods -A
-          kubectl get tcproute
-          kubectl get svc tcproute-lb-service -o wide
+          kubectl get tcproute -A
+          kubectl get svc tcproute-lb-service -A -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
@@ -91,8 +91,8 @@ jobs:
         run: |
           echo "udpRoute external IP: ${{ steps.get_results_json.outputs.UDPROUTE_PASSED }}"
           kubectl get pods -A
-          kubectl get udproute
-          kubectl get svc udproute-lb-service -o wide
+          kubectl get udproute -A
+          kubectl get svc udproute-lb-service -A -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
@@ -119,14 +119,14 @@ jobs:
         run: |
           echo "iperf-service external IP: ${{ steps.get_results_json.outputs.IPERF_PASSED }}"
           kubectl get pods -A
-          kubectl get svc -o wide
+          kubectl get svc -A -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
       - if: ${{ steps.get_svc_results_json.outputs.SCTP_PASSED != 'llb-192.168.80.90' }}
         run: |
           echo "iperf-service external IP: ${{ steps.get_results_json.outputs.SCTP_PASSED }}"
           kubectl get pods -A
-          kubectl get svc -o wide
+          kubectl get svc -A -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
@@ -134,7 +134,7 @@ jobs:
         run: |
           echo "iperf-service external IP: ${{ steps.get_results_json.outputs.UDP_PASSED }}"
           kubectl get pods -A
-          kubectl get svc -o wide
+          kubectl get svc -A -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
