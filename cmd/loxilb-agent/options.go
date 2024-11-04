@@ -77,6 +77,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&excludeRoleList, "excludeRoleList", excludeRoleList, "List of nodes to exclude in role-selection")
 	fs.BoolVar(&o.config.AppendEPs, "appendEPs", o.config.AppendEPs, "Attach and detach end-points of LB rule")
 	fs.IntVar(&o.config.NumZoneInst, "numZoneInstances", o.config.NumZoneInst, "Number of HA instances per zone")
+	fs.BoolVar(&o.config.UsePodNetwork, "usePodNetwork", o.config.UsePodNetwork, "direct traffic forwarding from the LoxiLB to pods without NodePort")
 }
 
 // complete completes all the required optionst

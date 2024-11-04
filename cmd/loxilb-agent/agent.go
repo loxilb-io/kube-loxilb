@@ -122,6 +122,7 @@ func run(o *Options) error {
 		PrivateCIDR:             o.config.PrivateCIDR,
 		ExclIPAM:                o.config.ExclIPAM,
 		NumZoneInst:             o.config.NumZoneInst,
+		UsePodNetwork:           o.config.UsePodNetwork,
 	}
 
 	ipPoolTbl := make(map[string]*ippool.IPPool)
