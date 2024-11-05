@@ -186,7 +186,7 @@ spec:
         command:
         - /bin/kube-loxilb
         args:
-        - --loxiURL=http://192.168.80.90:11111
+        #- --loxiURL=http://192.168.80.90:11111
         - --cidrPools=defaultPool=192.168.80.90/32
         #- --monitor
         #- --setBGP=64512
