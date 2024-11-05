@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -107,6 +108,11 @@ func CreateHTTPClient(baseURL *url.URL) (*http.Client, error) {
 	client := &http.Client{}
 
 	if baseURL.Scheme == "https" {
+		// load TLS certificates (.crt file)
+		cert, err := os.ReadFile("/opt/loxilb/cert/server.crt")
+		if err != nil {
+			klog.Fatalf("Couldn't load /opt/loxilb/cert/server.crt file. err: %v", err)
+		}
 
 		rootCAs, err := x509.SystemCertPool()
 		if err != nil || rootCAs == nil {
@@ -114,6 +120,7 @@ func CreateHTTPClient(baseURL *url.URL) (*http.Client, error) {
 			klog.Infof("HTTPS not supported: %s", baseURL)
 			return client, nil
 		}
+		rootCAs.AppendCertsFromPEM(cert)
 
 		tlsConfig := &tls.Config{
 			RootCAs:            rootCAs,
