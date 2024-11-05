@@ -57,9 +57,9 @@ jobs:
           echo "GC_PASSED=$GC_PASSED" >> $GITHUB_OUTPUT
           GW_PASSED=$(kubectl get gateway -A -o json | jq -r '.items[0].status.conditions[] | select(.type | test("Programmed")).status')
           echo "GW_PASSED=$GW_PASSED" >> $GITHUB_OUTPUT
-          TCPROUTE_PASSED=$(kubectl get svc tcproute-lb-service -A -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
+          TCPROUTE_PASSED=$(kubectl get svc tcproute-lb-service -n kube-system -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
           echo "TCPROUTE_PASSED=$TCPROUTE_PASSED" >> $GITHUB_OUTPUT
-          UDPROUTE_PASSED=$(kubectl get svc udproute-lb-service -A -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
+          UDPROUTE_PASSED=$(kubectl get svc udproute-lb-service -n kube-system -o json | jq -r '.status.loadBalancer.ingress[0].hostname')
           echo "UDPROUTE_PASSED=$UDPROUTE_PASSED" >> $GITHUB_OUTPUT
 
       - if: ${{ steps.get_results_json.outputs.GC_PASSED != 'True' }}
@@ -83,7 +83,7 @@ jobs:
           echo "tcpRoute external IP: ${{ steps.get_results_json.outputs.TCPROUTE_PASSED }}"
           kubectl get pods -A
           kubectl get tcproute -A
-          kubectl get svc tcproute-lb-service -A -o wide
+          kubectl get svc tcproute-lb-service -n kube-system -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
@@ -92,7 +92,7 @@ jobs:
           echo "udpRoute external IP: ${{ steps.get_results_json.outputs.UDPROUTE_PASSED }}"
           kubectl get pods -A
           kubectl get udproute -A
-          kubectl get svc udproute-lb-service -A -o wide
+          kubectl get svc udproute-lb-service -n kube-system -o wide
           kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}"
           exit 1
 
