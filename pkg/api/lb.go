@@ -21,6 +21,8 @@ const (
 	LbSelLeastConnections
 	// LbSelN2 - select client based on N2 interface contents
 	LbSelN2
+	// LbSelN3 - select client based on N2 interface contents
+	LbSelN3
 )
 
 type LbMode int32

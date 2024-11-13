@@ -634,6 +634,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			epSelect = api.LbSelLeastConnections
 		} else if eps == "n2" {
 			epSelect = api.LbSelN2
+		} else if eps == "n3" {
+			epSelect = api.LbSelN3
 		} else {
 			epSelect = api.LbSelRr
 		}
