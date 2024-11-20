@@ -1776,6 +1776,8 @@ func (m *Manager) getLoadBalancerServiceIngressIPs(service *corev1.Service) []st
 func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service, port corev1.ServicePort) (api.LoadBalancerModel, error) {
 	loxiEndpointModelList := []api.LoadBalancerEndpoint{}
 	loxiSecIPModelList := []api.LoadBalancerSecIp{}
+	loxiLbAllowedSrcIpList := []api.LbAllowedSrcIPArg{}
+
 	lbModeSvc := api.LbMode(m.networkConfig.SetLBMode)
 	lbOper := api.LBOPAdd
 
@@ -1823,6 +1825,15 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 		bgpMode = true
 	}
 
+	// for support k8s service.spec.loadBalancerSourceRanges
+	if len(svc.Spec.LoadBalancerSourceRanges) > 0 {
+		for _, allowedSrc := range svc.Spec.LoadBalancerSourceRanges {
+			if _, _, err := net.ParseCIDR(allowedSrc); err == nil {
+				loxiLbAllowedSrcIpList = append(loxiLbAllowedSrcIpList, api.LbAllowedSrcIPArg{Prefix: allowedSrc})
+			}
+		}
+	}
+
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
 			ExternalIP:   lbArgs.externalIP,
@@ -1844,6 +1855,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			Sel:          lbArgs.sel,
 			Name:         fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
 		},
+		SrcIPs:       loxiLbAllowedSrcIpList,
 		SecondaryIPs: loxiSecIPModelList,
 		Endpoints:    loxiEndpointModelList,
 	}, nil
