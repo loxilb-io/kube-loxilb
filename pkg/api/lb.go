@@ -45,9 +45,15 @@ func (lbListModel *LoadBalancerListModel) GetKeyStruct() LoxiModel {
 	return nil
 }
 
+type LbAllowedSrcIPArg struct {
+	// Prefix - Allowed Prefix
+	Prefix string `json:"prefix"`
+}
+
 type LoadBalancerModel struct {
 	Service      LoadBalancerService    `json:"serviceArguments"`
 	SecondaryIPs []LoadBalancerSecIp    `json:"secondaryIPs"`
+	SrcIPs       []LbAllowedSrcIPArg    `json:"allowedSources"`
 	Endpoints    []LoadBalancerEndpoint `json:"endpoints"`
 }
 
