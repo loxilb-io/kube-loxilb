@@ -115,10 +115,28 @@ func (o *Options) validate(args []string) error {
 				return fmt.Errorf("externalCIDR %s config is invalid", o.config.ExternalCIDRPoolDefs)
 			}
 			if _, _, err := net.ParseCIDR(poolStrSlice[1]); err != nil {
-				return fmt.Errorf("externalCIDR %s config is invalid", poolStrSlice[1])
-			}
-			if !lib.IsNetIPv4(poolStrSlice[1]) {
-				return fmt.Errorf("externalCIDR %s config is invalid", poolStrSlice[1])
+				if strings.Contains(poolStrSlice[1], "-") {
+					ipBlock := strings.Split(poolStrSlice[1], "-")
+					if len(ipBlock) != 2 {
+						return fmt.Errorf("invalid ip-range")
+					}
+
+					startIP := net.ParseIP(ipBlock[0])
+					lastIP := net.ParseIP(ipBlock[1])
+					if startIP == nil || lastIP == nil {
+						return fmt.Errorf("invalid ip-range ips")
+					}
+					if lib.IsNetIPv4(startIP.String()) && lib.IsNetIPv6(lastIP.String()) ||
+						lib.IsNetIPv6(startIP.String()) && lib.IsNetIPv4(lastIP.String()) {
+						return fmt.Errorf("invalid ip-types ips")
+					}
+				} else {
+					return fmt.Errorf("externalCIDR %s config is invalid", poolStrSlice[1])
+				}
+			} else {
+				if !lib.IsNetIPv4(poolStrSlice[1]) {
+					return fmt.Errorf("externalCIDR %s config is invalid", poolStrSlice[1])
+				}
 			}
 		}
 	}
@@ -131,10 +149,28 @@ func (o *Options) validate(args []string) error {
 				return fmt.Errorf("externalCIDR6 %s config is invalid", o.config.ExternalCIDR6PoolDefs)
 			}
 			if _, _, err := net.ParseCIDR(poolStrSlice[1]); err != nil {
-				return fmt.Errorf("externalCIDR6 %s config is invalid", poolStrSlice[1])
-			}
-			if !lib.IsNetIPv6(poolStrSlice[1]) {
-				return fmt.Errorf("externalCIDR6 %s config is invalid", poolStrSlice[1])
+				if strings.Contains(poolStrSlice[1], "-") {
+					ipBlock := strings.Split(poolStrSlice[1], "-")
+					if len(ipBlock) != 2 {
+						return fmt.Errorf("invalid ip-range")
+					}
+
+					startIP := net.ParseIP(ipBlock[0])
+					lastIP := net.ParseIP(ipBlock[1])
+					if startIP == nil || lastIP == nil {
+						return fmt.Errorf("invalid ip-range ips")
+					}
+					if lib.IsNetIPv4(startIP.String()) && lib.IsNetIPv6(lastIP.String()) ||
+						lib.IsNetIPv6(startIP.String()) && lib.IsNetIPv4(lastIP.String()) {
+						return fmt.Errorf("invalid ip-types ips")
+					}
+				} else {
+					return fmt.Errorf("externalCIDR6 %s config is invalid", poolStrSlice[1])
+				}
+			} else {
+				if !lib.IsNetIPv6(poolStrSlice[1]) {
+					return fmt.Errorf("externalCIDR6 %s config is invalid", poolStrSlice[1])
+				}
 			}
 		}
 	}

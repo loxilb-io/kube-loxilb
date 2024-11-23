@@ -2422,8 +2422,25 @@ func (m *Manager) AddLoxiCIDRPool(poolName string, cidr string) error {
 
 	addr, _, err := net.ParseCIDR(cidr)
 	if err != nil {
-		klog.Errorf("failed to parse (CIDR: %s)", cidr)
-		return err
+		if strings.Contains(cidr, "-") {
+			ipBlock := strings.Split(cidr, "-")
+			if len(ipBlock) != 2 {
+				return fmt.Errorf("invalid ip-range")
+			}
+
+			startIP := net.ParseIP(ipBlock[0])
+			lastIP := net.ParseIP(ipBlock[1])
+			if startIP == nil || lastIP == nil {
+				return fmt.Errorf("invalid ip-range ips")
+			}
+			if tk.IsNetIPv4(startIP.String()) && tk.IsNetIPv6(lastIP.String()) ||
+				tk.IsNetIPv6(startIP.String()) && tk.IsNetIPv4(lastIP.String()) {
+				return fmt.Errorf("invalid ip-types ips")
+			}
+		} else {
+			klog.Errorf("failed to parse (CIDR: %s)", cidr)
+			return err
+		}
 	}
 
 	newIPPoolTbl := make(map[string]*ippool.IPPool)
@@ -2478,8 +2495,25 @@ func (m *Manager) DeleteLoxiCIDRPool(poolName string, cidr string) error {
 
 	addr, _, err := net.ParseCIDR(cidr)
 	if err != nil {
-		klog.Errorf("failed to parse (CIDR: %s)", cidr)
-		return err
+		if strings.Contains(cidr, "-") {
+			ipBlock := strings.Split(cidr, "-")
+			if len(ipBlock) != 2 {
+				return fmt.Errorf("invalid ip-range")
+			}
+
+			startIP := net.ParseIP(ipBlock[0])
+			lastIP := net.ParseIP(ipBlock[1])
+			if startIP == nil || lastIP == nil {
+				return fmt.Errorf("invalid ip-range ips")
+			}
+			if tk.IsNetIPv4(startIP.String()) && tk.IsNetIPv6(lastIP.String()) ||
+				tk.IsNetIPv6(startIP.String()) && tk.IsNetIPv4(lastIP.String()) {
+				return fmt.Errorf("invalid ip-types ips")
+			}
+		} else {
+			klog.Errorf("failed to parse (CIDR: %s)", cidr)
+			return err
+		}
 	}
 
 	newIPPoolTbl := make(map[string]*ippool.IPPool)

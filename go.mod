@@ -3,7 +3,7 @@ module github.com/loxilb-io/kube-loxilb
 go 1.23.0
 
 require (
-	github.com/loxilb-io/loxilib v0.8.9-0.20240315085933-0925d8a579ed
+	github.com/loxilb-io/loxilib v0.8.9-0.20241122154322-9908d97c825d
 	github.com/spf13/cobra v1.7.0
 	github.com/spf13/pflag v1.0.5
 	gopkg.in/yaml.v2 v2.4.0
@@ -40,7 +40,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/loxilb-io/sctp v0.0.0-20230519081703-6d1baec82fd4 // indirect
+	github.com/loxilb-io/sctp v0.0.0-20240912025756-01894eac308b // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/matttproud/golang_protobuf_extensions/v2 v2.0.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
