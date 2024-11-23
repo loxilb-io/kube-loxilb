@@ -59,7 +59,7 @@ The arguments have the following meaning :
 | Name | Description |
 | ----------- | ----------- |
 | loxiURL | API server address of loxilb. This is the docker IP address loxilb docker of Step 1. If unspecified, kube-loxilb assumes loxilb is running in-cluster mode and autoconfigures this. |
-| cidrPools | CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode). Multiple pools can be defined and any of them can be selected during service creation using "loxilb.io/poolSelect" annotation. |     
+| cidrPools | CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode). Multiple pools can be defined and any of them can be selected during service creation using "loxilb.io/poolSelect" annotation. cidrPools can be specified as ip-cidr e.g 123.123.123.0/23 or as ip-ranges e.g 123.123.123.1-123.123.123.3 |     
 | cidr6Pools | Ipv6 CIDR or IPAddress range to allocate addresses from. By default address allocated are shared for different services(shared Mode). Multiple pools can be defined and any of them can be selected during service creation using "loxilb.io/poolSelect" annotation. |
 | monitor | Enable liveness probe for the LB end-points (default : unset) | 
 | setBGP | Use specified BGP AS-ID to advertise this service. If not specified BGP will be disabled. Please check [here](https://github.com/loxilb-io/loxilbdocs/blob/main/docs/integrate_bgp_eng.md) how it works. | 
