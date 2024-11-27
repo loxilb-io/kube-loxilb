@@ -323,7 +323,7 @@ func (o *Options) setDefaults() {
 		o.config.Zone = "llb"
 	}
 	if o.config.NumZoneInst == 0 {
-		o.config.NumZoneInst = 2
+		o.config.NumZoneInst = 1
 	}
 
 }
