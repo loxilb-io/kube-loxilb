@@ -83,6 +83,7 @@ type LoadBalancerService struct {
 	Name         string   `json:"name,omitempty"`
 	Oper         LbOP     `json:"oper,omitempty"`
 	Host         string   `json:"host,omitempty"`
+	PpV2         bool     `json:"proxyprotocolv2,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
