@@ -79,6 +79,7 @@ const (
 	defaultPoolName             = "defaultPool"
 	loxilbZoneLabelKey          = "loxilb.io/zonelabel"
 	loxilbZoneInstance          = "loxilb.io/zoneinstance"
+	enProxyProtov2Annotation    = "loxilb.io/useproxyprotov2"
 )
 
 type LoxiInstRole struct {
@@ -126,6 +127,7 @@ type LbArgs struct {
 	needMultusEP  bool
 	usePodNetwork bool
 	inst          string
+	ppv2En        bool
 }
 
 type LbModelEnt struct {
@@ -147,6 +149,7 @@ type LbCacheEntry struct {
 	Timeout        int
 	ActCheck       bool
 	PrefLocal      bool
+	ppv2En         bool
 	Inst           string
 	Addr           string
 	State          string
@@ -408,6 +411,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	usePodNet := false
 	hasSharedPool := false
 	overrideZoneInst := ""
+	enProxyProtov2 := false
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needMultusEP {
 		return nil
@@ -502,6 +506,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			usePodNet = true
 		} else if upn == "no" {
 			usePodNet = false
+		}
+	}
+
+	// Check for loxilb specific annotations - enProxyProtov2Annotation
+	if ppv2 := svc.Annotations[enProxyProtov2Annotation]; ppv2 != "" {
+		if ppv2 == "yes" {
+			enProxyProtov2 = true
+		} else if ppv2 == "no" {
+			enProxyProtov2 = false
 		}
 	}
 
@@ -689,6 +702,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				IPPool:         ipPool,
 				SIPPools:       sipPools,
 				Inst:           zoneInstName,
+				ppv2En:         enProxyProtov2,
 				LbServicePairs: make(map[string]*LbServicePairEntry),
 			}
 		}()
@@ -868,6 +882,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: EpSelect update", cacheKey)
 	}
 
+	if enProxyProtov2 != m.lbCache[cacheKey].ppv2En {
+		m.lbCache[cacheKey].ppv2En = enProxyProtov2
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: enProxyProtov2 update", cacheKey)
+	}
+
 	// If the user specifies a secondary IP in the annotation, update the existing secondary IP.
 	if len(secIPs) > 0 {
 		if !added {
@@ -952,6 +975,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			probeRetries:  m.lbCache[cacheKey].ProbeRetries,
 			sel:           m.lbCache[cacheKey].EpSelect,
 			inst:          m.lbCache[cacheKey].Inst,
+			ppv2En:        m.lbCache[cacheKey].ppv2En,
 			needMultusEP:  needMultusEP,
 			usePodNetwork: usePodNet,
 		}
@@ -1852,6 +1876,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			ProbeResp:    lbArgs.probeResp,
 			ProbeTimeout: lbArgs.probeTimeo,
 			ProbeRetries: int32(lbArgs.probeRetries),
+			PpV2:         lbArgs.ppv2En,
 			Sel:          lbArgs.sel,
 			Name:         fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
 		},
