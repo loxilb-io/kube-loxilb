@@ -402,6 +402,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	livenessCheck := false
 	lbMode := -1
 	addrType := "ipv4"
+	epAddrType := "ipv4"
 	timeout := 30 * 60
 	probeType := ""
 	probePort := 0
@@ -438,6 +439,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	ipPool := m.ipPoolTbl[defaultPoolName]
 	if addrType == "ipv6" || addrType == "ipv6to4" {
 		ipPool = m.ip6PoolTbl[defaultPoolName]
+		if addrType == "ipv6" {
+			epAddrType = addrType
+		}
 	}
 
 	// Check for loxilb specific annotations - poolName
@@ -664,7 +668,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	lbCacheEntry, added := m.lbCache[cacheKey]
 
-	endpointIPs, err := m.getEndpoints(svc, usePodNet, needMultusEP, addrType, matchNodeLabel)
+	endpointIPs, err := m.getEndpoints(svc, usePodNet, needMultusEP, epAddrType, matchNodeLabel)
 	if err != nil {
 		if !added {
 			klog.Errorf("getEndpoints return error. err: %v", err)
