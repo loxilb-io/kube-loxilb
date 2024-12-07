@@ -76,16 +76,28 @@ func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Servic
 
 	epMap := make(map[string]struct{})
 	for _, pod := range podList.Items {
+
 		if pod.Status.HostIP != "" {
+			hostIP := pod.Status.HostIP
 			if addrType == "ipv6" && !tk.IsNetIPv6(pod.Status.HostIP) {
+				v6found := false
+				for _, ip := range pod.Status.HostIPs {
+					if tk.IsNetIPv6(ip.String()) {
+						hostIP = ip.String()
+						v6found = true
+						break
+					}
+				}
+				if !v6found {
+					continue
+				}
+			}
+			if len(nodeMatchList) > 0 && !MatchNodeinNodeList(hostIP, nodeMatchList) {
 				continue
 			}
-			if len(nodeMatchList) > 0 && !MatchNodeinNodeList(pod.Status.HostIP, nodeMatchList) {
-				continue
-			}
-			if _, found := epMap[pod.Status.HostIP]; !found {
-				epMap[pod.Status.HostIP] = struct{}{}
-				epList = append(epList, pod.Status.HostIP)
+			if _, found := epMap[hostIP]; !found {
+				epMap[hostIP] = struct{}{}
+				epList = append(epList, hostIP)
 			}
 		}
 	}

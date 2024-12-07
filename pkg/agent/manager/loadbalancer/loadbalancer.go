@@ -217,6 +217,10 @@ func (m *Manager) genExtIPName(ipStr string) []string {
 			return hosts
 		}
 	}
+	if tk.IsNetIPv6(ipStr) {
+		ipStrSlice := strings.Split(ipStr, ":")
+		ipStr = strings.Join(ipStrSlice, "-")
+	}
 	return []string{prefix + ipStr}
 }
 
@@ -432,6 +436,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	var sipPools []*ippool.IPPool
 	ipPool := m.ipPoolTbl[defaultPoolName]
+	if addrType == "ipv6" || addrType == "ipv6to4" {
+		ipPool = m.ip6PoolTbl[defaultPoolName]
+	}
 
 	// Check for loxilb specific annotations - poolName
 	if pn := svc.Annotations[PoolNameAnnotation]; pn != "" {
@@ -1561,15 +1568,22 @@ func (m *Manager) getServiceIngressIPs(service *corev1.Service) []string {
 			} else {
 				llbHost := strings.Split(ingress.Hostname, "-")
 
-				if len(llbHost) != 2 {
+				if len(llbHost) < 2 {
 					if net.ParseIP(llbHost[0]) != nil {
 						ingressIP = llbHost[0]
-
 					}
 				} else {
 					if llbHost[0] == m.networkConfig.Zone {
 						if net.ParseIP(llbHost[1]) != nil {
 							ingressIP = llbHost[1]
+						} else if len(llbHost) > 2 {
+							ipStrSlice := llbHost[1:]
+							if len(ipStrSlice) > 0 {
+								ipStr := strings.Join(ipStrSlice, ":")
+								if net.ParseIP(ipStr) != nil {
+									ingressIP = ipStr
+								}
+							}
 						}
 					} else {
 						continue
