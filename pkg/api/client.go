@@ -5,13 +5,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	tk "github.com/loxilb-io/loxilib"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/klog/v2"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
-
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog/v2"
 )
 
 type LoxiZoneInst struct {
@@ -62,6 +63,16 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struc
 	if err != nil {
 		klog.Errorf("failed to call NewRESTClient. err: %s", err.Error())
 		return nil, err
+	}
+
+	hostPort := strings.Split(base.Host, ":")
+	if len(hostPort) > 1 {
+		shostPort := hostPort[:len(hostPort)-1]
+		host := strings.Join(shostPort[:], ":")
+		if tk.IsNetIPv6(host) {
+			host = fmt.Sprintf("[%s]", host)
+		}
+		base.Host = fmt.Sprintf("%s:%s", host, hostPort[len(hostPort)-1])
 	}
 
 	host, port, err := net.SplitHostPort(base.Host)
