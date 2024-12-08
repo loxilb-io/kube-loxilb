@@ -76,14 +76,13 @@ func GetServiceLocalEndpoints(kubeClient clientset.Interface, svc *corev1.Servic
 
 	epMap := make(map[string]struct{})
 	for _, pod := range podList.Items {
-
 		if pod.Status.HostIP != "" {
 			hostIP := pod.Status.HostIP
-			if addrType == "ipv6" && !tk.IsNetIPv6(pod.Status.HostIP) {
+			if addrType == "ipv6" && !tk.IsNetIPv6(hostIP) {
 				v6found := false
 				for _, ip := range pod.Status.HostIPs {
-					if tk.IsNetIPv6(ip.String()) {
-						hostIP = ip.String()
+					if tk.IsNetIPv6(ip.IP) {
+						hostIP = ip.IP
 						v6found = true
 						break
 					}
@@ -123,15 +122,26 @@ func GetServicePodEndpoints(kubeClient clientset.Interface, svc *corev1.Service,
 	epMap := make(map[string]struct{})
 	for _, pod := range podList.Items {
 		if pod.Status.PodIP != "" {
-			if addrType == "ipv6" && !tk.IsNetIPv6(pod.Status.PodIP) {
-				continue
+			podIP := pod.Status.PodIP
+			if addrType == "ipv6" && !tk.IsNetIPv6(podIP) {
+				v6found := false
+				for _, ip := range pod.Status.PodIPs {
+					if tk.IsNetIPv6(ip.IP) {
+						podIP = ip.IP
+						v6found = true
+						break
+					}
+				}
+				if !v6found {
+					continue
+				}
 			}
 			if len(nodeMatchList) > 0 && !MatchNodeinNodeList(pod.Status.HostIP, nodeMatchList) {
 				continue
 			}
-			if _, found := epMap[pod.Status.PodIP]; !found {
-				epMap[pod.Status.PodIP] = struct{}{}
-				epList = append(epList, pod.Status.PodIP)
+			if _, found := epMap[podIP]; !found {
+				epMap[podIP] = struct{}{}
+				epList = append(epList, podIP)
 			}
 		}
 	}
