@@ -78,6 +78,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.config.AppendEPs, "appendEPs", o.config.AppendEPs, "Attach and detach end-points of LB rule")
 	fs.IntVar(&o.config.NumZoneInst, "numZoneInstances", o.config.NumZoneInst, "Number of HA instances per zone")
 	fs.BoolVar(&o.config.UsePodNetwork, "usePodNetwork", o.config.UsePodNetwork, "direct traffic forwarding from the LoxiLB to pods without NodePort")
+	fs.BoolVar(&o.config.UseExternalEndpoint, "useExternalEndpoint", o.config.UseExternalEndpoint, "direct traffic forwarding from the LoxiLB to external endpoints")
 }
 
 // complete completes all the required optionst
