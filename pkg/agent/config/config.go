@@ -35,4 +35,5 @@ type NetworkConfig struct {
 	ExclIPAM                bool
 	NumZoneInst             int
 	UsePodNetwork           bool
+	UseExternalEndpoint     bool
 }

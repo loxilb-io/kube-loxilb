@@ -19,12 +19,15 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"net"
+	"time"
+
+	tk "github.com/loxilb-io/loxilib"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	clientset "k8s.io/client-go/kubernetes"
-	"net"
-	"time"
+	"k8s.io/klog/v2"
 )
 
 func GetServicePortIntValue(kubeClient clientset.Interface, svc *corev1.Service, port corev1.ServicePort) (int, error) {
@@ -54,9 +57,42 @@ func GetServicePortIntValue(kubeClient clientset.Interface, svc *corev1.Service,
 	return 0, fmt.Errorf("not found port name %s in service %s", port.TargetPort.String(), svc.Name)
 }
 
-func GetServiceEndPoints(kubeClient clientset.Interface, name string, ns string, nodeMatchList []string) ([]net.IP, error) {
-	var retIPs []net.IP
+func GetServiceEndPoints(kubeClient clientset.Interface, svc *corev1.Service, addrType string, nodeMatchList []string) ([]string, error) {
+	var retIPs []string
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	eps, err := kubeClient.CoreV1().Endpoints(svc.Namespace).Get(ctx, svc.Name, metav1.GetOptions{})
+	if err != nil {
+		return retIPs, err
+	}
+
+	klog.V(4).Infof("GetServiceEndPoints get endpoints: %v", eps.Subsets)
+	for _, ep := range eps.Subsets {
+		for _, addr := range ep.Addresses {
+			if addrType == "ipv6" {
+				if !tk.IsNetIPv6(addr.IP) {
+					continue
+				}
+			} else {
+				if !tk.IsNetIPv4(addr.IP) {
+					continue
+				}
+			}
+			if len(nodeMatchList) > 0 && !MatchNodeinNodeList(addr.IP, nodeMatchList) {
+				continue
+			}
+			retIPs = append(retIPs, addr.IP)
+		}
+	}
+	klog.V(4).Infof("GetServiceEndPoints return retIPs: %v", retIPs)
+
+	return retIPs, nil
+}
+
+func GetLoxilbServiceEndPoints(kubeClient clientset.Interface, name string, ns string, nodeMatchList []string) ([]string, error) {
+	var retIPs []string
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
 	nsList, err := kubeClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
@@ -81,7 +117,7 @@ func GetServiceEndPoints(kubeClient clientset.Interface, name string, ns string,
 					if len(nodeMatchList) > 0 && !MatchNodeinNodeList(IP.String(), nodeMatchList) {
 						continue
 					}
-					retIPs = append(retIPs, IP)
+					retIPs = append(retIPs, IP.String())
 				}
 			}
 		}
