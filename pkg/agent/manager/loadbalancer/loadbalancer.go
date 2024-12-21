@@ -1853,20 +1853,33 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 
 		for _, endpoint := range lbArgs.endpointIPs {
 
-			tport := uint16(port.NodePort)
-			if lbArgs.needMultusEP || lbArgs.usePodNetwork || lbArgs.useExternalEndpoint {
-				portNum, err := k8s.GetServicePortIntValue(m.kubeClient, svc, port)
+			var tports []int
+			var err error
+			if lbArgs.needMultusEP || lbArgs.usePodNetwork {
+				tports, err = k8s.GetServicePortIntValue(m.kubeClient, svc, port)
 				if err != nil {
 					return api.LoadBalancerModel{}, err
 				}
-				tport = uint16(portNum)
+			} else if lbArgs.useExternalEndpoint {
+				tports, err = k8s.GetServiceEndPointsPorts(m.kubeClient, svc)
+				if err != nil {
+					return api.LoadBalancerModel{}, err
+				}
+			} else {
+				tports = append(tports, int(port.NodePort))
 			}
 
-			loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
-				EndpointIP: endpoint,
-				TargetPort: tport,
-				Weight:     1,
-			})
+			if len(tports) <= 0 {
+				return api.LoadBalancerModel{}, errors.New("no endpoints to make lbmodel")
+			}
+
+			for _, tport := range tports {
+				loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
+					EndpointIP: endpoint,
+					TargetPort: uint16(tport),
+					Weight:     1,
+				})
+			}
 		}
 	}
 
