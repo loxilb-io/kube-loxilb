@@ -950,7 +950,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	if !update {
-		update = m.checkUpdateEndpoints(cacheKey, endpointIPs) || m.checkUpdateExternalIP(ingSvcPairs, svc)
+		update = m.checkUpdateEndpoints(svc, cacheKey, endpointIPs, useExternalEndpoint) || m.checkUpdateExternalIP(ingSvcPairs, svc)
 	}
 
 	if !update {
@@ -1483,13 +1483,57 @@ func (m *Manager) checkUpdateExternalIP(ingSvcPairs []SvcPair, svc *corev1.Servi
 	return false
 }
 
-func (m *Manager) checkUpdateEndpoints(cacheKey string, endpointIPs []string) bool {
+func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, endpointIPs []string, matchPorts bool) bool {
 	var update bool
 
-	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
-		// Update external IP if has changed
+	if matchPorts {
+		loxiEndpointModelList := []api.LoadBalancerEndpoint{}
+		var tports []int
+		var err error
+		tports, err = k8s.GetServiceEndPointsPorts(m.kubeClient, svc)
+		if err != nil {
+			return true
+		}
+		for _, endpoint := range endpointIPs {
+			for _, tport := range tports {
+				loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
+					EndpointIP: endpoint,
+					TargetPort: uint16(tport),
+					Weight:     1,
+				})
+			}
+		}
 
-		// Update endpoint list if the list has changed
+		for _, sp := range m.lbCache[cacheKey].LbServicePairs {
+			// Check if external-endpoint list has changed
+			for _, lb := range sp.LbModelList {
+				if len(loxiEndpointModelList) == len(lb.Endpoints) {
+					for _, endpoint := range loxiEndpointModelList {
+						found := false
+						for _, oldEp := range lb.Endpoints {
+							if oldEp.EndpointIP == endpoint.EndpointIP &&
+								oldEp.TargetPort == endpoint.TargetPort {
+								found = true
+								break
+							}
+						}
+						if !found {
+							update = true
+						}
+					}
+				} else {
+					update = true
+				}
+			}
+			if update {
+				klog.Infof("%s: Ext-Endpoint update", cacheKey)
+			}
+		}
+		return update
+	}
+
+	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
+		// Check if endpoint list has changed
 		for _, lb := range sp.LbModelList {
 			if len(endpointIPs) == len(lb.Endpoints) {
 				nEps := 0
