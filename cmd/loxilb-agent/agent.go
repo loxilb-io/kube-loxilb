@@ -254,7 +254,7 @@ func run(o *Options) error {
 		egressClient,
 		networkConfig,
 		egressInformer,
-		loxilbClients,
+		&loxilbClients,
 	)
 
 	go func() {
@@ -292,6 +292,7 @@ func run(o *Options) error {
 	}
 
 	go loxilbURLMgr.Start(loxilbURLInformerFactory, stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
+	egressInformerFactory.Start(stopCh)
 	go egressMgr.Run(stopCh)
 
 	// Run gateway API managers

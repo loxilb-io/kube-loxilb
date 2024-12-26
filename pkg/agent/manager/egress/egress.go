@@ -49,7 +49,7 @@ type Manager struct {
 	EgressInformer     crdInformer.EgressInformer
 	EgressLister       crdLister.EgressLister
 	EgressListerSynced cache.InformerSynced
-	LoxiClients        []*api.LoxiClient
+	LoxiClients        *[]*api.LoxiClient
 	queue              workqueue.RateLimitingInterface
 }
 
@@ -60,7 +60,7 @@ func NewEgressManager(
 	crdClient versioned.Interface,
 	networkConfig *config.NetworkConfig,
 	EgressInformer crdInformer.EgressInformer,
-	LoxiClients []*api.LoxiClient,
+	LoxiClients *[]*api.LoxiClient,
 ) *Manager {
 
 	manager := &Manager{
@@ -169,7 +169,9 @@ func (m *Manager) addEgress(egress *crdv1.Egress) error {
 	defer cancel()
 
 	// Create Loxilb firewall rule for egress
+	klog.V(4).Infof("Adding Egress %s/%s", egress.Namespace, egress.Name)
 	fwModels := m.makeLoxiFirewallModel(egress)
+	klog.V(4).Infof("Make LoxiLB Firewall Models for Egress %s/%s: %v", egress.Namespace, egress.Name, fwModels)
 	for _, fwModel := range fwModels {
 		if err := m.callLoxiFirewallCreateAPI(ctx, fwModel); err != nil {
 			return err
@@ -181,7 +183,7 @@ func (m *Manager) addEgress(egress *crdv1.Egress) error {
 
 func (m *Manager) deleteEgress(egress *crdv1.Egress) error {
 	var errChList []chan error
-	for _, loxiClient := range m.LoxiClients {
+	for _, loxiClient := range *m.LoxiClients {
 		ch := make(chan error)
 		errChList = append(errChList, ch)
 
@@ -203,7 +205,7 @@ func (m *Manager) deleteEgress(egress *crdv1.Egress) error {
 		}
 	}
 	if isError {
-		return fmt.Errorf("failed to delete loxiLB LoadBalancer. Error: %v", errStr)
+		return fmt.Errorf("failed to delete loxiLB Firewall rule. Error: %v", errStr)
 	}
 	return nil
 }
@@ -229,7 +231,7 @@ func (m *Manager) makeLoxiFirewallModel(egress *crdv1.Egress) []*api.FwRuleMod {
 
 func (m *Manager) callLoxiFirewallCreateAPI(ctx context.Context, fwModel *api.FwRuleMod) error {
 	var errChList []chan error
-	for _, client := range m.LoxiClients {
+	for _, client := range *m.LoxiClients {
 		ch := make(chan error)
 
 		go func(c *api.LoxiClient, h chan error) {
