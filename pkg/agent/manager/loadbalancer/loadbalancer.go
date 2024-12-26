@@ -90,8 +90,8 @@ type LoxiInstRole struct {
 type Manager struct {
 	mtx                 sync.RWMutex
 	kubeClient          clientset.Interface
-	LoxiClients         []*api.LoxiClient
-	LoxiPeerClients     []*api.LoxiClient
+	LoxiClients         *api.LoxiClientPool
+	LoxiPeerClients     *api.LoxiClientPool
 	networkConfig       *config.NetworkConfig
 	serviceInformer     coreinformers.ServiceInformer
 	serviceLister       corelisters.ServiceLister
@@ -231,8 +231,8 @@ func (m *Manager) genExtIPName(ipStr string) []string {
 // Manager is called by kube-loxilb when k8s service is created & updated.
 func NewLoadBalancerManager(
 	kubeClient clientset.Interface,
-	loxiClients []*api.LoxiClient,
-	loxiPeerClients []*api.LoxiClient,
+	loxiClients *api.LoxiClientPool,
+	loxiPeerClients *api.LoxiClientPool,
 	ipPoolTbl map[string]*ippool.IPPool,
 	ip6PoolTbl map[string]*ippool.IPPool,
 	networkConfig *config.NetworkConfig,
@@ -386,7 +386,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	// check loxilb
-	if len(m.LoxiClients) == 0 {
+	if len(m.LoxiClients.Clients) == 0 {
 		return fmt.Errorf("service cannot be added because there are no loxilb instances")
 	}
 
@@ -1033,7 +1033,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			return err
 		}
 
-		for _, client := range m.LoxiClients {
+		for _, client := range m.LoxiClients.Clients {
 			ch := make(chan error)
 			go func(c *api.LoxiClient, h chan error) {
 				err := m.installLB(c, lbModel, m.lbCache[cacheKey].PrefLocal)
@@ -1052,7 +1052,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				errCount++
 			}
 		}
-		if loxilbAPIErr != nil && errCount >= len(m.LoxiClients) {
+		if loxilbAPIErr != nil && errCount >= len(m.LoxiClients.Clients) {
 			retIPAMOnErr = true
 			klog.Errorf("failed to add load-balancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
 			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
@@ -1179,7 +1179,7 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 	for _, sp := range lbEntry.LbServicePairs {
 		var errChList []chan error
 		for _, lb := range sp.LbModelList {
-			for _, loxiClient := range m.LoxiClients {
+			for _, loxiClient := range m.LoxiClients.Clients {
 				ch := make(chan error)
 				errChList = append(errChList, ch)
 
@@ -1239,7 +1239,7 @@ func (m *Manager) DeleteAllLoadBalancer() {
 		sipPools := lbEntry.SIPPools
 
 		for _, sp := range lbEntry.LbServicePairs {
-			for _, loxiClient := range m.LoxiClients {
+			for _, loxiClient := range m.LoxiClients.Clients {
 				for _, lb := range sp.LbModelList {
 					klog.Infof("loxilb(%s): deleteAll lb %v", loxiClient.Host, lb)
 					loxiClient.LoadBalancer().Delete(context.Background(), &lb)
@@ -2000,11 +2000,11 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 		ips = []net.IP{}
 	}
 
-	if len(ips) != len(m.LoxiClients) {
+	if len(ips) != len(m.LoxiClients.Clients) {
 		klog.Infof("loxilb-service end-points:  %v", ips)
 	}
 
-	for _, v := range m.LoxiClients {
+	for _, v := range m.LoxiClients.Clients {
 		v.Purge = true
 		for _, ip := range ips {
 			if v.Host == ip.String() {
@@ -2023,7 +2023,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 				break
 			}
 		}
-		for _, v := range m.LoxiClients {
+		for _, v := range m.LoxiClients.Clients {
 			if v.Host == ip.String() {
 				found = true
 			}
@@ -2037,10 +2037,10 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 		}
 	}
 	if len(tmploxilbClients) > 0 {
-		m.LoxiClients = append(m.LoxiClients, tmploxilbClients...)
+		m.LoxiClients.Clients = append(m.LoxiClients.Clients, tmploxilbClients...)
 	}
-	tmp := m.LoxiClients[:0]
-	for _, v := range m.LoxiClients {
+	tmp := m.LoxiClients.Clients[:0]
+	for _, v := range m.LoxiClients.Clients {
 		if !v.Purge {
 			tmp = append(tmp, v)
 		} else {
@@ -2049,7 +2049,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 			loxiLBPurgeCh <- v
 		}
 	}
-	m.LoxiClients = tmp
+	m.LoxiClients.Clients = tmp
 }
 
 func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
@@ -2062,7 +2062,7 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 		ips = []net.IP{}
 	}
 
-	for _, v := range m.LoxiPeerClients {
+	for _, v := range m.LoxiPeerClients.Clients {
 		v.Purge = true
 		for _, ip := range ips {
 			if v.Host == ip.String() {
@@ -2073,7 +2073,7 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 
 	for _, ip := range ips {
 		found := false
-		for _, v := range m.LoxiPeerClients {
+		for _, v := range m.LoxiPeerClients.Clients {
 			if v.Host == ip.String() {
 				found = true
 			}
@@ -2087,10 +2087,10 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 		}
 	}
 	if len(tmploxilbPeerClients) > 0 {
-		m.LoxiPeerClients = append(m.LoxiPeerClients, tmploxilbPeerClients...)
+		m.LoxiPeerClients.Clients = append(m.LoxiPeerClients.Clients, tmploxilbPeerClients...)
 	}
-	tmp1 := m.LoxiPeerClients[:0]
-	for _, v := range m.LoxiPeerClients {
+	tmp1 := m.LoxiPeerClients.Clients[:0]
+	for _, v := range m.LoxiPeerClients.Clients {
 		if !v.Purge {
 			tmp1 = append(tmp1, v)
 		} else {
@@ -2099,7 +2099,7 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 			loxiLBPurgeCh <- v
 		}
 	}
-	m.LoxiPeerClients = tmp1
+	m.LoxiPeerClients.Clients = tmp1
 }
 
 func (m *Manager) removeAllCacheEndpoints(cacheKey string) {
@@ -2115,8 +2115,8 @@ func (m *Manager) SelectInstLoxiLBRoles(instName string, selhint int) (bool, int
 	reElect := false
 	hasMaster := false
 
-	for i := range m.LoxiClients {
-		v := m.LoxiClients[i]
+	for i := range m.LoxiClients.Clients {
+		v := m.LoxiClients.Clients[i]
 		vi := v.InstRoles[instName]
 		if vi == nil {
 			return false, 0
@@ -2132,12 +2132,12 @@ func (m *Manager) SelectInstLoxiLBRoles(instName string, selhint int) (bool, int
 	selMaster := false
 	if reElect || !hasMaster {
 		nproc := 0
-		for i := selhint; nproc < len(m.LoxiClients); i++ {
+		for i := selhint; nproc < len(m.LoxiClients.Clients); i++ {
 			nproc++
-			if i >= len(m.LoxiClients) {
+			if i >= len(m.LoxiClients.Clients) {
 				i = 0
 			}
-			v := m.LoxiClients[i]
+			v := m.LoxiClients.Clients[i]
 			vi := v.InstRoles[instName]
 			if v.NoRole {
 				continue
@@ -2162,7 +2162,7 @@ func (m *Manager) ResetRolesOnNeedRebalanceInstLoxiLBRoles() bool {
 	numInstRoles := len(m.zoneInstRoleMap)
 	maxMasterPerClient := 0
 	activeClients := 0
-	for _, client := range m.LoxiClients {
+	for _, client := range m.LoxiClients.Clients {
 		if client.IsAlive {
 			activeClients++
 		}
@@ -2178,7 +2178,7 @@ func (m *Manager) ResetRolesOnNeedRebalanceInstLoxiLBRoles() bool {
 	}
 
 	if activeClients >= numInstRoles && maxMasterPerClient >= numInstRoles && m.networkConfig.ExclIPAM {
-		for _, client := range m.LoxiClients {
+		for _, client := range m.LoxiClients.Clients {
 			for _, val := range client.InstRoles {
 				if val.MasterLB {
 					val.MasterLB = false
@@ -2239,7 +2239,7 @@ loop:
 		case <-m.instAddrApplyCh:
 			m.updateAllLoxiLBServiceStatus()
 		case <-masterEventCh:
-			for _, lc := range m.LoxiClients {
+			for _, lc := range m.LoxiClients.Clients {
 				if !lc.IsAlive {
 					continue
 				}
@@ -2272,7 +2272,7 @@ loop:
 					return client.BGP().DeleteNeigh(ctx, neighIP, remoteAs)
 				}
 
-				for _, otherClient := range m.LoxiClients {
+				for _, otherClient := range m.LoxiClients.Clients {
 					if purgedClient.Host == otherClient.Host {
 						continue
 					}
@@ -2317,19 +2317,19 @@ loop:
 				var bgpPeers []*api.LoxiClient
 
 				if aliveClient.PeeringOnly {
-					for _, lc := range m.LoxiClients {
+					for _, lc := range m.LoxiClients.Clients {
 						if aliveClient.Host != lc.Host {
 							bgpPeers = append(bgpPeers, lc)
 						}
 					}
 				} else {
-					for _, lpc := range m.LoxiPeerClients {
+					for _, lpc := range m.LoxiPeerClients.Clients {
 						if aliveClient.Host != lpc.Host {
 							bgpPeers = append(bgpPeers, lpc)
 						}
 					}
 					if len(m.networkConfig.LoxilbURLs) <= 0 {
-						for _, lc := range m.LoxiClients {
+						for _, lc := range m.LoxiClients.Clients {
 							if aliveClient.Host != lc.Host {
 								bgpPeers = append(bgpPeers, lc)
 							}

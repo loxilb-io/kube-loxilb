@@ -20,6 +20,20 @@ type LoxiZoneInst struct {
 	MasterLB bool
 }
 
+type LoxiClientPool struct {
+	Clients []*LoxiClient
+}
+
+func (l *LoxiClientPool) AddLoxiClient(newLoxiClient *LoxiClient) {
+	l.Clients = append(l.Clients, newLoxiClient)
+}
+
+func NewLoxiClientPool() *LoxiClientPool {
+	return &LoxiClientPool{
+		Clients: make([]*LoxiClient, 0),
+	}
+}
+
 type LoxiClient struct {
 	RestClient  *RESTClient
 	InstRoles   map[string]*LoxiZoneInst

@@ -181,8 +181,10 @@ func run(o *Options) error {
 		}
 	}
 
-	loxilbClients := make([]*api.LoxiClient, 0)
-	loxilbPeerClients := make([]*api.LoxiClient, 0)
+	//loxilbClients := make([]*api.LoxiClient, 0)
+	//loxilbPeerClients := make([]*api.LoxiClient, 0)
+	loxilbClients := api.NewLoxiClientPool()
+	loxilbPeerClients := api.NewLoxiClientPool()
 	loxiLBLiveCh := make(chan *api.LoxiClient, 50)
 	loxiLBPurgeCh := make(chan *api.LoxiClient, 5)
 	loxiLBSelMasterEvent := make(chan bool)
@@ -195,7 +197,7 @@ func run(o *Options) error {
 			if err != nil {
 				return err
 			}
-			loxilbClients = append(loxilbClients, loxilbClient)
+			loxilbClients.AddLoxiClient(loxilbClient)
 		}
 	}
 
@@ -214,7 +216,7 @@ func run(o *Options) error {
 		bgpCRDClient,
 		networkConfig,
 		BGPPeerInformer,
-		lbManager,
+		loxilbClients,
 	)
 
 	BGPPolicyDefinedSetsManager := bgppolicydefinedsets.NewBGPPolicyDefinedSetsManager(
@@ -222,7 +224,7 @@ func run(o *Options) error {
 		bgpCRDClient,
 		networkConfig,
 		BGPPolicyDefinedSetInformer,
-		lbManager,
+		loxilbClients,
 	)
 
 	BGPPolicyDefinitionManager := bgppolicydefinition.NewBGPPolicyDefinitionManager(
@@ -230,14 +232,14 @@ func run(o *Options) error {
 		bgpCRDClient,
 		networkConfig,
 		BGPPolicyDefinitionInformer,
-		lbManager,
+		loxilbClients,
 	)
 	BGPPolicyApplyManager := bgppolicyapply.NewBGPPolicyApplyManager(
 		k8sClient,
 		bgpCRDClient,
 		networkConfig,
 		BGPPolicyApplyInformer,
-		lbManager,
+		loxilbClients,
 	)
 
 	loxilbURLMgr := loxiurl.NewLoxiLBURLManager(
@@ -254,7 +256,7 @@ func run(o *Options) error {
 		egressClient,
 		networkConfig,
 		egressInformer,
-		&loxilbClients,
+		loxilbClients,
 	)
 
 	go func() {

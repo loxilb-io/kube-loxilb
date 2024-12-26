@@ -49,7 +49,7 @@ type Manager struct {
 	EgressInformer     crdInformer.EgressInformer
 	EgressLister       crdLister.EgressLister
 	EgressListerSynced cache.InformerSynced
-	LoxiClients        *[]*api.LoxiClient
+	LoxiClients        *api.LoxiClientPool
 	queue              workqueue.RateLimitingInterface
 }
 
@@ -60,7 +60,7 @@ func NewEgressManager(
 	crdClient versioned.Interface,
 	networkConfig *config.NetworkConfig,
 	EgressInformer crdInformer.EgressInformer,
-	LoxiClients *[]*api.LoxiClient,
+	LoxiClients *api.LoxiClientPool,
 ) *Manager {
 
 	manager := &Manager{
@@ -183,7 +183,7 @@ func (m *Manager) addEgress(egress *crdv1.Egress) error {
 
 func (m *Manager) deleteEgress(egress *crdv1.Egress) error {
 	var errChList []chan error
-	for _, loxiClient := range *m.LoxiClients {
+	for _, loxiClient := range m.LoxiClients.Clients {
 		ch := make(chan error)
 		errChList = append(errChList, ch)
 
@@ -231,7 +231,8 @@ func (m *Manager) makeLoxiFirewallModel(egress *crdv1.Egress) []*api.FwRuleMod {
 
 func (m *Manager) callLoxiFirewallCreateAPI(ctx context.Context, fwModel *api.FwRuleMod) error {
 	var errChList []chan error
-	for _, client := range *m.LoxiClients {
+	klog.V(4).Infof("check m.LoxiClients.Clients: %v", m.LoxiClients.Clients)
+	for _, client := range m.LoxiClients.Clients {
 		ch := make(chan error)
 
 		go func(c *api.LoxiClient, h chan error) {
