@@ -80,6 +80,7 @@ const (
 	loxilbZoneLabelKey          = "loxilb.io/zonelabel"
 	loxilbZoneInstance          = "loxilb.io/zoneinstance"
 	enProxyProtov2Annotation    = "loxilb.io/useproxyprotov2"
+	egressAnnotation            = "loxilb.io/egress"
 )
 
 type LoxiInstRole struct {
@@ -128,6 +129,7 @@ type LbArgs struct {
 	usePodNetwork bool
 	inst          string
 	ppv2En        bool
+	egress        bool
 }
 
 type LbModelEnt struct {
@@ -150,6 +152,7 @@ type LbCacheEntry struct {
 	ActCheck       bool
 	PrefLocal      bool
 	ppv2En         bool
+	egress         bool
 	Inst           string
 	Addr           string
 	State          string
@@ -417,6 +420,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	hasSharedPool := false
 	overrideZoneInst := ""
 	enProxyProtov2 := false
+	isEgress := false
 
 	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needMultusEP {
 		return nil
@@ -526,6 +530,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			enProxyProtov2 = true
 		} else if ppv2 == "no" {
 			enProxyProtov2 = false
+		}
+	}
+
+	if eg := svc.Annotations[egressAnnotation]; eg != "" {
+		if eg == "yes" {
+			isEgress = true
+		} else if eg == "no" {
+			isEgress = false
 		}
 	}
 
@@ -902,6 +914,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: enProxyProtov2 update", cacheKey)
 	}
 
+	if isEgress != m.lbCache[cacheKey].egress {
+		m.lbCache[cacheKey].egress = isEgress
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: egress update", cacheKey)
+	}
+
 	// If the user specifies a secondary IP in the annotation, update the existing secondary IP.
 	if len(secIPs) > 0 {
 		if !added {
@@ -987,6 +1008,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			sel:           m.lbCache[cacheKey].EpSelect,
 			inst:          m.lbCache[cacheKey].Inst,
 			ppv2En:        m.lbCache[cacheKey].ppv2En,
+			egress:        m.lbCache[cacheKey].egress,
 			needMultusEP:  needMultusEP,
 			usePodNetwork: usePodNet,
 		}
@@ -1895,6 +1917,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			ProbeTimeout: lbArgs.probeTimeo,
 			ProbeRetries: int32(lbArgs.probeRetries),
 			PpV2:         lbArgs.ppv2En,
+			Egress:       lbArgs.egress,
 			Sel:          lbArgs.sel,
 			Name:         fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
 		},
