@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
-	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/bgp-client/clientset/versioned"
 	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions/bgppolicydefinedsets/v1"
@@ -53,7 +52,7 @@ type Manager struct {
 	BGPPolicyDefinedSetsLister       crdLister.BGPPolicyDefinedSetsServiceLister
 	BGPPolicyDefinedSetsListerSynced cache.InformerSynced
 	queue                            workqueue.RateLimitingInterface
-	lbManager                        *loadbalancer.Manager
+	loxiClients                      *api.LoxiClientPool
 }
 
 // Create and Init Manager.
@@ -63,7 +62,7 @@ func NewBGPPolicyDefinedSetsManager(
 	crdClient versioned.Interface,
 	networkConfig *config.NetworkConfig,
 	BGPPolicyDefinedSetsInformer crdInformer.BGPPolicyDefinedSetsServiceInformer,
-	lbManager *loadbalancer.Manager,
+	loxiClients *api.LoxiClientPool,
 ) *Manager {
 
 	manager := &Manager{
@@ -73,7 +72,7 @@ func NewBGPPolicyDefinedSetsManager(
 		BGPPolicyDefinedSetsInformer:     BGPPolicyDefinedSetsInformer,
 		BGPPolicyDefinedSetsLister:       BGPPolicyDefinedSetsInformer.Lister(),
 		BGPPolicyDefinedSetsListerSynced: BGPPolicyDefinedSetsInformer.Informer().HasSynced,
-		lbManager:                        lbManager,
+		loxiClients:                      loxiClients,
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "bgppolicydefinedsets"),
 	}
@@ -191,7 +190,7 @@ func (m *Manager) addBGPPolicyDefinedSetsService(bgpdf *crdv1.BGPPolicyDefinedSe
 	klog.Infof("bgpdf.Spec.DefinedType: %v\n", bgpdf.Spec.DefinedType)
 
 	var errChList []chan error
-	for _, client := range m.lbManager.LoxiClients {
+	for _, client := range m.loxiClients.Clients {
 		ch := make(chan error)
 		go func(c *api.LoxiClient, h chan error) {
 			var err error
@@ -225,7 +224,7 @@ func (m *Manager) addBGPPolicyDefinedSetsService(bgpdf *crdv1.BGPPolicyDefinedSe
 
 func (m *Manager) deleteBGPPolicyDefinedSetsService(bgpdf *crdv1.BGPPolicyDefinedSetsService) error {
 	var errChList []chan error
-	for _, loxiClient := range m.lbManager.LoxiClients {
+	for _, loxiClient := range m.loxiClients.Clients {
 		ch := make(chan error)
 		errChList = append(errChList, ch)
 
