@@ -138,7 +138,22 @@ rules:
       - create
       - update
       - delete
-
+  - apiGroups:
+      - loxiurl.loxilb.io
+    resources:
+      - loxiurls
+    verbs:
+      - get
+      - watch
+      - list
+      - create
+      - update
+      - delete
+  - apiGroups:
+      - egress.loxilb.io
+    resources:
+      - egresses
+    verbs: ["get", "watch", "list", "patch", "update"]
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1

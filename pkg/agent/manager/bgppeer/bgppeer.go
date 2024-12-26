@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
-	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/bgp-client/clientset/versioned"
 	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions/bgppeer/v1"
@@ -53,7 +52,7 @@ type Manager struct {
 	bgpPeerLister       crdLister.BGPPeerServiceLister
 	bgpPeerListerSynced cache.InformerSynced
 	queue               workqueue.RateLimitingInterface
-	lbManager           *loadbalancer.Manager
+	loxiClients         *api.LoxiClientPool
 }
 
 // Create and Init Manager.
@@ -63,18 +62,17 @@ func NewBGPPeerManager(
 	crdClient versioned.Interface,
 	networkConfig *config.NetworkConfig,
 	bgpPeerInformer crdInformer.BGPPeerServiceInformer,
-	lbManager *loadbalancer.Manager,
+	loxiClients *api.LoxiClientPool,
 ) *Manager {
 
 	manager := &Manager{
-
 		kubeClient:          kubeClient,
 		crdClient:           crdClient,
 		bgpPeerInformer:     bgpPeerInformer,
 		bgpPeerLister:       bgpPeerInformer.Lister(),
 		bgpPeerListerSynced: bgpPeerInformer.Informer().HasSynced,
-
-		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
+		loxiClients:         loxiClients,
+		queue:               workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
 	}
 
 	bgpPeerInformer.Informer().AddEventHandlerWithResyncPeriod(
@@ -191,7 +189,7 @@ func (m *Manager) addBGPPeerService(lb *crdv1.BGPPeerService) error {
 	klog.Infof("RemotePort: %v", lb.Spec.RemotePort)
 
 	var errChList []chan error
-	for _, client := range m.lbManager.LoxiClients {
+	for _, client := range m.loxiClients.Clients {
 		ch := make(chan error)
 		go func(c *api.LoxiClient, h chan error) {
 			var err error
@@ -225,7 +223,7 @@ func (m *Manager) addBGPPeerService(lb *crdv1.BGPPeerService) error {
 
 func (m *Manager) deleteBGPPeerService(lb *crdv1.BGPPeerService) error {
 	var errChList []chan error
-	for _, loxiClient := range m.lbManager.LoxiClients {
+	for _, loxiClient := range m.loxiClients.Clients {
 		ch := make(chan error)
 		errChList = append(errChList, ch)
 

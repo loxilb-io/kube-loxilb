@@ -29,14 +29,17 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppolicyapply"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppolicydefinedsets"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppolicydefinition"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/egress"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/gatewayapi"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loxiurl"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	bgpCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions"
+	egressCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/egress-client/informers/externalversions"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	klbCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions"
+
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
 
 	"k8s.io/client-go/informers"
@@ -64,7 +67,8 @@ func run(o *Options) error {
 	klog.Infof("  Build: %s", BuildInfo)
 
 	// create k8s Clientset, CRD Clientset and SharedInformerFactory for the given config.
-	k8sClient, _, bgpCRDClient, klbCRDClient, k8sExtClient, sigsClient, err := k8s.CreateClients(o.config.ClientConnection, "")
+	// TODO: crdClient must be integrated into one.
+	k8sClient, _, bgpCRDClient, klbCRDClient, egressClient, k8sExtClient, sigsClient, err := k8s.CreateClients(o.config.ClientConnection, "")
 	if err != nil {
 		return fmt.Errorf("error creating k8s clients: %v", err)
 	}
@@ -78,6 +82,9 @@ func run(o *Options) error {
 
 	loxilbURLInformerFactory := klbCRDinformers.NewSharedInformerFactory(klbCRDClient, informerDefaultResync)
 	loxilbURLInformer := loxilbURLInformerFactory.Loxiurl().V1().LoxiURLs()
+
+	egressInformerFactory := egressCRDinformers.NewSharedInformerFactory(egressClient, informerDefaultResync)
+	egressInformer := egressInformerFactory.Egress().V1().Egresses()
 	sigsInformerFactory := sigsInformer.NewSharedInformerFactory(sigsClient, informerDefaultResync)
 
 	// networkReadyCh is used to notify that the Node's network is ready.
@@ -174,8 +181,10 @@ func run(o *Options) error {
 		}
 	}
 
-	loxilbClients := make([]*api.LoxiClient, 0)
-	loxilbPeerClients := make([]*api.LoxiClient, 0)
+	//loxilbClients := make([]*api.LoxiClient, 0)
+	//loxilbPeerClients := make([]*api.LoxiClient, 0)
+	loxilbClients := api.NewLoxiClientPool()
+	loxilbPeerClients := api.NewLoxiClientPool()
 	loxiLBLiveCh := make(chan *api.LoxiClient, 50)
 	loxiLBPurgeCh := make(chan *api.LoxiClient, 5)
 	loxiLBSelMasterEvent := make(chan bool)
@@ -188,7 +197,7 @@ func run(o *Options) error {
 			if err != nil {
 				return err
 			}
-			loxilbClients = append(loxilbClients, loxilbClient)
+			loxilbClients.AddLoxiClient(loxilbClient)
 		}
 	}
 
@@ -207,7 +216,7 @@ func run(o *Options) error {
 		bgpCRDClient,
 		networkConfig,
 		BGPPeerInformer,
-		lbManager,
+		loxilbClients,
 	)
 
 	BGPPolicyDefinedSetsManager := bgppolicydefinedsets.NewBGPPolicyDefinedSetsManager(
@@ -215,7 +224,7 @@ func run(o *Options) error {
 		bgpCRDClient,
 		networkConfig,
 		BGPPolicyDefinedSetInformer,
-		lbManager,
+		loxilbClients,
 	)
 
 	BGPPolicyDefinitionManager := bgppolicydefinition.NewBGPPolicyDefinitionManager(
@@ -223,14 +232,14 @@ func run(o *Options) error {
 		bgpCRDClient,
 		networkConfig,
 		BGPPolicyDefinitionInformer,
-		lbManager,
+		loxilbClients,
 	)
 	BGPPolicyApplyManager := bgppolicyapply.NewBGPPolicyApplyManager(
 		k8sClient,
 		bgpCRDClient,
 		networkConfig,
 		BGPPolicyApplyInformer,
-		lbManager,
+		loxilbClients,
 	)
 
 	loxilbURLMgr := loxiurl.NewLoxiLBURLManager(
@@ -240,6 +249,14 @@ func run(o *Options) error {
 		networkConfig,
 		loxilbURLInformer,
 		lbManager,
+	)
+
+	egressMgr := egress.NewEgressManager(
+		k8sClient,
+		egressClient,
+		networkConfig,
+		egressInformer,
+		loxilbClients,
 	)
 
 	go func() {
@@ -277,6 +294,8 @@ func run(o *Options) error {
 	}
 
 	go loxilbURLMgr.Start(loxilbURLInformerFactory, stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
+	egressInformerFactory.Start(stopCh)
+	go egressMgr.Run(stopCh)
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {

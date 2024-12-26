@@ -5,18 +5,33 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	tk "github.com/loxilb-io/loxilib"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog/v2"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	tk "github.com/loxilb-io/loxilib"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/klog/v2"
 )
 
 type LoxiZoneInst struct {
 	MasterLB bool
+}
+
+type LoxiClientPool struct {
+	Clients []*LoxiClient
+}
+
+func (l *LoxiClientPool) AddLoxiClient(newLoxiClient *LoxiClient) {
+	l.Clients = append(l.Clients, newLoxiClient)
+}
+
+func NewLoxiClientPool() *LoxiClientPool {
+	return &LoxiClientPool{
+		Clients: make([]*LoxiClient, 0),
+	}
 }
 
 type LoxiClient struct {
@@ -207,6 +222,10 @@ func (l *LoxiClient) BGPPolicyDefinition() *BGPPolicyDefinitionAPI {
 
 func (l *LoxiClient) BGPPolicyApply() *BGPPolicyApplyAPI {
 	return newBGPPolicyApplyAPI(l.GetRESTClient())
+}
+
+func (l *LoxiClient) Firewall() *FirewallAPI {
+	return newFirewallAPI(l.GetRESTClient())
 }
 
 func (l *LoxiClient) GetRESTClient() *RESTClient {
