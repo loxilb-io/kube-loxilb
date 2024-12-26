@@ -182,31 +182,18 @@ func (m *Manager) addEgress(egress *crdv1.Egress) error {
 }
 
 func (m *Manager) deleteEgress(egress *crdv1.Egress) error {
-	var errChList []chan error
-	for _, loxiClient := range m.LoxiClients.Clients {
-		ch := make(chan error)
-		errChList = append(errChList, ch)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer cancel()
 
-		go func(client *api.LoxiClient, ch chan error) {
-			klog.Infof("called loxilb API: delete egress firewall rule %v", egress.Spec)
-			//ch <- client.Firewall().Delete(context.Background(), egress.Name)
-		}(loxiClient, ch)
-	}
-
-	isError := true
-	errStr := ""
-	for _, errCh := range errChList {
-		err := <-errCh
-		if err == nil {
-			isError = false
-			break
-		} else {
-			errStr = err.Error()
+	klog.V(4).Infof("Deleting Egress %s/%s", egress.Namespace, egress.Name)
+	fwModels := m.makeLoxiFirewallModel(egress)
+	klog.V(4).Infof("Make LoxiLB Firewall Models for Egress %s/%s: %v", egress.Namespace, egress.Name, fwModels)
+	for _, fwModel := range fwModels {
+		if err := m.callLoxiFirewallDeleteAPI(ctx, fwModel); err != nil {
+			return err
 		}
 	}
-	if isError {
-		return fmt.Errorf("failed to delete loxiLB Firewall rule. Error: %v", errStr)
-	}
+
 	return nil
 }
 
@@ -231,7 +218,6 @@ func (m *Manager) makeLoxiFirewallModel(egress *crdv1.Egress) []*api.FwRuleMod {
 
 func (m *Manager) callLoxiFirewallCreateAPI(ctx context.Context, fwModel *api.FwRuleMod) error {
 	var errChList []chan error
-	klog.V(4).Infof("check m.LoxiClients.Clients: %v", m.LoxiClients.Clients)
 	for _, client := range m.LoxiClients.Clients {
 		ch := make(chan error)
 
@@ -263,5 +249,33 @@ func (m *Manager) callLoxiFirewallCreateAPI(ctx context.Context, fwModel *api.Fw
 		return fmt.Errorf("failed to add loxiLB Egress firewall rule")
 	}
 
+	return nil
+}
+
+func (m *Manager) callLoxiFirewallDeleteAPI(ctx context.Context, fwModel *api.FwRuleMod) error {
+	var errChList []chan error
+	for _, loxiClient := range m.LoxiClients.Clients {
+		ch := make(chan error)
+		errChList = append(errChList, ch)
+
+		go func(client *api.LoxiClient, ch chan error) {
+			ch <- client.Firewall().Delete(ctx, fwModel)
+		}(loxiClient, ch)
+	}
+
+	isError := true
+	errStr := ""
+	for _, errCh := range errChList {
+		err := <-errCh
+		if err == nil {
+			isError = false
+			break
+		} else {
+			errStr = err.Error()
+		}
+	}
+	if isError {
+		return fmt.Errorf("failed to delete loxiLB Firewall rule. Error: %v", errStr)
+	}
 	return nil
 }
