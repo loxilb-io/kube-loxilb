@@ -18,7 +18,6 @@ package loadbalancer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"path"
@@ -46,6 +45,7 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	tk "github.com/loxilb-io/loxilib"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -428,13 +428,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	// Check for loxilb specific annotations - Addressing
 	if lba := svc.Annotations[lbAddressAnnotation]; lba != "" {
-		if lba == "ipv4" || lba == "ipv6" || lba == "ipv6to4" {
-			addrType = lba
-		} else if lba == "ip" || lba == "ip4" {
+		if lba == "ipv4" || lba == "ip" || lba == "ip4" {
 			addrType = "ipv4"
-		} else if lba == "ip6" || lba == "nat66" {
+		} else if lba == "ipv6" || lba == "ip6" || lba == "nat66" {
 			addrType = "ipv6"
-		} else if lba == "nat64" {
+		} else if lba == "ipv6to4" || lba == "nat64" {
 			addrType = "ipv6to4"
 		}
 	}
@@ -457,8 +455,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if pool := poolTbl[pn]; pool != nil {
 			ipPool = pool
 		} else {
-			klog.Errorf("%s pool not found", pn)
-			return errors.New("pool not found")
+			return fmt.Errorf("%s pool not found", pn)
 		}
 	}
 
@@ -480,8 +477,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 					hasSharedPool = true
 				}
 			} else {
-				klog.Errorf("%s secondary pool not found", spool)
-				return errors.New("secondary pool not found")
+				return fmt.Errorf("%s secondary pool not found", spool)
 			}
 		}
 		numSecondarySvc = len(spools)
@@ -505,13 +501,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	if addrType != "ipv4" && len(sipPools) != 0 {
-		klog.Infof("SecondaryIP Svc not possible for %v", addrType)
-		return errors.New("secondaryip svc not possible for addrtype")
+		return fmt.Errorf("SecondaryIP Svc not possible for %v", addrType)
 	}
 
 	if len(secIPs) != 0 && len(sipPools) != 0 {
-		klog.Infof("SecondaryIP is specified (%v)", secIPs)
-		return errors.New("static secondaryip is specified with secondary pool")
+		return fmt.Errorf("SecondaryIP is specified (%v)", secIPs)
 	}
 
 	// Check for loxilb specific annotations - usePodNet
@@ -573,19 +567,19 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// Check for loxilb specific annotations - NAT LB Mode
 	if lbm := svc.Annotations[lbModeAnnotation]; lbm != "" {
 		if lbm == "hostonearm" {
-			lbMode = 5
+			lbMode = api.LBModeHostOneArm
 		} else if lbm == "fullproxy" {
-			lbMode = 4
+			lbMode = api.LBModeFullProxy
 		} else if lbm == "dsr" {
-			lbMode = 3
+			lbMode = api.LBModeDsr
 		} else if lbm == "fullnat" {
-			lbMode = 2
+			lbMode = api.LBModeFullNat
 		} else if lbm == "onearm" {
-			lbMode = 1
+			lbMode = api.LBModeOneArm
 		} else if lbm == "default" {
-			lbMode = 0
+			lbMode = api.LBModeNotDefault
 		} else {
-			lbMode = -1
+			lbMode = api.LBModeNotSupported
 		}
 	}
 
@@ -659,22 +653,24 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	// Check for loxilb specific annotations - Endpoint selection algo
-	if eps := svc.Annotations[endPointSelAnnotation]; eps != "" {
-		if eps == "rr" || eps == "roundrobin" {
-			epSelect = api.LbSelRr
-		} else if eps == "hash" {
-			epSelect = api.LbSelHash
-		} else if eps == "persist" {
-			epSelect = api.LbSelRrPersist
-		} else if eps == "lc" {
-			epSelect = api.LbSelLeastConnections
-		} else if eps == "n2" {
-			epSelect = api.LbSelN2
-		} else if eps == "n3" {
-			epSelect = api.LbSelN3
-		} else {
-			epSelect = api.LbSelRr
-		}
+	eps := svc.Annotations[endPointSelAnnotation]
+	switch eps {
+	case "hash":
+		epSelect = api.LbSelHash
+	case "persist":
+		epSelect = api.LbSelRrPersist
+	case "lc":
+		epSelect = api.LbSelLeastConnections
+	case "n2":
+		epSelect = api.LbSelN2
+	case "n3":
+		epSelect = api.LbSelN3
+	case "rr":
+		epSelect = api.LbSelRr
+	case "roundrobin":
+		epSelect = api.LbSelRr
+	default:
+		epSelect = api.LbSelRr
 	}
 
 	cacheKey := GenKey(svc.Namespace, svc.Name)
@@ -683,9 +679,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	endpointIPs, err := m.getEndpoints(svc, usePodNet, needMultusEP, epAddrType, matchNodeLabel)
 	if err != nil {
 		if !added {
-			klog.Errorf("getEndpoints return error. err: %v", err)
 			klog.V(4).Infof("endpointIPs: %v", endpointIPs)
-			return err
+			return errors.Wrap(err, "getEndpoints return error")
 		}
 	}
 
@@ -697,7 +692,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		addNewLbCacheEntryChan := make(chan *LbCacheEntry)
 		defer close(addNewLbCacheEntryChan)
 		go func() {
-
 			zoneInstName := "default"
 			if overrideZoneInst != "" {
 				zoneInstName = overrideZoneInst
@@ -740,7 +734,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			if err == nil {
 				m.removeAllCacheEndpoints(cacheKey)
 			}
-			return err
+			return errors.Wrap(err, "deleteLoadBalancer return error")
 		}
 	}
 
@@ -750,7 +744,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	// Check if service has ingress IP already allocated
 	ingSvcPairs, err, hasExistingEIP := m.getIngressSvcPairs(svc, lbCacheEntry)
-
 	if err != nil {
 		if !hasExistingEIP {
 			retIPAMOnErr = true
@@ -782,7 +775,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}()
 
 	if err != nil {
-		return err
+		return errors.Wrap(err, "getIngressSvcPairs return error")
 	}
 
 	update := false
@@ -934,7 +927,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, m.lbCache[cacheKey])
 		if err != nil {
 			retIPAMOnErr = true
-			return err
+			return errors.Wrap(err, "getIngressSecSvcPairs return error")
 		}
 
 		for idx, ingSecIP := range m.lbCache[cacheKey].SecIPs {
@@ -1030,7 +1023,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		lbModel, err := m.makeLoxiLoadBalancerModel(&lbArgs, svc, ingSvcPair.K8sSvcPort)
 		if err != nil {
 			retIPAMOnErr = true
-			return err
+			return errors.Wrap(err, "makeLoxiLoadBalancerModel return error")
 		}
 
 		for _, client := range m.LoxiClients.Clients {
@@ -1054,7 +1047,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 		if loxilbAPIErr != nil && errCount >= len(m.LoxiClients.Clients) {
 			retIPAMOnErr = true
-			klog.Errorf("failed to add load-balancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
 			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
 		}
 
