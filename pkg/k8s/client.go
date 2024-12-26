@@ -18,6 +18,7 @@ package k8s
 
 import (
 	bpgcrdclientset "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/clientset/versioned"
+	egresscrdclientset "github.com/loxilb-io/kube-loxilb/pkg/egress-client/clientset/versioned"
 	klbcrdclientset "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
 	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	clientset "k8s.io/client-go/kubernetes"
@@ -32,7 +33,7 @@ import (
 
 // CreateClients creates kube clients from the given config.
 func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kubeAPIServerOverride string) (
-	clientset.Interface, aggregatorclientset.Interface, bpgcrdclientset.Interface, klbcrdclientset.Interface, apiextensionclientset.Interface, sigsclientset.Interface, error) {
+	clientset.Interface, aggregatorclientset.Interface, bpgcrdclientset.Interface, klbcrdclientset.Interface, egresscrdclientset.Interface, apiextensionclientset.Interface, sigsclientset.Interface, error) {
 	var kubeConfig *rest.Config
 	var err error
 
@@ -50,7 +51,7 @@ func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kub
 	}
 
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	kubeConfig.AcceptContentTypes = config.AcceptContentTypes
@@ -60,33 +61,40 @@ func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kub
 
 	client, err := clientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	aggregatorClient, err := aggregatorclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 	// Create client for crd operations
 	crdClient, err := bpgcrdclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Create client for crd operations
 	klbClient, err := klbcrdclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
+	}
+
+	// Create client for egress crd operations
+	// TODO: so many crdClient returned. crdClient must be integrated into one.
+	egressClient, err := egresscrdclientset.NewForConfig(kubeConfig)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Create client for crd manipulations
 	apiExtensionClient, err := apiextensionclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 	sigsClient, err := sigsclientset.NewForConfig(kubeConfig)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, err
 	}
-	return client, aggregatorClient, crdClient, klbClient, apiExtensionClient, sigsClient, nil
+	return client, aggregatorClient, crdClient, klbClient, egressClient, apiExtensionClient, sigsClient, nil
 }
