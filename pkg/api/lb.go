@@ -29,7 +29,7 @@ type LbMode int32
 
 const (
 	LBModeNotSupported = iota - 1
-	LBModeNotDefault
+	LBModeDefault
 	LBModeOneArm
 	LBModeFullNat
 	LBModeDsr

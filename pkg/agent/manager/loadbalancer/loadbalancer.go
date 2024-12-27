@@ -577,7 +577,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		} else if lbm == "onearm" {
 			lbMode = api.LBModeOneArm
 		} else if lbm == "default" {
-			lbMode = api.LBModeNotDefault
+			lbMode = api.LBModeDefault
 		} else {
 			lbMode = api.LBModeNotSupported
 		}
