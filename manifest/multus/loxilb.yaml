@@ -61,8 +61,8 @@ spec:
     app: loxilb-app
   ports:
   - name: loxilb-egress
-    port: 2020
-    targetPort: 8080
+    port: 9999
+    targetPort: 9999
     protocol: TCP
 ---
 apiVersion: v1
