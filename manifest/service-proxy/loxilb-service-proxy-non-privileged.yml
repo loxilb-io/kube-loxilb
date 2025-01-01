@@ -72,6 +72,25 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
+  name: loxilb-egress-service
+  namespace: kube-system
+  annotations:
+    loxilb.io/usepodnetwork: "yes"
+spec:
+  externalTrafficPolicy: Local
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: loxilb-app
+  ports:
+  - name: loxilb-egress
+    port: 9999
+    targetPort: 9999
+    protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
   name: loxilb-lb-service
   namespace: kube-system
 spec:

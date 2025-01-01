@@ -21,17 +21,28 @@ const (
 	LbSelLeastConnections
 	// LbSelN2 - select client based on N2 interface contents
 	LbSelN2
-	// LbSelN3 - select client based on N2 interface contents
+	// LbSelN3 - select client based on N3 interface contents
 	LbSelN3
 )
 
 type LbMode int32
+
+const (
+	LBModeNotSupported = iota - 1
+	LBModeDefault
+	LBModeOneArm
+	LBModeFullNat
+	LBModeDsr
+	LBModeFullProxy
+	LBModeHostOneArm
+)
+
 type LbOP int32
 
 const (
 	// LBOPAdd - Add te LB rule (replace if existing)
 	LBOPAdd LbOP = iota
-	// LBModeOneArm - Attach End-Points
+	// LBOPAttach - Attach End-Points
 	LBOPAttach
 	// LBOPDetach - Detach End-Points
 	LBOPDetach
@@ -84,6 +95,7 @@ type LoadBalancerService struct {
 	Oper         LbOP     `json:"oper,omitempty"`
 	Host         string   `json:"host,omitempty"`
 	PpV2         bool     `json:"proxyprotocolv2,omitempty"`
+	Egress       bool     `json:"egress,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {

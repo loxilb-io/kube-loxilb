@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
-	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/bgp-client/clientset/versioned"
 	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions/bgppolicyapply/v1"
@@ -52,7 +51,7 @@ type Manager struct {
 	BGPPolicyApplyLister       crdLister.BGPPolicyApplyServiceLister
 	BGPPolicyApplyListerSynced cache.InformerSynced
 	queue                      workqueue.RateLimitingInterface
-	lbManager                  *loadbalancer.Manager
+	loxiClients                *api.LoxiClientPool
 }
 
 // Create and Init Manager.
@@ -62,7 +61,7 @@ func NewBGPPolicyApplyManager(
 	crdClient versioned.Interface,
 	networkConfig *config.NetworkConfig,
 	BGPPolicyApplyInformer crdInformer.BGPPolicyApplyServiceInformer,
-	lbManager *loadbalancer.Manager,
+	loxiClients *api.LoxiClientPool,
 ) *Manager {
 
 	manager := &Manager{
@@ -72,7 +71,7 @@ func NewBGPPolicyApplyManager(
 		BGPPolicyApplyInformer:     BGPPolicyApplyInformer,
 		BGPPolicyApplyLister:       BGPPolicyApplyInformer.Lister(),
 		BGPPolicyApplyListerSynced: BGPPolicyApplyInformer.Informer().HasSynced,
-		lbManager:                  lbManager,
+		loxiClients:                loxiClients,
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "BGPPolicyApply"),
 	}
@@ -176,7 +175,7 @@ func (m *Manager) addBGPPolicyApplyService(bgpdf *crdv1.BGPPolicyApplyService) e
 	klog.Infof("bgpdf.Spec.RouteAction: %v\n", bgpdf.Spec.RouteAction)
 
 	var errChList []chan error
-	for _, client := range m.lbManager.LoxiClients {
+	for _, client := range m.loxiClients.Clients {
 		ch := make(chan error)
 		go func(c *api.LoxiClient, h chan error) {
 			var err error
@@ -214,7 +213,7 @@ func (m *Manager) deleteBGPPolicyApplyService(bgpdf *crdv1.BGPPolicyApplyService
 	defer cancel()
 	klog.Infof("bgpdf.Spec.NeighIPAddress: %v\n", bgpdf.Spec.NeighIPAddress)
 	var errChList []chan error
-	for _, client := range m.lbManager.LoxiClients {
+	for _, client := range m.loxiClients.Clients {
 		ch := make(chan error)
 		go func(c *api.LoxiClient, h chan error) {
 			var err error

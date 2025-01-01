@@ -220,12 +220,12 @@ func (m *Manager) syncLBURLs(url *crdv1.LoxiURL) error {
 }
 
 func (m *Manager) deleteAllLoxiClients() error {
-	for _, v := range m.lbManager.LoxiClients {
+	for _, v := range m.lbManager.LoxiClients.Clients {
 		v.StopLoxiHealthCheckChan()
 		klog.Infof("loxi-client (%v) removed", v.Host)
 		m.loxiLBURLPurgeCh <- v
 	}
-	m.lbManager.LoxiClients = nil
+	m.lbManager.LoxiClients.Clients = nil
 	return nil
 }
 
@@ -233,7 +233,7 @@ func (m *Manager) deleteSingleLoxiClientsWithName(name string) bool {
 	var validLoxiClients []*api.LoxiClient
 
 	match := false
-	for _, v := range m.lbManager.LoxiClients {
+	for _, v := range m.lbManager.LoxiClients.Clients {
 		if v.Name == name {
 			match = true
 			v.StopLoxiHealthCheckChan()
@@ -245,7 +245,7 @@ func (m *Manager) deleteSingleLoxiClientsWithName(name string) bool {
 	}
 
 	if match {
-		m.lbManager.LoxiClients = validLoxiClients
+		m.lbManager.LoxiClients.Clients = validLoxiClients
 	}
 
 	return match
@@ -293,7 +293,7 @@ func (m *Manager) addLoxiLBURL(url *crdv1.LoxiURL) error {
 		m.crdControlOn = true
 	}
 
-	for _, client := range m.lbManager.LoxiClients {
+	for _, client := range m.lbManager.LoxiClients.Clients {
 		currLoxiURLs = append(currLoxiURLs, client.Url)
 	}
 
@@ -329,7 +329,7 @@ nextURL:
 			tmploxilbClients = append(tmploxilbClients, client)
 		}
 
-		m.lbManager.LoxiClients = append(m.lbManager.LoxiClients, tmploxilbClients...)
+		m.lbManager.LoxiClients.Clients = append(m.lbManager.LoxiClients.Clients, tmploxilbClients...)
 	}
 
 	return nil
@@ -373,7 +373,7 @@ func (m *Manager) deleteLoxiLBURL(url *crdv1.LoxiURL) error {
 
 	klog.Infof("loxilb-url delete (%v)", url)
 
-	for _, client := range m.lbManager.LoxiClients {
+	for _, client := range m.lbManager.LoxiClients.Clients {
 		currLoxiURLs = append(currLoxiURLs, validLoxiURLwName{url: client.Url, name: client.Name})
 	}
 
@@ -416,7 +416,7 @@ nextURL1:
 			if err2 != nil {
 				continue
 			}
-			m.lbManager.LoxiClients = append(m.lbManager.LoxiClients, client)
+			m.lbManager.LoxiClients.Clients = append(m.lbManager.LoxiClients.Clients, client)
 		}
 	}
 
