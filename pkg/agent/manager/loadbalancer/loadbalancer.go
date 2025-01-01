@@ -2095,7 +2095,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 			}
 		}
 		for _, v := range m.LoxiClients.Clients {
-			if v.Host == ip.String() {
+			if v.Host == ip {
 				found = true
 			}
 		}
@@ -2145,7 +2145,7 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 	for _, ip := range ips {
 		found := false
 		for _, v := range m.LoxiPeerClients.Clients {
-			if v.Host == ip.String() {
+			if v.Host == ip {
 				found = true
 			}
 		}
