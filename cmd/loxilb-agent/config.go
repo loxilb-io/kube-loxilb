@@ -79,4 +79,6 @@ type AgentConfig struct {
 	NumZoneInst int `yaml:"numZoneInstances,omitempty"`
 	// If true, direct traffic forwarding from the LoxiLB to pods without NodePort
 	UsePodNetwork bool `yaml:"usePodNetwork,omitempty"`
+	// If true, direct traffic forwarding from the LoxiLB to external endpoints
+	UseExternalEndpoint bool `yaml:"useExternalEndpoint,omitempty"`
 }

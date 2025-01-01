@@ -49,38 +49,39 @@ import (
 )
 
 const (
-	mgrName                     = "LoxilbLoadBalancerManager"
-	resyncPeriod                = 60 * time.Second
-	minRetryDelay               = 2 * time.Second
-	maxRetryDelay               = 120 * time.Second
-	defaultWorkers              = 1
-	LoxiMaxWeight               = 10
-	LoxiMultusServiceAnnotation = "loxilb.io/multus-nets"
-	PoolNameAnnotation          = "loxilb.io/poolSelect"
-	SecPoolNameAnnotation       = "loxilb.io/poolSelectSecondary"
-	secIPsAnnotation            = "loxilb.io/secondaryIPs"
-	staticIPAnnotation          = "loxilb.io/staticIP"
-	livenessAnnotation          = "loxilb.io/liveness"
-	lbModeAnnotation            = "loxilb.io/lbmode"
-	lbAddressAnnotation         = "loxilb.io/ipam"
-	lbTimeoutAnnotation         = "loxilb.io/timeout"
-	probeTypeAnnotation         = "loxilb.io/probetype"
-	probePortAnnotation         = "loxilb.io/probeport"
-	probeReqAnnotation          = "loxilb.io/probereq"
-	probeRespAnnotation         = "loxilb.io/proberesp"
-	probeTimeoutAnnotation      = "loxilb.io/probetimeout"
-	probeRetriesAnnotation      = "loxilb.io/proberetries"
-	endPointSelAnnotation       = "loxilb.io/epselect"
-	zoneSelAnnotation           = "loxilb.io/zoneselect"
-	prefLocalPodAnnotation      = "loxilb.io/prefLocalPod"
-	matchNodeLabelAnnotation    = "loxilb.io/nodelabel"
-	usePodNetworkAnnotation     = "loxilb.io/usepodnetwork"
-	MaxExternalSecondaryIPsNum  = 4
-	defaultPoolName             = "defaultPool"
-	loxilbZoneLabelKey          = "loxilb.io/zonelabel"
-	loxilbZoneInstance          = "loxilb.io/zoneinstance"
-	enProxyProtov2Annotation    = "loxilb.io/useproxyprotov2"
-	egressAnnotation            = "loxilb.io/egress"
+	mgrName                       = "LoxilbLoadBalancerManager"
+	resyncPeriod                  = 60 * time.Second
+	minRetryDelay                 = 2 * time.Second
+	maxRetryDelay                 = 120 * time.Second
+	defaultWorkers                = 1
+	LoxiMaxWeight                 = 10
+	LoxiMultusServiceAnnotation   = "loxilb.io/multus-nets"
+	PoolNameAnnotation            = "loxilb.io/poolSelect"
+	SecPoolNameAnnotation         = "loxilb.io/poolSelectSecondary"
+	secIPsAnnotation              = "loxilb.io/secondaryIPs"
+	staticIPAnnotation            = "loxilb.io/staticIP"
+	livenessAnnotation            = "loxilb.io/liveness"
+	lbModeAnnotation              = "loxilb.io/lbmode"
+	lbAddressAnnotation           = "loxilb.io/ipam"
+	lbTimeoutAnnotation           = "loxilb.io/timeout"
+	probeTypeAnnotation           = "loxilb.io/probetype"
+	probePortAnnotation           = "loxilb.io/probeport"
+	probeReqAnnotation            = "loxilb.io/probereq"
+	probeRespAnnotation           = "loxilb.io/proberesp"
+	probeTimeoutAnnotation        = "loxilb.io/probetimeout"
+	probeRetriesAnnotation        = "loxilb.io/proberetries"
+	endPointSelAnnotation         = "loxilb.io/epselect"
+	zoneSelAnnotation             = "loxilb.io/zoneselect"
+	prefLocalPodAnnotation        = "loxilb.io/prefLocalPod"
+	matchNodeLabelAnnotation      = "loxilb.io/nodelabel"
+	usePodNetworkAnnotation       = "loxilb.io/usepodnetwork"
+	useExternalEndpointAnnotation = "loxilb.io/useExternalEndpoint"
+	MaxExternalSecondaryIPsNum    = 4
+	defaultPoolName               = "defaultPool"
+	loxilbZoneLabelKey            = "loxilb.io/zonelabel"
+	loxilbZoneInstance            = "loxilb.io/zoneinstance"
+	enProxyProtov2Annotation      = "loxilb.io/useproxyprotov2"
+	egressAnnotation              = "loxilb.io/egress"
 )
 
 type LoxiInstRole struct {
@@ -111,25 +112,26 @@ type Manager struct {
 }
 
 type LbArgs struct {
-	externalIP    string
-	privateIP     string
-	livenessCheck bool
-	lbMode        int
-	timeout       int
-	sel           api.EpSelect
-	probeType     string
-	probePort     uint16
-	probeReq      string
-	probeResp     string
-	probeTimeo    uint32
-	probeRetries  int
-	secIPs        []string
-	endpointIPs   []string
-	needMultusEP  bool
-	usePodNetwork bool
-	inst          string
-	ppv2En        bool
-	egress        bool
+	externalIP          string
+	privateIP           string
+	livenessCheck       bool
+	lbMode              int
+	timeout             int
+	sel                 api.EpSelect
+	probeType           string
+	probePort           uint16
+	probeReq            string
+	probeResp           string
+	probeTimeo          uint32
+	probeRetries        int
+	secIPs              []string
+	endpointIPs         []string
+	needMultusEP        bool
+	usePodNetwork       bool
+	useExternalEndpoint bool
+	inst                string
+	ppv2En              bool
+  	egress              bool
 }
 
 type LbModelEnt struct {
@@ -209,13 +211,18 @@ func GenSPKey(IPString string, Port uint16, Protocol string) string {
 func (m *Manager) genExtIPName(ipStr string) []string {
 	var hosts []string
 	prefix := m.networkConfig.Zone + "-"
+
 	IP := net.ParseIP(ipStr)
 	if IP != nil {
 		if IP.IsUnspecified() {
 			m.mtx.Lock()
 			defer m.mtx.Unlock()
-			for _, host := range m.loxiInstAddrMap {
-				hosts = append(hosts, host.String())
+			if len(m.loxiInstAddrMap) <= 0 {
+				return []string{"llbanyextip"}
+			} else {
+				for _, host := range m.loxiInstAddrMap {
+					hosts = append(hosts, host.String())
+				}
 			}
 			return hosts
 		}
@@ -417,6 +424,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	epSelect := api.LbSelRr
 	matchNodeLabel := ""
 	usePodNet := false
+	useExternalEndpoint := false
 	hasSharedPool := false
 	overrideZoneInst := ""
 	enProxyProtov2 := false
@@ -515,6 +523,16 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			usePodNet = true
 		} else if upn == "no" {
 			usePodNet = false
+		}
+	}
+
+	// Check for loxilb specific annotations - useExternalEndpoint
+	useExternalEndpoint = m.networkConfig.UseExternalEndpoint
+	if uee := svc.Annotations[useExternalEndpointAnnotation]; uee != "" {
+		if uee == "yes" {
+			useExternalEndpoint = true
+		} else if uee == "no" {
+			useExternalEndpoint = false
 		}
 	}
 
@@ -676,7 +694,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	lbCacheEntry, added := m.lbCache[cacheKey]
 
-	endpointIPs, err := m.getEndpoints(svc, usePodNet, needMultusEP, epAddrType, matchNodeLabel)
+	endpointIPs, err := m.getEndpoints(svc, usePodNet, useExternalEndpoint, needMultusEP, epAddrType, matchNodeLabel)
 	if err != nil {
 		if !added {
 			klog.V(4).Infof("endpointIPs: %v", endpointIPs)
@@ -946,7 +964,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	if !update {
-		update = m.checkUpdateEndpoints(cacheKey, endpointIPs) || m.checkUpdateExternalIP(ingSvcPairs, svc)
+		update = m.checkUpdateEndpoints(svc, cacheKey, endpointIPs, useExternalEndpoint) || m.checkUpdateExternalIP(ingSvcPairs, svc)
 	}
 
 	if !update {
@@ -988,22 +1006,23 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	for _, ingSvcPair := range ingSvcPairs {
 		var errChList []chan error
 		lbArgs := LbArgs{
-			externalIP:    ingSvcPair.IPString,
-			livenessCheck: m.lbCache[cacheKey].ActCheck,
-			lbMode:        m.lbCache[cacheKey].LbMode,
-			timeout:       m.lbCache[cacheKey].Timeout,
-			probeType:     m.lbCache[cacheKey].ProbeType,
-			probePort:     m.lbCache[cacheKey].ProbePort,
-			probeReq:      m.lbCache[cacheKey].ProbeReq,
-			probeResp:     m.lbCache[cacheKey].ProbeResp,
-			probeTimeo:    m.lbCache[cacheKey].ProbeTimeo,
-			probeRetries:  m.lbCache[cacheKey].ProbeRetries,
-			sel:           m.lbCache[cacheKey].EpSelect,
-			inst:          m.lbCache[cacheKey].Inst,
-			ppv2En:        m.lbCache[cacheKey].ppv2En,
-			egress:        m.lbCache[cacheKey].egress,
-			needMultusEP:  needMultusEP,
-			usePodNetwork: usePodNet,
+			externalIP:          ingSvcPair.IPString,
+			livenessCheck:       m.lbCache[cacheKey].ActCheck,
+			lbMode:              m.lbCache[cacheKey].LbMode,
+			timeout:             m.lbCache[cacheKey].Timeout,
+			probeType:           m.lbCache[cacheKey].ProbeType,
+			probePort:           m.lbCache[cacheKey].ProbePort,
+			probeReq:            m.lbCache[cacheKey].ProbeReq,
+			probeResp:           m.lbCache[cacheKey].ProbeResp,
+			probeTimeo:          m.lbCache[cacheKey].ProbeTimeo,
+			probeRetries:        m.lbCache[cacheKey].ProbeRetries,
+			sel:                 m.lbCache[cacheKey].EpSelect,
+			inst:                m.lbCache[cacheKey].Inst,
+			ppv2En:              m.lbCache[cacheKey].ppv2En,
+      			egress:              m.lbCache[cacheKey].egress,
+			needMultusEP:        needMultusEP,
+			usePodNetwork:       usePodNet,
+			useExternalEndpoint: useExternalEndpoint,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -1080,6 +1099,7 @@ func (m *Manager) updateService(svcNs, svcName string, ingSvcPairs []SvcPair) er
 	for _, ingSvcPair := range ingSvcPairs {
 		if ingSvcPair.InRange || ingSvcPair.StaticIP {
 			retIPs := m.genExtIPName(ingSvcPair.IPString)
+			klog.V(4).Infof("updateService get retIPs: %v", retIPs)
 			for _, retIP := range retIPs {
 				var retIngress corev1.LoadBalancerIngress
 				validIP := net.ParseIP(retIP)
@@ -1345,7 +1365,7 @@ func (m *Manager) getNodeEndpointsWithLabelWithKey(addrType string, key, matchLa
 // getEndpoints return LB's endpoints IP list.
 // If podEP is true, return multus endpoints list.
 // If false, return worker nodes IP list.
-func (m *Manager) getEndpoints(svc *corev1.Service, usePodNet, useMultusNet bool, addrType, matchNodeLabel string) ([]string, error) {
+func (m *Manager) getEndpoints(svc *corev1.Service, usePodNet, useExternalEndpoint, useMultusNet bool, addrType, matchNodeLabel string) ([]string, error) {
 	if useMultusNet {
 		//klog.Infof("getEndpoints: Pod end-points")
 		return m.getMultusEndpoints(svc, addrType)
@@ -1363,8 +1383,10 @@ func (m *Manager) getEndpoints(svc *corev1.Service, usePodNet, useMultusNet bool
 		}
 	}
 
-	if usePodNet {
-		return k8s.GetServicePodEndpoints(m.kubeClient, svc, addrType, matchNodeList)
+	if usePodNet || useExternalEndpoint {
+		klog.V(4).Infof("usePodNet: %v. useExternalEndpoint: %v", usePodNet, useExternalEndpoint)
+		return k8s.GetServiceEndPoints(m.kubeClient, svc, addrType, matchNodeList)
+		//return k8s.GetServicePodEndpoints(m.kubeClient, svc, addrType, matchNodeList)
 	}
 
 	if svc.Spec.ExternalTrafficPolicy == corev1.ServiceExternalTrafficPolicyTypeLocal {
@@ -1475,13 +1497,57 @@ func (m *Manager) checkUpdateExternalIP(ingSvcPairs []SvcPair, svc *corev1.Servi
 	return false
 }
 
-func (m *Manager) checkUpdateEndpoints(cacheKey string, endpointIPs []string) bool {
+func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, endpointIPs []string, matchPorts bool) bool {
 	var update bool
 
-	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
-		// Update external IP if has changed
+	if matchPorts {
+		loxiEndpointModelList := []api.LoadBalancerEndpoint{}
+		var tports []int
+		var err error
+		tports, err = k8s.GetServiceEndPointsPorts(m.kubeClient, svc)
+		if err != nil {
+			return true
+		}
+		for _, endpoint := range endpointIPs {
+			for _, tport := range tports {
+				loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
+					EndpointIP: endpoint,
+					TargetPort: uint16(tport),
+					Weight:     1,
+				})
+			}
+		}
 
-		// Update endpoint list if the list has changed
+		for _, sp := range m.lbCache[cacheKey].LbServicePairs {
+			// Check if external-endpoint list has changed
+			for _, lb := range sp.LbModelList {
+				if len(loxiEndpointModelList) == len(lb.Endpoints) {
+					for _, endpoint := range loxiEndpointModelList {
+						found := false
+						for _, oldEp := range lb.Endpoints {
+							if oldEp.EndpointIP == endpoint.EndpointIP &&
+								oldEp.TargetPort == endpoint.TargetPort {
+								found = true
+								break
+							}
+						}
+						if !found {
+							update = true
+						}
+					}
+				} else {
+					update = true
+				}
+			}
+			if update {
+				klog.Infof("%s: Ext-Endpoint update", cacheKey)
+			}
+		}
+		return update
+	}
+
+	for _, sp := range m.lbCache[cacheKey].LbServicePairs {
+		// Check if endpoint list has changed
 		for _, lb := range sp.LbModelList {
 			if len(endpointIPs) == len(lb.Endpoints) {
 				nEps := 0
@@ -1845,20 +1911,33 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 
 		for _, endpoint := range lbArgs.endpointIPs {
 
-			tport := uint16(port.NodePort)
+			var tports []int
+			var err error
 			if lbArgs.needMultusEP || lbArgs.usePodNetwork {
-				portNum, err := k8s.GetServicePortIntValue(m.kubeClient, svc, port)
+				tports, err = k8s.GetServicePortIntValue(m.kubeClient, svc, port)
 				if err != nil {
 					return api.LoadBalancerModel{}, err
 				}
-				tport = uint16(portNum)
+			} else if lbArgs.useExternalEndpoint {
+				tports, err = k8s.GetServiceEndPointsPorts(m.kubeClient, svc)
+				if err != nil {
+					return api.LoadBalancerModel{}, err
+				}
+			} else {
+				tports = append(tports, int(port.NodePort))
 			}
 
-			loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
-				EndpointIP: endpoint,
-				TargetPort: tport,
-				Weight:     1,
-			})
+			if len(tports) <= 0 {
+				return api.LoadBalancerModel{}, errors.New("no endpoints to make lbmodel")
+			}
+
+			for _, tport := range tports {
+				loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
+					EndpointIP: endpoint,
+					TargetPort: uint16(tport),
+					Weight:     1,
+				})
+			}
 		}
 	}
 
@@ -1986,10 +2065,10 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 
 	// DNS lookup (not used now)
 	// ips, err := net.LookupIP("loxilb-lb-service")
-	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-lb-service", "", matchNodeList)
+	ips, err := k8s.GetLoxilbServiceEndPoints(m.kubeClient, "loxilb-lb-service", "", matchNodeList)
 	if err != nil {
 		klog.Infof("loxilb-service failed: %s", err)
-		ips = []net.IP{}
+		ips = []string{}
 	}
 
 	if len(ips) != len(m.LoxiClients.Clients) {
@@ -1999,7 +2078,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 	for _, v := range m.LoxiClients.Clients {
 		v.Purge = true
 		for _, ip := range ips {
-			if v.Host == ip.String() {
+			if v.Host == ip {
 				v.Purge = false
 			}
 		}
@@ -2010,18 +2089,18 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 		noRole := false
 
 		for _, eNode := range excludeList {
-			if eNode == ip.String() {
+			if eNode == ip {
 				noRole = true
 				break
 			}
 		}
 		for _, v := range m.LoxiClients.Clients {
-			if v.Host == ip.String() {
+			if v.Host == ip {
 				found = true
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, false, noRole, "", m.networkConfig.Zone, m.networkConfig.NumZoneInst)
+			client, err2 := api.NewLoxiClient("http://"+ip+":11111", loxiLBAliveCh, loxiLBDeadCh, false, noRole, "", m.networkConfig.Zone, m.networkConfig.NumZoneInst)
 			if err2 != nil {
 				continue
 			}
@@ -2046,18 +2125,18 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 
 func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
 	var tmploxilbPeerClients []*api.LoxiClient
-	ips, err := k8s.GetServiceEndPoints(m.kubeClient, "loxilb-peer-service", "", []string{})
+	ips, err := k8s.GetLoxilbServiceEndPoints(m.kubeClient, "loxilb-peer-service", "", []string{})
 	if len(ips) > 0 {
 		klog.Infof("loxilb-peer-service end-points:  %v", ips)
 	}
 	if err != nil {
-		ips = []net.IP{}
+		ips = []string{}
 	}
 
 	for _, v := range m.LoxiPeerClients.Clients {
 		v.Purge = true
 		for _, ip := range ips {
-			if v.Host == ip.String() {
+			if v.Host == ip {
 				v.Purge = false
 			}
 		}
@@ -2066,12 +2145,12 @@ func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient,
 	for _, ip := range ips {
 		found := false
 		for _, v := range m.LoxiPeerClients.Clients {
-			if v.Host == ip.String() {
+			if v.Host == ip {
 				found = true
 			}
 		}
 		if !found {
-			client, err2 := api.NewLoxiClient("http://"+ip.String()+":11111", loxiLBAliveCh, loxiLBDeadCh, true, true, "", m.networkConfig.Zone, m.networkConfig.NumZoneInst)
+			client, err2 := api.NewLoxiClient("http://"+ip+":11111", loxiLBAliveCh, loxiLBDeadCh, true, true, "", m.networkConfig.Zone, m.networkConfig.NumZoneInst)
 			if err2 != nil {
 				continue
 			}
