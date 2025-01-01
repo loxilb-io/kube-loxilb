@@ -81,7 +81,7 @@ const (
 	loxilbZoneLabelKey            = "loxilb.io/zonelabel"
 	loxilbZoneInstance            = "loxilb.io/zoneinstance"
 	enProxyProtov2Annotation      = "loxilb.io/useproxyprotov2"
-  egressAnnotation              = "loxilb.io/egress"
+	egressAnnotation              = "loxilb.io/egress"
 )
 
 type LoxiInstRole struct {
@@ -131,7 +131,7 @@ type LbArgs struct {
 	useExternalEndpoint bool
 	inst                string
 	ppv2En              bool
-  egress              bool
+  	egress              bool
 }
 
 type LbModelEnt struct {
@@ -1019,7 +1019,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			sel:                 m.lbCache[cacheKey].EpSelect,
 			inst:                m.lbCache[cacheKey].Inst,
 			ppv2En:              m.lbCache[cacheKey].ppv2En,
-      egress:              m.lbCache[cacheKey].egress,
+      			egress:              m.lbCache[cacheKey].egress,
 			needMultusEP:        needMultusEP,
 			usePodNetwork:       usePodNet,
 			useExternalEndpoint: useExternalEndpoint,
