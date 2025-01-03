@@ -26,8 +26,11 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	crdv1 "github.com/loxilb-io/kube-loxilb/pkg/crds/egress/v1"
 	"github.com/loxilb-io/kube-loxilb/pkg/egress-client/clientset/versioned"
+	egressCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/egress-client/informers/externalversions"
 	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/egress-client/informers/externalversions/egress/v1"
 	crdLister "github.com/loxilb-io/kube-loxilb/pkg/egress-client/listers/egress/v1"
+	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -45,6 +48,7 @@ const (
 
 type Manager struct {
 	kubeClient         kubernetes.Interface
+	kubeExtClient      apiextensionclientset.Interface
 	crdClient          versioned.Interface
 	EgressInformer     crdInformer.EgressInformer
 	EgressLister       crdLister.EgressLister
@@ -57,6 +61,7 @@ type Manager struct {
 // Manager is called by kube-loxilb when k8s service is created & updated.
 func NewEgressManager(
 	kubeClient kubernetes.Interface,
+	kubeExtClient apiextensionclientset.Interface,
 	crdClient versioned.Interface,
 	networkConfig *config.NetworkConfig,
 	EgressInformer crdInformer.EgressInformer,
@@ -65,6 +70,7 @@ func NewEgressManager(
 
 	manager := &Manager{
 		kubeClient:         kubeClient,
+		kubeExtClient:      kubeExtClient,
 		crdClient:          crdClient,
 		EgressInformer:     EgressInformer,
 		EgressLister:       EgressInformer.Lister(),
@@ -124,6 +130,28 @@ func (m *Manager) Run(stopCh <-chan struct{}) {
 		go wait.Until(m.worker, time.Second, stopCh)
 	}
 	<-stopCh
+}
+
+func (m *Manager) WaitForLoxiEgressCRDCreation(stopCh <-chan struct{}) {
+
+	wait.PollImmediateUntil(time.Second*5,
+		func() (bool, error) {
+			_, err := m.kubeExtClient.ApiextensionsV1().CustomResourceDefinitions().
+				Get(context.TODO(), "egresses.egress.loxilb.io", metav1.GetOptions{})
+			if err != nil {
+				return false, nil
+			}
+			klog.Infof("loxilb-egress crd created")
+			return true, nil
+		},
+		stopCh)
+}
+
+func (m *Manager) Start(informer egressCRDinformers.SharedInformerFactory, stopCh <-chan struct{}) {
+
+	m.WaitForLoxiEgressCRDCreation(stopCh)
+	informer.Start(stopCh)
+	m.Run(stopCh)
 }
 
 func (m *Manager) worker() {

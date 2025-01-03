@@ -253,6 +253,7 @@ func run(o *Options) error {
 
 	egressMgr := egress.NewEgressManager(
 		k8sClient,
+		k8sExtClient,
 		egressClient,
 		networkConfig,
 		egressInformer,
@@ -294,8 +295,7 @@ func run(o *Options) error {
 	}
 
 	go loxilbURLMgr.Start(loxilbURLInformerFactory, stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
-	egressInformerFactory.Start(stopCh)
-	go egressMgr.Run(stopCh)
+	go egressMgr.Start(egressInformerFactory, stopCh)
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {
