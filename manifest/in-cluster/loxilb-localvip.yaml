@@ -92,9 +92,9 @@ metadata:
   name: loxilb-egress-service
   namespace: kube-system
   annotations:
-    loxilb.io/usepodnetwork: "yes"
+    loxilb.io/egress: "yes"
+    loxilb.io/probetype: "none"
 spec:
-  externalTrafficPolicy: Local
   type: LoadBalancer
   loadBalancerClass: loxilb.io/loxilb
   selector:
