@@ -294,8 +294,10 @@ func run(o *Options) error {
 	}
 
 	go loxilbURLMgr.Start(loxilbURLInformerFactory, stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
-	egressInformerFactory.Start(stopCh)
-	go egressMgr.Run(stopCh)
+	if k8s.CheckCRD(k8sExtClient, "egresses.egress.loxilb.io") {
+		egressInformerFactory.Start(stopCh)
+		go egressMgr.Run(stopCh)
+	}
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {
