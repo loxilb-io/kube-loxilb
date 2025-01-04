@@ -148,6 +148,7 @@ func (m *Manager) WaitForLoxiEgressCRDCreation(stopCh <-chan struct{}) {
 }
 
 func (m *Manager) Start(informer egressCRDinformers.SharedInformerFactory, stopCh <-chan struct{}) {
+	klog.Infof("Starting %s", mgrName)
 
 	m.WaitForLoxiEgressCRDCreation(stopCh)
 	informer.Start(stopCh)
@@ -230,7 +231,7 @@ func (m *Manager) makeLoxiFirewallModel(egress *crdv1.Egress) []*api.FwRuleMod {
 	for _, address := range egress.Spec.Addresses {
 		newFwModel := &api.FwRuleMod{
 			Rule: api.FwRuleArg{
-				SrcIP: address,
+				SrcIP: address + "/32",
 			},
 			Opts: api.FwOptArg{
 				DoSnat:    true,
