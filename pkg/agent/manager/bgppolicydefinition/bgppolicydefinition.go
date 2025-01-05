@@ -109,7 +109,7 @@ func (m *Manager) enqueueService(obj interface{}) {
 	m.queue.Add(lb)
 }
 
-func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient, loxiLBPurgeCh chan *api.LoxiClient, masterEventCh <-chan bool) {
+func (m *Manager) Run(stopCh <-chan struct{}) {
 	defer m.queue.ShutDown()
 
 	klog.Infof("Starting %s", mgrName)
