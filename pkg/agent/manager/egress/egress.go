@@ -19,6 +19,7 @@ package egress
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	crdLister "github.com/loxilb-io/kube-loxilb/pkg/egress-client/listers/egress/v1"
 	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -55,6 +57,7 @@ type Manager struct {
 	EgressListerSynced cache.InformerSynced
 	LoxiClients        *api.LoxiClientPool
 	queue              workqueue.RateLimitingInterface
+	ClientAliveCh      chan *api.LoxiClient
 }
 
 // Create and Init Manager.
@@ -76,6 +79,7 @@ func NewEgressManager(
 		EgressLister:       EgressInformer.Lister(),
 		EgressListerSynced: EgressInformer.Informer().HasSynced,
 		LoxiClients:        LoxiClients,
+		ClientAliveCh:      make(chan *api.LoxiClient, 50),
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "Egress"),
 	}
@@ -126,6 +130,9 @@ func (m *Manager) Run(stopCh <-chan struct{}) {
 		m.EgressListerSynced) {
 		return
 	}
+
+	go m.manageLoxilbEgressLifeCycle(stopCh)
+
 	for i := 0; i < defaultWorkers; i++ {
 		go wait.Until(m.worker, time.Second, stopCh)
 	}
@@ -229,9 +236,14 @@ func (m *Manager) deleteEgress(egress *crdv1.Egress) error {
 func (m *Manager) makeLoxiFirewallModel(egress *crdv1.Egress) []*api.FwRuleMod {
 	newFwModels := []*api.FwRuleMod{}
 	for _, address := range egress.Spec.Addresses {
+		cidrAddr := address
+		_, _, err := net.ParseCIDR(address)
+		if err != nil {
+			cidrAddr = address + "/32"
+		}
 		newFwModel := &api.FwRuleMod{
 			Rule: api.FwRuleArg{
-				SrcIP: address + "/32",
+				SrcIP: cidrAddr,
 			},
 			Opts: api.FwOptArg{
 				DoSnat:    true,
@@ -307,4 +319,24 @@ func (m *Manager) callLoxiFirewallDeleteAPI(ctx context.Context, fwModel *api.Fw
 		return fmt.Errorf("failed to delete loxiLB Firewall rule. Error: %v", errStr)
 	}
 	return nil
+}
+
+func (m *Manager) manageLoxilbEgressLifeCycle(stopCh <-chan struct{}) {
+	for {
+		select {
+		case <-stopCh:
+			return
+		case c := <-m.ClientAliveCh:
+			klog.V(4).Infof("Resync all Egresses (%s:alive)", c.Host)
+			egresses, err := m.EgressLister.List(labels.Everything())
+			if err != nil {
+				klog.Errorf("failed to get egress list - err: %v", err)
+			} else {
+				klog.V(4).Infof("Resync all Egresses - (%v)", egresses)
+				for _, egr := range egresses {
+					m.addEgress(egr)
+				}
+			}
+		}
+	}
 }

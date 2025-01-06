@@ -109,6 +109,10 @@ type Manager struct {
 	instAddrApplyCh     chan struct{}
 	loxiInstAddrMap     map[string]net.IP
 	zoneInstSelHint     int
+	ClientAliveCh       chan *api.LoxiClient
+	ClientPurgeCh       chan *api.LoxiClient
+	ClientSelMasterCh   chan bool
+	ClientDeadCh        chan struct{}
 }
 
 type LbArgs struct {
@@ -263,6 +267,10 @@ func NewLoadBalancerManager(
 		instAddrApplyCh:     make(chan struct{}),
 		loxiInstAddrMap:     make(map[string]net.IP),
 		zoneInstRoleMap:     make(map[string]*LoxiInstRole),
+		ClientAliveCh:       make(chan *api.LoxiClient, 50),
+		ClientPurgeCh:       make(chan *api.LoxiClient, 5),
+		ClientSelMasterCh:   make(chan bool),
+		ClientDeadCh:        make(chan struct{}, 64),
 
 		queue:   workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "loadbalancer"),
 		lbCache: make(LbCacheTable),
@@ -316,7 +324,7 @@ func (m *Manager) enqueueService(obj interface{}) {
 	m.queue.Add(key)
 }
 
-func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient, loxiLBPurgeCh chan *api.LoxiClient, masterEventCh <-chan bool) {
+func (m *Manager) Run(stopCh <-chan struct{}) {
 	defer m.queue.ShutDown()
 
 	klog.Infof("Starting %s", mgrName)
@@ -330,7 +338,7 @@ func (m *Manager) Run(stopCh <-chan struct{}, loxiLBLiveCh chan *api.LoxiClient,
 		return
 	}
 
-	go m.manageLoxiLbLifeCycle(stopCh, loxiLBLiveCh, loxiLBPurgeCh, masterEventCh)
+	go m.manageLoxiLbLifeCycle(stopCh)
 
 	for i := 0; i < defaultWorkers; i++ {
 		go wait.Until(m.worker, time.Second, stopCh)
@@ -2301,7 +2309,7 @@ func (m *Manager) checkHandleBGPCfgErrors(loxiAliveCh chan *api.LoxiClient, peer
 	}
 }
 
-func (m *Manager) manageLoxiLbLifeCycle(stopCh <-chan struct{}, loxiAliveCh chan *api.LoxiClient, loxiPurgeCh chan *api.LoxiClient, masterEventCh <-chan bool) {
+func (m *Manager) manageLoxiLbLifeCycle(stopCh <-chan struct{}) {
 loop:
 	for {
 		select {
@@ -2309,7 +2317,7 @@ loop:
 			break loop
 		case <-m.instAddrApplyCh:
 			m.updateAllLoxiLBServiceStatus()
-		case <-masterEventCh:
+		case <-m.ClientSelMasterCh:
 			for _, lc := range m.LoxiClients.Clients {
 				if !lc.IsAlive {
 					continue
@@ -2334,7 +2342,7 @@ loop:
 					}
 				}
 			}
-		case purgedClient := <-loxiPurgeCh:
+		case purgedClient := <-m.ClientPurgeCh:
 			klog.Infof("loxilb-lb(%s): purged", purgedClient.Host)
 			if m.networkConfig.SetBGP != 0 {
 				deleteNeigh := func(client *api.LoxiClient, neighIP string, remoteAs int) error {
@@ -2355,7 +2363,7 @@ loop:
 					}
 				}
 			}
-		case aliveClient := <-loxiAliveCh:
+		case aliveClient := <-m.ClientAliveCh:
 			aliveClient.DoBGPCfg = false
 			if m.networkConfig.SetRoles != "" && !aliveClient.PeeringOnly {
 
@@ -2424,7 +2432,7 @@ loop:
 					klog.Infof("loxilb(%s) set-bgp-global success", aliveClient.Host)
 				} else {
 					klog.Infof("loxilb(%s) set-bgp-global failed(%s)", aliveClient.Host, err)
-					m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
+					m.checkHandleBGPCfgErrors(m.ClientAliveCh, aliveClient, err)
 				}
 
 				for _, bgpPeer := range bgpPeers {
@@ -2438,7 +2446,7 @@ loop:
 						klog.Infof("set-bgp-neigh(%s->%s) success", aliveClient.Host, bgpPeer.Host)
 					} else {
 						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", aliveClient.Host, bgpPeer.Host, err)
-						m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
+						m.checkHandleBGPCfgErrors(m.ClientAliveCh, aliveClient, err)
 					}
 
 					bgpNeighCfg1, _ := m.makeLoxiLBBGNeighModel(int(m.networkConfig.SetBGP), aliveClient.Host, m.networkConfig.ListenBGPPort, false)
@@ -2451,7 +2459,7 @@ loop:
 						klog.Infof("set-bgp-neigh(%s->%s) success", bgpPeer.Host, aliveClient.Host)
 					} else {
 						klog.Infof("set-bgp-neigh(%s->%s) failed(%s)", bgpPeer.Host, aliveClient.Host, err)
-						m.checkHandleBGPCfgErrors(loxiAliveCh, bgpPeer, err)
+						m.checkHandleBGPCfgErrors(m.ClientAliveCh, bgpPeer, err)
 					}
 				}
 
@@ -2482,7 +2490,7 @@ loop:
 							klog.Infof("set-ebgp-neigh(%s:%v) cfg success", bgpRemoteIP.String(), asid)
 						} else {
 							klog.Infof("set-ebgp-neigh(%s:%v) cfg - failed (%s)", bgpRemoteIP.String(), asid, err)
-							m.checkHandleBGPCfgErrors(loxiAliveCh, aliveClient, err)
+							m.checkHandleBGPCfgErrors(m.ClientAliveCh, aliveClient, err)
 						}
 					}
 				}

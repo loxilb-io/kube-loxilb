@@ -187,7 +187,6 @@ func run(o *Options) error {
 	loxilbPeerClients := api.NewLoxiClientPool()
 	loxiLBLiveCh := make(chan *api.LoxiClient, 50)
 	loxiLBPurgeCh := make(chan *api.LoxiClient, 5)
-	loxiLBSelMasterEvent := make(chan bool)
 	loxiLBDeadCh := make(chan struct{}, 64)
 	ticker := time.NewTicker(20 * time.Second)
 
@@ -266,8 +265,16 @@ func run(o *Options) error {
 			case <-loxiLBDeadCh:
 				if networkConfig.SetRoles != "" {
 					klog.Infof("Running select-roles")
-					lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
+					lbManager.SelectLoxiLBRoles(true, lbManager.ClientSelMasterCh)
 				}
+			case alive := <-loxiLBLiveCh:
+				klog.Infof("Client alive : %s", alive.Host)
+				lbManager.ClientAliveCh <- alive
+				egressMgr.ClientAliveCh <- alive
+			case dead := <-loxiLBDeadCh:
+				lbManager.ClientDeadCh <- dead
+			case purged := <-loxiLBPurgeCh:
+				lbManager.ClientPurgeCh <- purged
 			case <-ticker.C:
 				if len(networkConfig.LoxilbURLs) <= 0 {
 					lbManager.DiscoverLoxiLBServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh, o.config.ExcludeRoleList)
@@ -275,7 +282,7 @@ func run(o *Options) error {
 				lbManager.DiscoverLoxiLBPeerServices(loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 
 				if networkConfig.SetRoles != "" {
-					lbManager.SelectLoxiLBRoles(true, loxiLBSelMasterEvent)
+					lbManager.SelectLoxiLBRoles(true, lbManager.ClientSelMasterCh)
 				}
 			case <-stopCh:
 				return
@@ -285,13 +292,13 @@ func run(o *Options) error {
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
 
-	go lbManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+	go lbManager.Run(stopCh)
 	if o.config.EnableBGPCRDs {
 		bgpCRDInformerFactory.Start(stopCh)
-		go BgpPeerManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
-		go BGPPolicyDefinedSetsManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
-		go BGPPolicyDefinitionManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
-		go BGPPolicyApplyManager.Run(stopCh, loxiLBLiveCh, loxiLBPurgeCh, loxiLBSelMasterEvent)
+		go BgpPeerManager.Run(stopCh)
+		go BGPPolicyDefinedSetsManager.Run(stopCh)
+		go BGPPolicyDefinitionManager.Run(stopCh)
+		go BGPPolicyApplyManager.Run(stopCh)
 	}
 
 	go loxilbURLMgr.Start(loxilbURLInformerFactory, stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
