@@ -19,6 +19,7 @@ package egress
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -235,9 +236,14 @@ func (m *Manager) deleteEgress(egress *crdv1.Egress) error {
 func (m *Manager) makeLoxiFirewallModel(egress *crdv1.Egress) []*api.FwRuleMod {
 	newFwModels := []*api.FwRuleMod{}
 	for _, address := range egress.Spec.Addresses {
+		cidrAddr := address
+		_, _, err := net.ParseCIDR(address)
+		if err != nil {
+			cidrAddr = address + "/32"
+		}
 		newFwModel := &api.FwRuleMod{
 			Rule: api.FwRuleArg{
-				SrcIP: address + "/32",
+				SrcIP: cidrAddr,
 			},
 			Opts: api.FwOptArg{
 				DoSnat:    true,
