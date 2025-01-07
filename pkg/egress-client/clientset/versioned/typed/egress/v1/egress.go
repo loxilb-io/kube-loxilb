@@ -39,6 +39,8 @@ type EgressesGetter interface {
 type EgressInterface interface {
 	Create(ctx context.Context, egress *egressv1.Egress, opts metav1.CreateOptions) (*egressv1.Egress, error)
 	Update(ctx context.Context, egress *egressv1.Egress, opts metav1.UpdateOptions) (*egressv1.Egress, error)
+	// Add a +genclient:noStatus comment above the type to avoid generating UpdateStatus().
+	UpdateStatus(ctx context.Context, egress *egressv1.Egress, opts metav1.UpdateOptions) (*egressv1.Egress, error)
 	Delete(ctx context.Context, name string, opts metav1.DeleteOptions) error
 	DeleteCollection(ctx context.Context, opts metav1.DeleteOptions, listOpts metav1.ListOptions) error
 	Get(ctx context.Context, name string, opts metav1.GetOptions) (*egressv1.Egress, error)
