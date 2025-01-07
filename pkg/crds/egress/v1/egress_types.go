@@ -22,5 +22,5 @@ type EgressSpec struct {
 type EgressList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Egress `json:"egresses"`
+	Items           []Egress `json:"items"`
 }

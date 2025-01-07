@@ -23,6 +23,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(
 		SchemeGroupVersion,
 		&Egress{},
+		&EgressList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)

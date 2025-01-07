@@ -204,6 +204,10 @@ func (m *Manager) addEgress(egress *crdv1.Egress) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 	defer cancel()
 
+	if len(m.LoxiClients.Clients) == 0 {
+		return fmt.Errorf("egress cannot be added because there are no loxilb instances")
+	}
+
 	// Create Loxilb firewall rule for egress
 	klog.V(4).Infof("Adding Egress %s/%s", egress.Namespace, egress.Name)
 	fwModels := m.makeLoxiFirewallModel(egress)
