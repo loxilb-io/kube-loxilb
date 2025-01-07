@@ -5,7 +5,7 @@ metadata:
 spec:
   #address: IP list of the Pod on which you want the egress rule applied
   addresses:        
-  - 10.42.1.2/32
-  - 10.42.0.5/32
+  - 10.42.1.2
+  - 10.42.0.5
   #vip: IP in addresses is SNATed to the corresponding VIP.
   vip: 172.18.0.254
