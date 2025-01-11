@@ -52,11 +52,7 @@ type LoxiClient struct {
 
 // GenZoneInstName generate zone instance name
 func GenZoneInstName(zone string, id int) string {
-	instName := "default"
-	if id != 0 {
-		instName = fmt.Sprintf("%s-%s%d", zone, "inst", id)
-	}
-	return instName
+	return fmt.Sprintf("%s-%s%d", zone, "inst", id)
 }
 
 // apiServer is string. what format? http://10.0.0.1 or 10.0.0.1
