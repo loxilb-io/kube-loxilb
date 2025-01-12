@@ -34,6 +34,10 @@ func NewLoxiClientPool() *LoxiClientPool {
 	}
 }
 
+const (
+	CIDefault = "llb-inst0"
+)
+
 type LoxiClient struct {
 	RestClient  *RESTClient
 	InstRoles   map[string]*LoxiZoneInst
