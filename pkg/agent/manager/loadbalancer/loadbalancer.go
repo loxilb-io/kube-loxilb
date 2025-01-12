@@ -718,7 +718,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		addNewLbCacheEntryChan := make(chan *LbCacheEntry)
 		defer close(addNewLbCacheEntryChan)
 		go func() {
-			zoneInstName := "default"
+			zoneInstName := api.GenZoneInstName(m.networkConfig.Zone, 0)
 			if overrideZoneInst != "" {
 				zoneInstName = overrideZoneInst
 			} else {
@@ -2372,6 +2372,28 @@ loop:
 				}
 
 				for instName, vi := range aliveClient.InstRoles {
+					firstZoneName := api.GenZoneInstName(m.networkConfig.Zone, 0)
+					if instName == firstZoneName && m.networkConfig.Zone != api.CIDefault {
+						defaultZoneName := api.GenZoneInstName(api.CIDefault, 0)
+						cisModel, err := m.makeLoxiLBCIStatusModel(instName, m.networkConfig.SetRoles, aliveClient)
+						cisModel.Instance = defaultZoneName
+						if err == nil {
+							for retry := 0; retry < 5; retry++ {
+								err = func(cisModel *api.CIStatusModel) error {
+									ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+									defer cancel()
+									return aliveClient.CIStatus().Create(ctx, cisModel)
+								}(&cisModel)
+								if err == nil {
+									klog.Infof("loxilb-lb(%s): set-role-master(%s:%v) - OK", aliveClient.Host, defaultZoneName, vi.MasterLB)
+									break
+								} else {
+									klog.Infof("loxilb-lb(%s): set-role-master(%s:%v) - failed(%d)", aliveClient.Host, defaultZoneName, vi.MasterLB, retry)
+									time.Sleep(1 * time.Second)
+								}
+							}
+						}
+					}
 					cisModel, err := m.makeLoxiLBCIStatusModel(instName, m.networkConfig.SetRoles, aliveClient)
 					if err == nil {
 						for retry := 0; retry < 5; retry++ {
