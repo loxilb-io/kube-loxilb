@@ -94,6 +94,7 @@ metadata:
   annotations:
     loxilb.io/egress: "yes"
     loxilb.io/probetype: "none"
+    loxilb.io/staticIP: "0.0.0.0"
 spec:
   type: LoadBalancer
   loadBalancerClass: loxilb.io/loxilb

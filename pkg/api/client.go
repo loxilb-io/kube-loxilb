@@ -35,7 +35,7 @@ func NewLoxiClientPool() *LoxiClientPool {
 }
 
 const (
-	CIDefault = "llb-inst0"
+	CIDefaultZone = "llb"
 )
 
 type LoxiClient struct {
