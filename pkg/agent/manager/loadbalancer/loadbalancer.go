@@ -2323,6 +2323,28 @@ loop:
 					continue
 				}
 				for instName, vi := range lc.InstRoles {
+					firstZoneName := api.GenZoneInstName(m.networkConfig.Zone, 0)
+					if instName == firstZoneName && m.networkConfig.Zone != api.CIDefaultZone {
+						defaultZoneName := api.GenZoneInstName(api.CIDefaultZone, 0)
+						cisModel, err := m.makeLoxiLBCIStatusModel(instName, m.networkConfig.SetRoles, lc)
+						cisModel.Instance = defaultZoneName
+						if err == nil {
+							for retry := 0; retry < 5; retry++ {
+								err = func(cisModel *api.CIStatusModel) error {
+									ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+									defer cancel()
+									return lc.CIStatus().Create(ctx, cisModel)
+								}(&cisModel)
+								if err == nil {
+									klog.Infof("loxilb-lb(%s): set-role-master(%s:%v) - OK", lc.Host, defaultZoneName, vi.MasterLB)
+									break
+								} else {
+									klog.Infof("loxilb-lb(%s): set-role-master(%s:%v) - failed(%d)", lc.Host, defaultZoneName, vi.MasterLB, retry)
+									time.Sleep(1 * time.Second)
+								}
+							}
+						}
+					}
 					cisModel, err := m.makeLoxiLBCIStatusModel(instName, m.networkConfig.SetRoles, lc)
 					if err == nil {
 						for retry := 0; retry < 5; retry++ {
