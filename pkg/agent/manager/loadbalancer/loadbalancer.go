@@ -2373,8 +2373,8 @@ loop:
 
 				for instName, vi := range aliveClient.InstRoles {
 					firstZoneName := api.GenZoneInstName(m.networkConfig.Zone, 0)
-					if instName == firstZoneName && m.networkConfig.Zone != api.CIDefault {
-						defaultZoneName := api.GenZoneInstName(api.CIDefault, 0)
+					if instName == firstZoneName && m.networkConfig.Zone != api.CIDefaultZone {
+						defaultZoneName := api.GenZoneInstName(api.CIDefaultZone, 0)
 						cisModel, err := m.makeLoxiLBCIStatusModel(instName, m.networkConfig.SetRoles, aliveClient)
 						cisModel.Instance = defaultZoneName
 						if err == nil {
