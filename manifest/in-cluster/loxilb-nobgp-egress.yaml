@@ -15,6 +15,8 @@ spec:
     spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        loxilb-egr-node: "yes"
       containers:
       - name: loxilb-app
         image: "ghcr.io/loxilb-io/loxilb:latest"
@@ -23,6 +25,7 @@ spec:
         - /root/loxilb-io/loxilb/loxilb
         args:
         - --ipvs-compat
+        - --egr-hooks
         - --clusterinterface=eth1
         ports:
         - containerPort: 11111
