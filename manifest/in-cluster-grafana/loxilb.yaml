@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: kube-system
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+    positions:
+      filename: /run/promtail/positions.yaml
+    clients:
+      - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+    scrape_configs:
+      - job_name: loxilb-app-logs
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: loxilb-app-logs
+              __path__: /var/log/pods/kube-system_loxilb-lb-*/loxilb-app/*.log
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: loxilb-lb
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: loxilb-app
+  template:
+    metadata:
+      name: loxilb-lb
+      labels:
+        app: loxilb-app
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+      - key: "node-role.kubernetes.io/master"
+        operator: Exists
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: Exists
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: "node-role.kubernetes.io/master"
+                operator: Exists
+              - key: "node-role.kubernetes.io/control-plane"
+                operator: Exists
+      containers:
+      - name: loxilb-app
+        image: "ghcr.io/loxilb-io/loxilb:latest"
+        imagePullPolicy: Always
+        command: [ "/root/loxilb-io/loxilb/loxilb", "--bgp", "--egr-hooks", "--blacklist=cni[0-9a-z]|veth.|flannel.|cali.|tunl.|vxlan[.]calico" ]
+        ports:
+        - containerPort: 11111
+        - containerPort: 179
+        - containerPort: 50051
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+              - SYS_ADMIN
+      - name: loxilb-promtail
+        image: grafana/promtail:2.9.1
+        args:
+          - "-config.file=/etc/promtail/promtail.yaml"
+        volumeMounts:
+          - name: varlog
+            mountPath: /var/log
+          - name: promtail-config
+            mountPath: /etc/promtail
+        ports:
+        - containerPort: 9080
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: promtail-config
+          configMap:
+            name: promtail-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loxilb-egress-service
+  namespace: kube-system
+  annotations:
+    loxilb.io/egress: "yes"
+    loxilb.io/probetype: "none"
+    loxilb.io/staticIP: "0.0.0.0"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: loxilb-app
+  ports:
+  - name: loxilb-egress
+    port: 9999
+    targetPort: 9999
+    protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loxilb-lb-service
+  namespace: kube-system
+spec:
+  clusterIP: None
+  selector:
+    app: loxilb-app
+  ports:
+  - name: loxilb-app
+    port: 11111
+    targetPort: 11111
+    protocol: TCP
+  - name: loxilb-app-bgp
+    port: 179
+    targetPort: 179
+    protocol: TCP
+  - name: loxilb-app-gobgp
+    port: 50051
+    targetPort: 50051
+    protocol: TCP
