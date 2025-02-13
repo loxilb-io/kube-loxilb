@@ -1,5 +1,66 @@
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin-secret
+  namespace: monitoring
+type: Opaque
+data:
+  admin-password: cGFzc3dvcmQ=  # Base64-encoded password (e.g., 'password')
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: monitoring
+data:
+  grafana.ini: |
+    [analytics]
+    reporting_enabled = false
+    [auth.anonymous]
+    enabled = false
+    [explore]
+    enabled = true
+    [users]
+    default_theme = dark
+    [security]
+    admin_user = admin
+    admin_password = ${GF_SECURITY_ADMIN_PASSWORD}  # Use env variable for password
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki.monitoring.svc.cluster.local:3100
+        version: 1
+        editable: false
+        uid: grafana-ds-loxilb-log
+      - name: Prometheus
+        access: proxy
+        type: prometheus
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        isDefault: true
+        uid: grafana-ds-loxilb-metric
+      - name: Infinity
+        uid: infinity
+        type: yesoreyeram-infinity-datasource
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+    - name: 'dashboards'
+      orgId: 1
+      folder: ''
+      folderUid: ''
+      type: file
+      disableDeletion: true
+      editable: true
+      updateIntervalSeconds: 10
+      allowUiUpdates: false
+      options:
+        path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: grafana-config
@@ -3557,14 +3618,9 @@ data:
                 "selected": true,
                 "text": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
                 "value": "loxilb-lb-service.kube-system.svc.cluster.local:11111"
-              },
-              {
-                "selected": false,
-                "text": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
-                "value": "loxilb-lb-service.kube-system.svc.cluster.local:11111"
               }
             ],
-            "query": "loxilb-lb-service.kube-system.svc.cluster.local:11111,loxilb-lb-service.kube-system.svc.cluster.local:11111",
+            "query": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
             "queryValue": "",
             "skipUrlSync": false,
             "type": "custom"
@@ -4870,14 +4926,9 @@ data:
                 "selected": true,
                 "text": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
                 "value": "loxilb-lb-service.kube-system.svc.cluster.local:11111"
-              },
-              {
-                "selected": true,
-                "text": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
-                "value": "loxilb-lb-service.kube-system.svc.cluster.local:11111"
               }
             ],
-            "query": "loxilb-lb-service.kube-system.svc.cluster.local:11111,loxilb-lb-service.kube-system.svc.cluster.local:11111",
+            "query": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
             "queryValue": "",
             "skipUrlSync": false,
             "type": "custom"
@@ -4918,11 +4969,18 @@ spec:
         - containerPort: 3000
         env:
         - name: GF_AUTH_ANONYMOUS_ENABLED
-          value: "true"
+          value: "false"  # Disable anonymous authentication
+        - name: GF_AUTH_DISABLE_LOGIN_FORM
+          value: "false"  # Enable login form
+        - name: GF_SECURITY_ADMIN_USER
+          value: "admin"  # Set admin username
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: grafana-admin-secret
+              key: admin-password  # Use a Kubernetes Secret for security
         - name: GF_AUTH_ANONYMOUS_ORG_ROLE
           value: "Admin"
-        - name: GF_AUTH_DISABLE_LOGIN_FORM
-          value: "true"
         - name: GF_INSTALL_PLUGINS
           value: "yesoreyeram-infinity-datasource,netsage-sankey-panel,https://storage.googleapis.com/integration-artifacts/grafana-lokiexplore-app/grafana-lokiexplore-app-latest.zip;grafana-lokiexplore-app"
         - name: GF_FEATURE_TOGGLES_ENABLE
