@@ -1,0 +1,224 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: monitoring
+data:
+  loki.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9096
+
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /tmp/loki
+      storage:
+        filesystem:
+          chunks_directory: /tmp/loki/chunks
+          rules_directory: /tmp/loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+
+    frontend:
+      max_outstanding_per_tenant: 2048
+
+    pattern_ingester:
+      enabled: true
+
+    limits_config:
+      max_global_streams_per_user: 0
+      ingestion_rate_mb: 50000
+      ingestion_burst_size_mb: 50000
+      volume_enabled: true
+
+    query_range:
+      results_cache:
+        cache:
+          embedded_cache:
+            enabled: true
+            max_size_mb: 100
+
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    ruler:
+      alertmanager_url: http://localhost:9093
+
+    analytics:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      scrape_timeout: 10s
+      evaluation_interval: 15s
+    alerting:
+      alertmanagers:
+      - static_configs:
+        - targets: []
+        scheme: http
+        timeout: 10s
+        api_version: v2
+
+    scrape_configs:
+      - job_name: 'loxilb'
+        metrics_path: /netlox/v1/metrics
+        static_configs:
+          - targets:
+            - 'loxilb-lb-service.kube-system.svc.cluster.local:11111'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      containers:
+      - name: loki
+        image: grafana/loki:3.0.0
+        ports:
+        - containerPort: 3100
+        volumeMounts:
+        - name: loki-config
+          mountPath: /etc/loki/loki.yaml
+          subPath: loki.yaml
+      volumes:
+      - name: loki-config
+        configMap:
+          name: loki-config
+          items:
+            - key: loki.yaml
+              path: loki.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: monitoring
+spec:
+  selector:
+    app: loki
+  ports:
+    - protocol: TCP
+      port: 3100
+      targetPort: 3100
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-llb
+  namespace: monitoring
+  annotations:
+    loxilb.io/lbmode: "onearm"
+    loxilb.io/liveness: "yes"
+    loxilb.io/timeout: "36000"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  sessionAffinity: None
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: loki
+  ports:
+  - port: 59302
+    targetPort: 3100
+    protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+      - name: prometheus
+        image: prom/prometheus
+        ports:
+        - containerPort: 9090
+        args:
+        - '--config.file=/etc/prometheus/prometheus.yml'
+        volumeMounts:
+        - name: prometheus-config
+          mountPath: /etc/prometheus/prometheus.yml
+          subPath: prometheus.yml
+      volumes:
+      - name: prometheus-config
+        configMap:
+          name: prometheus-config
+          items:
+            - key: prometheus.yml
+              path: prometheus.yml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - protocol: TCP
+      port: 9090
+      targetPort: 9090
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus-llb
+  namespace: monitoring
+  annotations:
+    loxilb.io/lbmode: "onearm"
+    loxilb.io/liveness: "yes"
+    loxilb.io/timeout: "36000"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: prometheus
+  ports:
+  - port: 59303
+    targetPort: 9090
+    protocol: TCP
+  sessionAffinity: None

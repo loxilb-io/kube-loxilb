@@ -1,0 +1,5077 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin-secret
+  namespace: monitoring
+type: Opaque
+data:
+  admin-password: cGFzc3dvcmQ=  # Base64-encoded password (e.g., 'password')
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: monitoring
+data:
+  grafana.ini: |
+    [analytics]
+    reporting_enabled = false
+    [auth.anonymous]
+    enabled = false
+    [explore]
+    enabled = true
+    [users]
+    default_theme = dark
+    [security]
+    admin_user = admin
+    admin_password = ${GF_SECURITY_ADMIN_PASSWORD}  # Use env variable for password
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki.monitoring.svc.cluster.local:3100
+        version: 1
+        editable: false
+        uid: grafana-ds-loxilb-log
+      - name: Prometheus
+        access: proxy
+        type: prometheus
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        isDefault: true
+        uid: grafana-ds-loxilb-metric
+      - name: Infinity
+        uid: infinity
+        type: yesoreyeram-infinity-datasource
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+    - name: 'dashboards'
+      orgId: 1
+      folder: ''
+      folderUid: ''
+      type: file
+      disableDeletion: true
+      editable: true
+      updateIntervalSeconds: 10
+      allowUiUpdates: false
+      options:
+        path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: monitoring
+data:
+  grafana.ini: |
+    [analytics]
+    reporting_enabled = false
+    [auth.anonymous]
+    enabled = true
+    org_role = Admin
+    [explore]
+    enabled = true
+    [users]
+    default_theme = dark
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki.monitoring.svc.cluster.local:3100
+        version: 1
+        editable: false
+        uid: grafana-ds-loxilb-log
+      - name: Prometheus
+        access: proxy
+        type: prometheus
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        isDefault: true
+        uid: grafana-ds-loxilb-metric
+      - name: Infinity
+        uid: infinity
+        type: yesoreyeram-infinity-datasource
+  dashboards.yml: |
+    apiVersion: 1
+    providers:
+    - name: 'dashboards'
+      orgId: 1
+      folder: ''
+      folderUid: ''
+      type: file
+      disableDeletion: true
+      editable: true
+      updateIntervalSeconds: 10
+      allowUiUpdates: false
+      options:
+        path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-config
+  namespace: monitoring
+data:
+  dashboard.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": {
+              "type": "grafana",
+              "uid": "-- Grafana --"
+            },
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "target": {
+              "limit": 100,
+              "matchAny": false,
+              "tags": [],
+              "type": "dashboard"
+            },
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 0,
+      "id": 3,
+      "links": [],
+      "liveNow": false,
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 4,
+            "x": 0,
+            "y": 0
+          },
+          "id": 2,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "builder",
+              "expr": "lb_rule_count",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "LB Rule Count",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 4,
+            "x": 4,
+            "y": 0
+          },
+          "id": 3,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "builder",
+              "expr": "healthy_host_count",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Healthy Endpoint Count",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 4,
+            "x": 8,
+            "y": 0
+          },
+          "id": 4,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "builder",
+              "expr": "unhealthy_host_count",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Unhealthy Endpoint Count",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1000
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 12,
+            "y": 0
+          },
+          "id": 5,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "builder",
+              "expr": "active_flow_count_tcp",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Active TCP Session Count",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1000
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 16,
+            "y": 0
+          },
+          "id": 6,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "builder",
+              "expr": "active_flow_count_udp",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Active UDP Session Count",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1000
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 20,
+            "y": 0
+          },
+          "id": 7,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "builder",
+              "expr": "active_flow_count_sctp",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Active SCTP Session Count",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 4
+          },
+          "id": 21,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto",
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(processed_bytes[1m]))*8",
+              "legendFormat": "Total Traffic",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Total Traffic Processed",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 4
+          },
+          "id": 22,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto",
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "expr": "active_conntrack_count",
+              "legendFormat": "Active Connections",
+              "refId": "A"
+            }
+          ],
+          "title": "Active Connections",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "binBps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 8
+          },
+          "id": 16,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "rate(processed_bytes[1m])*8",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Total Throughput (BPS)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "pps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 8
+          },
+          "id": 11,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "rate(processed_packets[1m])",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Total Processed Packets(PPS)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 1000000000
+                  }
+                ]
+              },
+              "unit": "binbps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 18
+          },
+          "id": 25,
+          "options": {
+            "displayMode": "lcd",
+            "minVizHeight": 5,
+            "minVizWidth": 0,
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(5, sum(rate(lb_rule_interaction_bytes[1m])*8) by (dip))",
+              "format": "heatmap",
+              "instant": true,
+              "legendFormat": "{{dip}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Top 5 Endpoints by Traffic",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "mappings": [],
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 18
+          },
+          "id": 27,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "pieType": "pie",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(5, sum(endpoint_load_dists_per_service) by (dip))",
+              "instant": true,
+              "legendFormat": "{{service}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Top 5 Endpoint Distribution",
+          "type": "piechart"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "#EAB839",
+                    "value": 1000000000
+                  }
+                ]
+              },
+              "unit": "binbps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 27
+          },
+          "id": 29,
+          "options": {
+            "displayMode": "lcd",
+            "minVizHeight": 10,
+            "minVizWidth": 0,
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "topk(5, sum(rate(lb_rule_interaction_bytes[1m])*8) by (service))",
+              "format": "heatmap",
+              "instant": true,
+              "legendFormat": "{{dip}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Top 5 Service  by Traffic",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "mappings": [],
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 27
+          },
+          "id": 23,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "pieType": "pie",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "sum(total_load_dists_per_service) by (service)",
+              "instant": true,
+              "legendFormat": "{{service}}",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Traffic Distribution by Service",
+          "type": "piechart"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 36
+          },
+          "id": 26,
+          "options": {
+            "displayMode": "gradient",
+            "minVizHeight": 10,
+            "minVizWidth": 0,
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "showUnfilled": true
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "topk(5, sum(rate(total_fw_drops_per_rule[1m])) by (fw_rule))",
+              "legendFormat": "{{fw_rule}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Top 5 Drops by FW Rule",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "mappings": [],
+              "unit": "percentunit"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 36
+          },
+          "id": 28,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "pieType": "pie",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(total_fw_drops_per_rule[1m])) by (fw_rule)",
+              "legendFormat": "{{service}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Total Drops by FW rule",
+          "type": "piechart"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 6,
+            "x": 0,
+            "y": 45
+          },
+          "id": 37,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "new_flow_count",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "New Flow Count",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 6,
+            "x": 6,
+            "y": 45
+          },
+          "id": 9,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "active_flow_count_tcp",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Active Flow Count TCP",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 6,
+            "x": 12,
+            "y": 45
+          },
+          "id": 18,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "active_flow_count_udp",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Active Flow Count UDP",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "none"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 6,
+            "x": 18,
+            "y": 45
+          },
+          "id": 17,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "active_flow_count_sctp",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Active Flow Count SCTP",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "binBps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 8,
+            "x": 0,
+            "y": 55
+          },
+          "id": 10,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "builder",
+              "expr": "rate(processed_tcp_bytes[1m]) * 8",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "TCP Throughput (BPS)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "binBps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 8,
+            "x": 8,
+            "y": 55
+          },
+          "id": 12,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "builder",
+              "expr": "rate(processed_udp_bytes[1m]) * 8",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "UDP Throughput (BPS)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "binBps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 8,
+            "x": 16,
+            "y": 55
+          },
+          "id": 13,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "builder",
+              "expr": "rate(processed_sctp_bytes[1m]) * 8",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "SCTP Throughput (BPS)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 65
+          },
+          "id": 34,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "rate(total_requests[1m])",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Total Requests",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              },
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 65
+          },
+          "id": 38,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(total_requests_per_service[1m])) by (service)",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Requests Per Service",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 10
+                  }
+                ]
+              },
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 75
+          },
+          "id": 39,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "rate(total_errors[1m])",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Total Errors",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "grafana-ds-loxilb-metric"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 10
+                  }
+                ]
+              },
+              "unit": "cps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 75
+          },
+          "id": 40,
+          "options": {
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "grafana-ds-loxilb-metric"
+              },
+              "editorMode": "code",
+              "expr": "sum(rate(total_errors_per_service[1m])) by (service)",
+              "legendFormat": "__auto",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Total Errors Per Service",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "5s",
+      "schemaVersion": 37,
+      "style": "dark",
+      "tags": [],
+      "templating": {
+        "list": []
+      },
+      "time": {
+        "from": "now-15m",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "LoxiLB",
+      "uid": "T0wSJD0Il",
+      "version": 1,
+      "weekStart": ""
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-network-config
+  namespace: monitoring
+data:
+  network.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": {
+              "type": "grafana",
+              "uid": "-- Grafana --"
+            },
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "target": {
+              "limit": 100,
+              "matchAny": false,
+              "tags": [],
+              "type": "dashboard"
+            },
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 0,
+      "links": [],
+      "liveNow": false,
+      "panels": [
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 3,
+            "x": 0,
+            "y": 0
+          },
+          "id": 14,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"portAttr\"\n| count\n",
+              "url": "http://${loxilb}/netlox/v1/config/port/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of Ports",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 3,
+            "x": 3,
+            "y": 0
+          },
+          "id": 5,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"ipAttr\"\n| project \"Name\"=\"dev\",\"IP Address\"=\"ip\",\"Sync\"=\"sync\"\n| count\n",
+              "url": "http://${loxilb}/netlox/v1/config/ipv4address/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of Interfaces",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 3,
+            "x": 6,
+            "y": 0
+          },
+          "id": 4,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"neighborAttr\"\n| count",
+              "url": "http://${loxilb}/netlox/v1/config/neighbor/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number ARP Tables",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 3,
+            "x": 9,
+            "y": 0
+          },
+          "id": 10,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"vlanAttr\"\n| mv-expand \"vlan\"=\"member\"\n| count\n",
+              "url": "http://${loxilb}/netlox/v1/config/vlan/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of VLAN Tables",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 3,
+            "x": 12,
+            "y": 0
+          },
+          "id": 20,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"bgpNeiAttr\"\n| count",
+              "url": "http://${loxilb}/netlox/v1/config/bgp/neigh/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number BGP Neighbors",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 3,
+            "x": 15,
+            "y": 0
+          },
+          "id": 11,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"fwAttr\"\n| count\n",
+              "url": "http://${loxilb}/netlox/v1/config/firewall/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of ACL Tables",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Instance"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 114
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "VIP"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 133
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "State"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 190
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 6,
+            "x": 18,
+            "y": 0
+          },
+          "id": 6,
+          "options": {
+            "footer": {
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true,
+            "sortBy": []
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"Attr\"\n| project \"Instance\"=\"instance\",\"VIP\"=\"vip\",\"State\"=\"state\",\"Sync\"=\"sync\"\n",
+              "url": "http://${loxilb}/netlox/v1/config/cistate/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "HA State Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Number"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 253
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 7
+          },
+          "id": 15,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true,
+            "sortBy": []
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"portAttr\"\n| project \"Number\"=\"portNo\",\"Name\"=\"portName\",\"Link\"=\"portHardwareInformation.link\", \"MAC Address\"=\"portHardwareInformation.macAddress\", \"MTU\"=\"portHardwareInformation.mtu\"\n| order by \"Number\" asc\n",
+              "url": "http://${loxilb}/netlox/v1/config/port/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Port Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 16
+          },
+          "id": 16,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"ipAttr\"\n| mv-expand \"ip\"=\"ipAddress\"\n| project \"Name\"=\"dev\",\"IP Address\"=\"ip\",\"Sync\"=\"sync\"\n| order by \"Name\" desc\n\n",
+              "url": "http://${loxilb}/netlox/v1/config/ipv4address/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Interface Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 27
+          },
+          "id": 17,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"neighborAttr\"\n| project \"IP Address\"=\"ipAddress\",\"MAC Address\"=\"macAddress\",\"Interface\"=\"dev\"\n| order by \"IP Address\" asc",
+              "url": "http://${loxilb}/netlox/v1/config/neighbor/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "ARP Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 38
+          },
+          "id": 8,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"routeAttr\"\n| project \"Destination\"=\"destinationIPNet\",\"Flags\"=\"flags\",\"Bytes\"=\"statistic.bytes\",\"Packets\"=\"statistic.packets\"\n| order by \"Flags\" asc\n",
+              "url": "http://${loxilb}/netlox/v1/config/route/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Route Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 49
+          },
+          "id": 18,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"fdbAttr\"\n| project \"MAC Address\"=\"macAddress\",\"Interface\"=\"dev\"\n| order by \"MAC Address\" asc",
+              "url": "http://${loxilb}/netlox/v1/config/fdb/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "FDB Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 60
+          },
+          "id": 19,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"vlanAttr\"\n| mv-expand \"vlan\"=\"member\"\n| project \"VID\"=\"vid\", \"Name\"=\"dev\", \"Member_Port\"=\"vlan.dev\", \"Member_Tagging\"=\"vlan.tagged\", \"Rx_Bytes\"=\"vlanStatistic.inBytes\", \"Rx_Packets\"=\"vlanStatistic.inPackets\", \"Tx_Bytes\"=\"vlanStatistic.outBytes\", \"Tx_Packets\"=\"vlanStatistic.outPackets\"\n",
+              "url": "http://${loxilb}/netlox/v1/config/vlan/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "VLAN Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 71
+          },
+          "id": 12,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"bgpNeiAttr\"\n| project \"Remote AS\"=\"remoteAs\", \"IP Address\"=\"ipAddress\", \"State\"=\"state\", \"Up/Down Time\"=\"updowntime\"\n| order by \"Remote AS\" asc\n",
+              "url": "http://${loxilb}/netlox/v1/config/bgp/neigh/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "BGP Neighbor Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 82
+          },
+          "id": 21,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"fwAttr\"\n| project \"Match_Port\"=\"ruleArguments.portName\", \"Match_Protocol\"=\"ruleArguments.protocol\", \"Match_Source_IP\"=\"ruleArguments.sourceIP\", \"Match_Destination_IP\"=\"ruleArguments.destinationIP\", \"Match_Source_Port_Min\"=\"ruleArguments.minSourcePort\", \"Match_Source_Port_Max\"=\"ruleArguments.maxSourcePort\", \"Match_Destination_Port_Min\"=\"ruleArguments.minDestinationPort\", \"Match_Destination_Port_Max\"=\"ruleArguments.maxDestinationPort\", \"Action_Drop\"=\"opts.drop\", \"Action_Trap\"=\"opts.trap\", \"Action_Redirect\"=\"opts.redirect\", \"Action_Redirect_Port\"=\"opts.redirectPortName\", \"Action_Allow\"=\"opts.allow\", \"Action_Mark\"=\"opts.fwMark\"\n",
+              "url": "http://${loxilb}/netlox/v1/config/firewall/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "ACL Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 93
+          },
+          "id": 13,
+          "options": {
+            "footer": {
+              "enablePagination": false,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"Attr\"\n| project \"Instance\"=\"instance\", \"Source IP\"=\"sourceIP\", \"Destination IP\"=\"remoteIp\", \"Port\"=\"port\", \"Interval\"=\"interval\", \"Retry Counts\"=\"retryCount\", \"State\"=\"state\"\n",
+              "url": "http://${loxilb}/netlox/v1/config/bfd/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "BFD Table",
+          "type": "table"
+        }
+      ],
+      "refresh": false,
+      "schemaVersion": 37,
+      "style": "dark",
+      "tags": [],
+      "templating": {
+        "list": [
+          {
+            "current": {
+              "selected": false,
+              "text": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
+              "value": "loxilb-lb-service.kube-system.svc.cluster.local:11111"
+            },
+            "description": "loxilb",
+            "hide": 0,
+            "includeAll": false,
+            "label": "loxilb",
+            "multi": false,
+            "name": "loxilb",
+            "options": [
+              {
+                "selected": true,
+                "text": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
+                "value": "loxilb-lb-service.kube-system.svc.cluster.local:11111"
+              }
+            ],
+            "query": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
+            "queryValue": "",
+            "skipUrlSync": false,
+            "type": "custom"
+          }
+        ]
+      },
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "LoxiLB Network View",
+      "uid": "COYbD1AIa",
+      "version": 1,
+      "weekStart": ""
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-traffic-config
+  namespace: monitoring
+data:
+  traffic.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": {
+              "type": "grafana",
+              "uid": "-- Grafana --"
+            },
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "target": {
+              "limit": 100,
+              "matchAny": false,
+              "tags": [],
+              "type": "dashboard"
+            },
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 0,
+      "id": 3,
+      "links": [],
+      "liveNow": false,
+      "panels": [
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 0,
+            "y": 0
+          },
+          "id": 2,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"lbAttr\"\n| summarize \"total_count\"=count() by \"serviceArguments\"\n| project \"total_count\"\n",
+              "url": "http://${loxilb}/netlox/v1/config/loadbalancer/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of LB Policies",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 4,
+            "y": 0
+          },
+          "id": 8,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"Attr\"\n| count\n",
+              "url": "http://${loxilb}/netlox/v1/config/endpoint/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of LB Endpoints",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 8,
+            "y": 0
+          },
+          "id": 9,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"Attr\"\n| where \"currState\" == 'ok'\n| count\n",
+              "url": "http://${loxilb}/netlox/v1/config/endpoint/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of LB Healthy Endpoints",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 12,
+            "x": 12,
+            "y": 0
+          },
+          "id": 14,
+          "options": {
+            "footer": {
+              "enablePagination": false,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"Attr\"\n| project \"VIP\"=\"vip\", \"Instance\"=\"instance\",\"State\"=\"state\",\"Sync\"=\"sync\"\n| order by \"VIP\" asc\n",
+              "url": "http://${loxilb}/netlox/v1/config/cistate/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "HA State Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 0,
+            "y": 4
+          },
+          "id": 10,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"Attr\"\n| where \"currState\" != 'ok'\n| count\n",
+              "url": "http://${loxilb}/netlox/v1/config/endpoint/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of LB UnHealthy Endpoints",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 4,
+            "y": 4
+          },
+          "id": 11,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"polAttr\"\n| count\n",
+              "url": "http://${loxilb}/netlox/v1/config/policy/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of QoS Rules",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 8,
+            "y": 4
+          },
+          "id": 12,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "auto"
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"mirrAttr\"\n| count\n",
+              "url": "http://${loxilb}/netlox/v1/config/mirror/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Number of Mirror Rules",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 12,
+            "x": 12,
+            "y": 4
+          },
+          "id": 6,
+          "options": {
+            "footer": {
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "simple",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"Attr\"\n| project \"Name\"=\"name\",\"IP\"=\"hostName\",\"Probe Port\"=\"probePort\",\"Probe Type\"=\"probeType\",\"State\"=\"currState\"\n| order by \"Name\" asc\n",
+              "url": "http://${loxilb}/netlox/v1/config/params",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "LB Configuration Parameters",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 18,
+            "w": 12,
+            "x": 0,
+            "y": 8
+          },
+          "id": 18,
+          "options": {
+            "color": "blue",
+            "iteration": 7,
+            "labelSize": 14,
+            "monochrome": false,
+            "nodeColor": "grey",
+            "nodePadding": 30,
+            "nodeWidth": 30
+          },
+          "targets": [
+            {
+              "columns": [],
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"lb_rule_interaction_bytes\"\n| project \"Source\"=\"sip\",\"Service\"=\"service\",\"Destiantion\"=\"dip\",\"Traffic\"=\"value\"\n| order by \"Traffic\" desc\n| limit 10\n\n",
+              "url": "http://${loxilb}/netlox/v1/metrics/lbprocessedtraffic",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Top 10 Traffic pair ",
+          "type": "netsage-sankey-panel"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "gridPos": {
+            "h": 18,
+            "w": 12,
+            "x": 12,
+            "y": 8
+          },
+          "id": 20,
+          "targets": [
+            {
+              "columns": [],
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"nodes\"",
+              "url": "http://${loxilb}/netlox/v1/nodegraph/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            },
+            {
+              "columns": [],
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "hide": false,
+              "parser": "uql",
+              "refId": "B",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"edges\"",
+              "url": "http://${loxilb}/netlox/v1/nodegraph/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Service Graph",
+          "type": "nodeGraph"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "LB_Port"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 168
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 26
+          },
+          "id": 7,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true,
+            "sortBy": []
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"lbAttr\"\n| mv-expand \"endpoint\"=\"endpoints\"\n| project \"LB_VIP\"=\"serviceArguments.externalIP\", \"LB_Port\"=\"serviceArguments.port\", \"LB_Protocol\"=\"serviceArguments.protocol\", \"LB_Timeout\"=\"serviceArguments.inactiveTimeOut\", \"endpoint_ip\"=\"endpoint.endpointIP\", \"endpoint_targetPort\"=\"endpoint.targetPort\", \"endpoint_state\"=\"endpoint.state\", \"endpoint_weight\"=\"endpoint.weight\"\n",
+              "url": "http://${loxilb}/netlox/v1/config/loadbalancer/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "LB Policy Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 34
+          },
+          "id": 4,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"Attr\"\n| project \"Name\"=\"name\",\"IP\"=\"hostName\",\"Probe Port\"=\"probePort\",\"Probe Type\"=\"probeType\",\"State\"=\"currState\"\n| order by \"Name\" asc\n",
+              "url": "http://${loxilb}/netlox/v1/config/endpoint/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "LB Endpoint Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 11,
+            "w": 24,
+            "x": 0,
+            "y": 43
+          },
+          "id": 13,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"ctAttr\"\n| project \"Source IP\"=\"sourceIP\", \"Destination IP\"=\"destinationIP\", \"Source Port\"=\"sourcePort\", \"Destination Port\"=\"destinationPort\", \"Protocol\"=\"protocol\", \"Server Name\"=\"servName\", \"CT State\"=\"conntrackState\", \"CT Act\"=\"conntrackAct\", \"Bytes\"=\"bytes\", \"Packets\"=\"packets\"\n\n",
+              "url": "http://${loxilb}/netlox/v1/config/conntrack/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Connection Track Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 54
+          },
+          "id": 15,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"polAttr\"\n| project \"ID\"=\"policyIdent\",\"Type\"=\"policyInfo.type\",\"Committed Rate\"=\"policyInfo.committedInfoRate\", \"Peak Rate\"=\"policyInfo.peakInfoRate\", \"Block Size\"=\"policyInfo.committedBlkSize\", \"Excess Block Size\"=\"policyInfo.excessBlkSize\", \"Target Attachment\"=\"targetObject.attachment\", \"Target Policy Name\"=\"targetObject.polObjName\"\n| order by \"ID\" asc\n",
+              "url": "http://${loxilb}/netlox/v1/config/policy/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "QoS Configuration Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "infinity"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "filterable": true,
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 80
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 54
+          },
+          "id": 16,
+          "options": {
+            "footer": {
+              "enablePagination": true,
+              "fields": "",
+              "reducer": [
+                "sum"
+              ],
+              "show": false
+            },
+            "showHeader": true
+          },
+          "pluginVersion": "9.3.6",
+          "targets": [
+            {
+              "columns": [],
+              "data": "{\"lbAttr\":[{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"20.20.20.1\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.254\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}},{\"endpoints\":[{\"counter\":\"0:0\",\"endpointIP\":\"31.31.31.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"32.32.32.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1},{\"counter\":\"0:0\",\"endpointIP\":\"33.33.33.1\",\"state\":\"active\",\"targetPort\":8080,\"weight\":1}],\"secondaryIPs\":null,\"serviceArguments\":{\"externalIP\":\"10.10.10.3\",\"inactiveTimeOut\":240,\"port\":2020,\"protocol\":\"tcp\"}}]}\n",
+              "datasource": {
+                "type": "yesoreyeram-infinity-datasource",
+                "uid": "infinity"
+              },
+              "filters": [],
+              "format": "table",
+              "global_query_id": "",
+              "parser": "uql",
+              "refId": "A",
+              "root_selector": "",
+              "source": "url",
+              "type": "json",
+              "uql": "parse-json\n| scope \"mirrAttr\"\n| project \"ID\"=\"mirrorIdent\",\"Type\"=\"mirrorInfo.type\",\"Port\"=\"mirrorInfo.port\", \"VLAN\"=\"mirrorInfo.vlan\", \"Source IP\"=\"mirrorInfo.sourceIP\", \"Destination IP\"=\"mirrorInfo.remoteIP\", \"Tunnel ID\"=\"mirrorInfo.tunnelID\", \"Target Policy Name\"=\"targetObject.mirrObjName\"\n| order by \"ID\" asc\n",
+              "url": "http://${loxilb}/netlox/v1/config/mirror/all",
+              "url_options": {
+                "data": "",
+                "method": "GET"
+              }
+            }
+          ],
+          "title": "Mirror Configuration Table",
+          "type": "table"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "grafana-ds-loxilb-log"
+          },
+          "gridPos": {
+            "h": 14,
+            "w": 24,
+            "x": 0,
+            "y": 61
+          },
+          "id": 22,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": false,
+            "sortOrder": "Descending",
+            "wrapLogMessage": false
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "grafana-ds-loxilb-log"
+              },
+              "editorMode": "builder",
+              "expr": "{job=\"loxilb-app-logs\"} |= ``",
+              "key": "Q-1740d5c5-51a6-45f4-9ced-2ee4a6e90a47-0",
+              "queryType": "range",
+              "refId": "A"
+            }
+          ],
+          "title": "LoxiLB  Logs",
+          "type": "logs"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "grafana-ds-loxilb-log"
+          },
+          "gridPos": {
+            "h": 14,
+            "w": 24,
+            "x": 0,
+            "y": 75
+          },
+          "id": 24,
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "prettifyLogMessage": false,
+            "showCommonLabels": false,
+            "showLabels": false,
+            "showTime": false,
+            "sortOrder": "Descending",
+            "wrapLogMessage": false
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "grafana-ds-loxilb-log"
+              },
+              "editorMode": "builder",
+              "expr": "{job=\"kube-loxilb-app-logs\"} |= ``",
+              "key": "Q-33773988-6a94-4394-bb55-79ce1c6a604c-0",
+              "queryType": "range",
+              "refId": "A"
+            }
+          ],
+          "title": "Kube-LoxiLB Logs ",
+          "type": "logs"
+        }
+      ],
+      "refresh": false,
+      "schemaVersion": 37,
+      "style": "dark",
+      "tags": [],
+      "templating": {
+        "list": [
+          {
+            "current": {
+              "selected": false,
+              "text": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
+              "value": "loxilb-lb-service.kube-system.svc.cluster.local:11111"
+            },
+            "description": "loxilb",
+            "hide": 0,
+            "includeAll": false,
+            "label": "loxilb",
+            "multi": false,
+            "name": "loxilb",
+            "options": [
+              {
+                "selected": true,
+                "text": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
+                "value": "loxilb-lb-service.kube-system.svc.cluster.local:11111"
+              }
+            ],
+            "query": "loxilb-lb-service.kube-system.svc.cluster.local:11111",
+            "queryValue": "",
+            "skipUrlSync": false,
+            "type": "custom"
+          }
+        ]
+      },
+      "time": {
+        "from": "now-12h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "",
+      "title": "LoxiLB Traffic Management",
+      "uid": "g9ptK1ASa",
+      "version": 1,
+      "weekStart": ""
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana-llb
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana-llb
+  template:
+    metadata:
+      labels:
+        app: grafana-llb
+    spec:
+      containers:
+      - name: grafana-llb
+        image: grafana/grafana:9.3.6
+        ports:
+        - containerPort: 3000
+        env:
+        - name: GF_AUTH_ANONYMOUS_ENABLED
+          value: "false"  # Disable anonymous authentication
+        - name: GF_AUTH_DISABLE_LOGIN_FORM
+          value: "false"  # Enable login form
+        - name: GF_SECURITY_ADMIN_USER
+          value: "admin"  # Set admin username
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: grafana-admin-secret
+              key: admin-password  # Use a Kubernetes Secret for security
+        - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+          value: "Admin"
+        - name: GF_INSTALL_PLUGINS
+          value: "yesoreyeram-infinity-datasource,netsage-sankey-panel,https://storage.googleapis.com/integration-artifacts/grafana-lokiexplore-app/grafana-lokiexplore-app-latest.zip;grafana-lokiexplore-app"
+        - name: GF_FEATURE_TOGGLES_ENABLE
+          value: "accessControlOnCall lokiLogsDataplane"
+        volumeMounts:
+        - name: grafana-config
+          mountPath: /etc/grafana/grafana.ini
+          subPath: grafana.ini
+        - name: grafana-datasources
+          mountPath: /etc/grafana/provisioning/datasources/datasources.yml
+          subPath: datasources.yml
+        - name: grafana-dashboards
+          mountPath: /etc/grafana/provisioning/dashboards/dashboards.yml
+          subPath: dashboards.yml
+        - name: grafana-dashboard-json
+          mountPath: /var/lib/grafana/dashboards/dashboard.json
+          subPath: dashboard.json
+        - name: grafana-network-json
+          mountPath: /var/lib/grafana/dashboards/network.json
+          subPath: network.json
+        - name: grafana-traffic-json
+          mountPath: /var/lib/grafana/dashboards/traffic.json
+          subPath: traffic.json
+      volumes:
+      - name: grafana-config
+        configMap:
+          name: grafana-config
+          items:
+            - key: grafana.ini
+              path: grafana.ini
+      - name: grafana-datasources
+        configMap:
+          name: grafana-config
+          items:
+            - key: datasources.yml
+              path: datasources.yml
+      - name: grafana-dashboards
+        configMap:
+          name: grafana-config
+          items:
+            - key: dashboards.yml
+              path: dashboards.yml
+      - name: grafana-dashboard-json
+        configMap:
+          name: grafana-dashboard-config
+          items:
+            - key: dashboard.json
+              path: dashboard.json
+      - name: grafana-network-json
+        configMap:
+          name: grafana-network-config
+          items:
+            - key: network.json
+              path: network.json
+      - name: grafana-traffic-json
+        configMap:
+          name: grafana-traffic-config
+          items:
+            - key: traffic.json
+              path: traffic.json
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-svc
+  namespace: monitoring
+spec:
+  selector:
+    app: grafana-svc
+  ports:
+    - protocol: TCP
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-llb
+  namespace: monitoring
+  annotations:
+    loxilb.io/lbmode: "onearm"
+    loxilb.io/liveness: "yes"
+    loxilb.io/timeout: "36000"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: grafana-llb
+  ports:
+  - port: 59301
+    targetPort: 3000
+    protocol: TCP
+  sessionAffinity: None
