@@ -18,14 +18,12 @@ data:
     [analytics]
     reporting_enabled = false
     [auth.anonymous]
-    enabled = false
+    enabled = true
+    org_role = Admin
     [explore]
     enabled = true
     [users]
     default_theme = dark
-    [security]
-    admin_user = admin
-    admin_password = ${GF_SECURITY_ADMIN_PASSWORD}  # Use env variable for password
   datasources.yml: |
     apiVersion: 1
     datasources:
@@ -39,7 +37,7 @@ data:
       - name: Prometheus
         access: proxy
         type: prometheus
-        url: http://prometheus.monitoring.svc.cluster.local:9090
+        url: http://thanos-querier-llb.monitoring.svc.cluster.local:9090
         isDefault: true
         uid: grafana-ds-loxilb-metric
       - name: Infinity
