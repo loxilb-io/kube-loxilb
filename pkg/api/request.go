@@ -117,6 +117,11 @@ func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
 		req.Header.Set("Content-Type", l.contentType)
 	}
 
+	token, _ := GetAccessToken(l.client)
+	if token != "" {
+		req.Header.Set("Authorization", token)
+	}
+
 	resp, err := l.client.Client.Do(req)
 	if err != nil {
 		statusCode := 0

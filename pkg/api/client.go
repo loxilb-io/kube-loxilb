@@ -121,6 +121,8 @@ func NewLoxiClient(apiServer string, aliveCh chan *LoxiClient, deadCh chan struc
 		lc.InstRoles[instName] = &LoxiZoneInst{}
 	}
 
+	LoadTokenForHost(restClient.baseURL.Host)
+
 	lc.StartLoxiHealthCheckChan(aliveCh, deadCh)
 
 	klog.Infof("NewLoxiClient Created: %s", apiServer)
