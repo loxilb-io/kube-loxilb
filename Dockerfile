@@ -1,17 +1,19 @@
 FROM golang:1.23-alpine AS builder
 
-RUN apk update && apk add git && apk add make
+RUN apk update && apk add --no-cache git make
 
 WORKDIR /usr/src/app
 COPY . .
 
 RUN make build
 
-FROM golang:1.23
+FROM alpine:latest
+
+ARG GIT_VERSION
 
 LABEL name="kube-loxilb" \
       vendor="loxilb.io" \
-      version=$GIT_VERSION \
+      version=${GIT_VERSION:-unknown} \
       release="0.1" \
       summary="kube-loxilb docker image" \
       description="service-lb implementation for loxilb" \
