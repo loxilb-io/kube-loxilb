@@ -9,6 +9,8 @@ RUN make build
 
 FROM alpine:latest
 
+RUN apk update && apk add --no-cache ca-certificates
+
 ARG GIT_VERSION
 
 LABEL name="kube-loxilb" \
