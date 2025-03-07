@@ -7,7 +7,14 @@ COPY . .
 
 RUN make build
 
-FROM alpine:latest
+FROM ubuntu:22.04
+
+# Disable Prompt During Packages Installation
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends sudo wget \
+    net-tools ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && apt clean
 
 ARG GIT_VERSION
 
