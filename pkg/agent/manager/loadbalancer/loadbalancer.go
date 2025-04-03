@@ -2736,3 +2736,31 @@ func (m *Manager) DeleteLoxiCIDRPool(poolName string, cidr string) error {
 	klog.Infof("deleted cidr pool %s:%s", poolName, cidr)
 	return nil
 }
+
+func (m *Manager) compareLoxiLBToServiceList(ctx context.Context) error {
+	for _, c := range m.LoxiClients.Clients {
+		lbList, err := c.LoadBalancer().List(ctx)
+		if err != nil {
+			return err
+		}
+
+		for _, l := range lbList.Item {
+			var ns, name, inst string
+			fmt.Sscanf(l.Service.Name, "%s_%s:%s", &ns, &name, &inst)
+			if len(ns) == 0 || len(name) == 0 {
+				continue
+			}
+
+			_, err := m.serviceLister.Services(ns).Get(name)
+			if err != nil {
+				klog.Infof("LoxiLB has the %s/%s rule, but Kubernetes does not. The corresponding LoxiLB rule will be deleted.", ns, name)
+				if err := c.LoadBalancer().Delete(ctx, &l); err != nil {
+					klog.Errorf("Failed to delete LoxiLB rule %s: %v", l.Service.Name, err)
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
