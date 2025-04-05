@@ -16,8 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends sudo wget \
     net-tools ca-certificates && \
     rm -rf /var/lib/apt/lists/* && apt clean
 
-RUN apk update && apk add --no-cache ca-certificates
-
 ARG GIT_VERSION
 
 LABEL name="kube-loxilb" \
