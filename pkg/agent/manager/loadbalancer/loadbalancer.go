@@ -378,6 +378,8 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 		klog.V(4).Infof("Finished syncing LoadBalancer service %s. (%v)", lb.Name, time.Since(startTime))
 	}()
 
+	m.compareLoxiLBToK8sService(context.TODO())
+
 	svcNs := lb.Namespace
 	svcName := lb.Name
 	svc, err := m.serviceLister.Services(svcNs).Get(svcName)
@@ -2734,5 +2736,37 @@ func (m *Manager) DeleteLoxiCIDRPool(poolName string, cidr string) error {
 	}
 
 	klog.Infof("deleted cidr pool %s:%s", poolName, cidr)
+	return nil
+}
+
+func (m *Manager) compareLoxiLBToK8sService(ctx context.Context) error {
+	for _, c := range m.LoxiClients.Clients {
+
+		lbList, err := c.LoadBalancer().List(ctx)
+		if err != nil {
+			klog.Errorf("compareLoxiLBToServiceList: err: %v", err)
+			return err
+		}
+
+		for _, l := range lbList.Item {
+			lbSvcName := strings.FieldsFunc(l.Service.Name, func(r rune) bool { return r == '_' || r == ':' })
+
+			if len(lbSvcName) != 3 {
+				continue
+			}
+
+			ns := lbSvcName[0]
+			name := lbSvcName[1]
+			_, err := m.serviceLister.Services(ns).Get(name)
+			if err != nil {
+				klog.Infof("LoxiLB has the %s/%s rule, but Kubernetes does not. The corresponding LoxiLB rule will be deleted.", ns, name)
+				if err := c.LoadBalancer().Delete(ctx, &l); err != nil {
+					klog.Errorf("Failed to delete LoxiLB rule %s: %v", l.Service.Name, err)
+					return err
+				}
+			}
+		}
+	}
+
 	return nil
 }
