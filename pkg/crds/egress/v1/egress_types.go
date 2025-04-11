@@ -18,8 +18,9 @@ type Egress struct {
 }
 
 type EgressSpec struct {
-	Addresses []string `json:"addresses,omitempty"`
-	Vip       string   `json:"vip,omitempty"`
+	Addresses []string          `json:"addresses,omitempty"`
+	Vip       string            `json:"vip,omitempty"`
+	Selector  map[string]string `json:"selector,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
