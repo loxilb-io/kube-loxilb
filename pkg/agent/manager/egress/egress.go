@@ -46,6 +46,7 @@ const (
 	defaultWorkers = 4
 	minRetryDelay  = 2 * time.Second
 	maxRetryDelay  = 120 * time.Second
+	resyncPeriod   = 60 * time.Second
 )
 
 type Manager struct {
@@ -84,7 +85,7 @@ func NewEgressManager(
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "Egress"),
 	}
 
-	EgressInformer.Informer().AddEventHandler(
+	EgressInformer.Informer().AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(cur interface{}) {
 				manager.enqueueService(cur)
@@ -96,6 +97,7 @@ func NewEgressManager(
 				manager.enqueueService(old)
 			},
 		},
+		resyncPeriod,
 	)
 
 	return manager
@@ -210,7 +212,7 @@ func (m *Manager) addEgress(egress *crdv1.Egress) error {
 
 	// Create Loxilb firewall rule for egress
 	klog.V(4).Infof("Adding Egress %s/%s", egress.Namespace, egress.Name)
-	fwModels := m.makeLoxiFirewallModel(egress)
+	fwModels := m.makeLoxiFirewallModel(ctx, egress)
 	klog.V(4).Infof("Make LoxiLB Firewall Models for Egress %s/%s: %v", egress.Namespace, egress.Name, fwModels)
 	for _, fwModel := range fwModels {
 		if err := m.callLoxiFirewallCreateAPI(ctx, fwModel); err != nil {
@@ -226,7 +228,7 @@ func (m *Manager) deleteEgress(egress *crdv1.Egress) error {
 	defer cancel()
 
 	klog.V(4).Infof("Deleting Egress %s/%s", egress.Namespace, egress.Name)
-	fwModels := m.makeLoxiFirewallModel(egress)
+	fwModels := m.makeLoxiFirewallModel(ctx, egress)
 	klog.V(4).Infof("Make LoxiLB Firewall Models for Egress %s/%s: %v", egress.Namespace, egress.Name, fwModels)
 	for _, fwModel := range fwModels {
 		if err := m.callLoxiFirewallDeleteAPI(ctx, fwModel); err != nil {
@@ -237,9 +239,27 @@ func (m *Manager) deleteEgress(egress *crdv1.Egress) error {
 	return nil
 }
 
-func (m *Manager) makeLoxiFirewallModel(egress *crdv1.Egress) []*api.FwRuleMod {
+func (m *Manager) makeLoxiFirewallModel(ctx context.Context, egress *crdv1.Egress) []*api.FwRuleMod {
 	newFwModels := []*api.FwRuleMod{}
-	for _, address := range egress.Spec.Addresses {
+
+	addresses := egress.Spec.Addresses
+	if egress.Spec.Selector != nil && len(egress.Spec.Selector) > 0 {
+		selectorLabelStr := labels.Set(egress.Spec.Selector).String()
+		podList, err := m.kubeClient.CoreV1().Pods(egress.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
+		if err != nil {
+			return newFwModels
+		}
+
+		for _, pod := range podList.Items {
+			for _, ip := range pod.Status.PodIPs {
+				if ip.IP != "" {
+					addresses = append(addresses, ip.IP)
+				}
+			}
+		}
+	}
+
+	for _, address := range addresses {
 		cidrAddr := address
 		_, _, err := net.ParseCIDR(address)
 		if err != nil {

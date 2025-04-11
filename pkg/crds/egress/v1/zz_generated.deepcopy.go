@@ -94,6 +94,13 @@ func (in *EgressSpec) DeepCopyInto(out *EgressSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.Selector != nil {
+		in, out := &in.Selector, &out.Selector
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	return
 }
 

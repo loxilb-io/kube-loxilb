@@ -3,6 +3,9 @@ kind: Egress
 metadata:
   name: test-egress
 spec:
+  #selector: Label selector to select the Pods on which you want the egress rule applied
+  selector:
+    what: egress-test
   #address: IP list of the Pod on which you want the egress rule applied
   addresses:        
   - 10.42.1.2

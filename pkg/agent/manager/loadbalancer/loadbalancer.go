@@ -2749,9 +2749,12 @@ func (m *Manager) compareLoxiLBToK8sService(ctx context.Context) error {
 		}
 
 		for _, l := range lbList.Item {
-			lbSvcName := strings.FieldsFunc(l.Service.Name, func(r rune) bool { return r == '_' || r == ':' })
+			if l.Service.Snat {
+				continue
+			}
 
-			if len(lbSvcName) != 3 {
+			lbSvcName := strings.FieldsFunc(l.Service.Name, func(r rune) bool { return r == '_' || r == ':' })
+			if len(lbSvcName) != 3 || lbSvcName[0] == "snat" {
 				continue
 			}
 

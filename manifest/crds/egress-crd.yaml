@@ -45,6 +45,10 @@ spec:
                     type: string
                 vip:
                   type: string
+                selector:
+                  additionalProperties:
+                    type: string
+                  type: object
             status:
               description: EgressStatus defines the observed state of Egress
               type: object
