@@ -378,7 +378,8 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 		klog.V(4).Infof("Finished syncing LoadBalancer service %s. (%v)", lb.Name, time.Since(startTime))
 	}()
 
-	m.compareLoxiLBToK8sService(context.TODO())
+	// TODO: Needs to be verified.
+	m.compareLoxiLBToK8sService()
 
 	svcNs := lb.Namespace
 	svcName := lb.Name
@@ -2117,6 +2118,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 			tmploxilbClients = append(tmploxilbClients, client)
 		}
 	}
+
 	if len(tmploxilbClients) > 0 {
 		m.LoxiClients.Clients = append(m.LoxiClients.Clients, tmploxilbClients...)
 	}
@@ -2739,12 +2741,19 @@ func (m *Manager) DeleteLoxiCIDRPool(poolName string, cidr string) error {
 	return nil
 }
 
-func (m *Manager) compareLoxiLBToK8sService(ctx context.Context) error {
+func (m *Manager) compareLoxiLBToK8sService() error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	// Check if the LoxiLB rules are still valid
+	// and remove the ones that are not
+	// This is done by checking if the service still exists in Kubernetes
+	// and if not, delete the LoxiLB rule
 	for _, c := range m.LoxiClients.Clients {
 
 		lbList, err := c.LoadBalancer().List(ctx)
 		if err != nil {
-			klog.Errorf("compareLoxiLBToServiceList: err: %v", err)
+			klog.Errorf("compareLoxiLBToK8sService: err: %v", err)
 			return err
 		}
 
@@ -2762,7 +2771,7 @@ func (m *Manager) compareLoxiLBToK8sService(ctx context.Context) error {
 			name := lbSvcName[1]
 			_, err := m.serviceLister.Services(ns).Get(name)
 			if err != nil {
-				klog.Infof("LoxiLB has the %s/%s rule, but Kubernetes does not. The corresponding LoxiLB rule will be deleted.", ns, name)
+				klog.Infof("compareLoxiLBToK8sService: LoxiLB has the %s/%s rule, but Kubernetes does not. The corresponding LoxiLB rule will be deleted.", ns, name)
 				if err := c.LoadBalancer().Delete(ctx, &l); err != nil {
 					klog.Errorf("Failed to delete LoxiLB rule %s: %v", l.Service.Name, err)
 					return err
