@@ -378,6 +378,7 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 		klog.V(4).Infof("Finished syncing LoadBalancer service %s. (%v)", lb.Name, time.Since(startTime))
 	}()
 
+	// TODO: Needs to be verified.
 	m.compareLoxiLBToK8sService()
 
 	svcNs := lb.Namespace
