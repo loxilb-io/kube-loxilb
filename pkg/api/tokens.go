@@ -21,13 +21,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"k8s.io/klog/v2"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"k8s.io/klog/v2"
 )
 
 // TokenManager stores tokens for multiple hosts
@@ -104,9 +105,6 @@ func GetAccessToken(rc *RESTClient) (string, error) {
 
 // refreshTokenForHost refreshes the access token for a given host
 func refreshTokenForHost(rc *RESTClient) (string, error) {
-	tokenManager.mu.Lock()
-	defer tokenManager.mu.Unlock()
-
 	refreshToken := os.Getenv(fmt.Sprintf("REFRESH_TOKEN_%s", sanitizeHostEnv(rc.baseURL.Host)))
 	if refreshToken == "" {
 		return "", fmt.Errorf("missing refresh token for host %s", rc.baseURL.Host)
