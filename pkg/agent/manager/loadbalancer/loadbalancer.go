@@ -378,8 +378,7 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 		klog.V(4).Infof("Finished syncing LoadBalancer service %s. (%v)", lb.Name, time.Since(startTime))
 	}()
 
-	// TODO: Needs to be verified.
-	m.compareLoxiLBToK8sService()
+	//m.compareLoxiLBToK8sService()
 
 	svcNs := lb.Namespace
 	svcName := lb.Name
@@ -2750,7 +2749,6 @@ func (m *Manager) compareLoxiLBToK8sService() error {
 	// This is done by checking if the service still exists in Kubernetes
 	// and if not, delete the LoxiLB rule
 	for _, c := range m.LoxiClients.Clients {
-
 		lbList, err := c.LoadBalancer().List(ctx)
 		if err != nil {
 			klog.Errorf("compareLoxiLBToK8sService: err: %v", err)
@@ -2763,7 +2761,7 @@ func (m *Manager) compareLoxiLBToK8sService() error {
 			}
 
 			lbSvcName := strings.FieldsFunc(l.Service.Name, func(r rune) bool { return r == '_' || r == ':' })
-			if len(lbSvcName) != 3 || lbSvcName[0] == "snat" {
+			if len(lbSvcName) < 2 || lbSvcName[0] == "snat" {
 				continue
 			}
 
