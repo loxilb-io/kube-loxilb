@@ -30,6 +30,7 @@ import (
 	egressCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/egress-client/informers/externalversions"
 	crdInformer "github.com/loxilb-io/kube-loxilb/pkg/egress-client/informers/externalversions/egress/v1"
 	crdLister "github.com/loxilb-io/kube-loxilb/pkg/egress-client/listers/egress/v1"
+	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -47,6 +48,8 @@ const (
 	minRetryDelay  = 2 * time.Second
 	maxRetryDelay  = 120 * time.Second
 	resyncPeriod   = 60 * time.Second
+
+	LoxiMultusEgressAnnotation = "loxilb.io/multus-nets"
 )
 
 type Manager struct {
@@ -245,17 +248,32 @@ func (m *Manager) makeLoxiFirewallModel(ctx context.Context, egress *crdv1.Egres
 	addresses := egress.Spec.Addresses
 	if egress.Spec.Selector != nil && len(egress.Spec.Selector) > 0 {
 		selectorLabelStr := labels.Set(egress.Spec.Selector).String()
-		podList, err := m.kubeClient.CoreV1().Pods(egress.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
-		if err != nil {
-			return newFwModels
-		}
+		// Check if Multus is used
+		netListStr, ok := egress.Annotations[LoxiMultusEgressAnnotation]
+		if ok {
+			netList := strings.Split(netListStr, ",")
+			// TODO: support ipv6
+			multusAddresses, err := k8s.GetMultusEndpoints(m.kubeClient, egress.Namespace, selectorLabelStr, netList, "ipv4")
+			if err != nil {
+				klog.Errorf("failed to get multus endpoints - err: %v", err)
+				return newFwModels
+			}
+			addresses = append(addresses, multusAddresses...)
+			klog.V(4).Infof("Get Multus Endpoints for Egress %s/%s: %v", egress.Namespace, egress.Name, multusAddresses)
+		} else {
+			podList, err := m.kubeClient.CoreV1().Pods(egress.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
+			if err != nil {
+				return newFwModels
+			}
 
-		for _, pod := range podList.Items {
-			for _, ip := range pod.Status.PodIPs {
-				if ip.IP != "" {
-					addresses = append(addresses, ip.IP)
+			for _, pod := range podList.Items {
+				for _, ip := range pod.Status.PodIPs {
+					if ip.IP != "" {
+						addresses = append(addresses, ip.IP)
+					}
 				}
 			}
+			klog.V(4).Infof("Get Pod Endpoints for Egress %s/%s: %v", egress.Namespace, egress.Name, addresses)
 		}
 	}
 
