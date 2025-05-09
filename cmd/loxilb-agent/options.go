@@ -79,6 +79,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.config.NumZoneInst, "numZoneInstances", o.config.NumZoneInst, "Number of HA instances per zone")
 	fs.BoolVar(&o.config.UsePodNetwork, "usePodNetwork", o.config.UsePodNetwork, "direct traffic forwarding from the LoxiLB to pods without NodePort")
 	fs.BoolVar(&o.config.UseExternalEndpoint, "useExternalEndpoint", o.config.UseExternalEndpoint, "direct traffic forwarding from the LoxiLB to external endpoints")
+	fs.BoolVar(&o.config.NoZoneName, "noZoneName", o.config.NoZoneName, "Do not use the automatically appended zone name in the external IP of the Kubernetes service. (like llb)")
 }
 
 // complete completes all the required optionst
@@ -321,7 +322,11 @@ func (o *Options) setDefaults() {
 		o.config.ListenBGPPort = 179
 	}
 	if o.config.Zone == "" {
-		o.config.Zone = "llb"
+		if o.config.NoZoneName {
+			o.config.Zone = ""
+		} else {
+			o.config.Zone = "llb"
+		}
 	}
 	if o.config.NumZoneInst == 0 {
 		o.config.NumZoneInst = 1

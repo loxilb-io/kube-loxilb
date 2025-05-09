@@ -82,7 +82,7 @@ type LoadBalancerService struct {
 	BGP          bool     `json:"BGP" options:"bgp"`
 	Monitor      bool     `json:"Monitor"`
 	Timeout      uint32   `json:"inactiveTimeOut"`
-	Block        uint16   `json:"block" options:"block"`
+	Block        uint32   `json:"block" options:"block"`
 	Managed      bool     `json:"managed,omitempty"`
 	ProbeType    string   `json:"probetype"`
 	ProbePort    uint16   `json:"probeport"`
