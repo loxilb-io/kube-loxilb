@@ -378,7 +378,7 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 		klog.V(4).Infof("Finished syncing LoadBalancer service %s. (%v)", lb.Name, time.Since(startTime))
 	}()
 
-	//m.compareLoxiLBToK8sService()
+	m.compareLoxiLBToK8sService()
 
 	svcNs := lb.Namespace
 	svcName := lb.Name
@@ -1430,8 +1430,9 @@ func (m *Manager) getLocalEndpoints(svc *corev1.Service, addrType string) ([]str
 		return nil, errors.New("not found multus annotations")
 	}
 	netList := strings.Split(netListStr, ",")
+	selectorLabelStr := labels.Set(svc.Spec.Selector).String()
 
-	return k8s.GetMultusEndpoints(m.kubeClient, svc, netList, addrType)
+	return k8s.GetMultusEndpoints(m.kubeClient, svc.Namespace, selectorLabelStr, netList, addrType)
 }
 
 // getMultusEndpoints returns the IP list of the Pods connected to the multus network.
@@ -1441,8 +1442,8 @@ func (m *Manager) getMultusEndpoints(svc *corev1.Service, addrType string) ([]st
 		return nil, errors.New("not found multus annotations")
 	}
 	netList := strings.Split(netListStr, ",")
-
-	return k8s.GetMultusEndpoints(m.kubeClient, svc, netList, addrType)
+	selectorLabelStr := labels.Set(svc.Spec.Selector).String()
+	return k8s.GetMultusEndpoints(m.kubeClient, svc.Namespace, selectorLabelStr, netList, addrType)
 }
 
 func (m *Manager) getNodeAddress(node corev1.Node, addrType string) (string, error) {

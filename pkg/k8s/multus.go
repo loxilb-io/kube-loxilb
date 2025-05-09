@@ -21,12 +21,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	clientset "k8s.io/client-go/kubernetes"
 	"strings"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientset "k8s.io/client-go/kubernetes"
 )
 
 type dnsIf interface{}
@@ -83,14 +82,13 @@ func GetMultusNetworkStatus(ns, name string) (networkStatus, error) {
 	return networkStatus{}, fmt.Errorf("not found %s network", name)
 }
 
-func GetMultusEndpoints(kubeClient clientset.Interface, svc *corev1.Service, netList []string, addrType string) ([]string, error) {
+func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr string, netList []string, addrType string) ([]string, error) {
 	var epList []string
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
-	selectorLabelStr := labels.Set(svc.Spec.Selector).String()
-	podList, err := kubeClient.CoreV1().Pods(svc.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
+	podList, err := kubeClient.CoreV1().Pods(svcNs).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
 	if err != nil {
 		return epList, err
 	}
