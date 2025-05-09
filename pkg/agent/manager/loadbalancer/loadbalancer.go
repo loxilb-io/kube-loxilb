@@ -214,7 +214,11 @@ func GenSPKey(IPString string, Port uint16, Protocol string) string {
 
 func (m *Manager) genExtIPName(ipStr string) []string {
 	var hosts []string
-	prefix := m.networkConfig.Zone + "-"
+
+	prefix := ""
+	if m.networkConfig.Zone != "" {
+		prefix = m.networkConfig.Zone + "-"
+	}
 
 	IP := net.ParseIP(ipStr)
 	if IP != nil {

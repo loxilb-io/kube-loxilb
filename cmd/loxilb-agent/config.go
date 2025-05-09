@@ -81,4 +81,6 @@ type AgentConfig struct {
 	UsePodNetwork bool `yaml:"usePodNetwork,omitempty"`
 	// If true, direct traffic forwarding from the LoxiLB to external endpoints
 	UseExternalEndpoint bool `yaml:"useExternalEndpoint,omitempty"`
+	// If true, do not use the automatically appended zone name in the external IP of the Kubernetes service.
+	NoZoneName bool `yaml:"noZoneName,omitempty"`
 }
