@@ -33,6 +33,7 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/gatewayapi"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loxiurl"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/meta"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	bgpCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions"
 	egressCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/egress-client/informers/externalversions"
@@ -259,6 +260,13 @@ func run(o *Options) error {
 		loxilbClients,
 	)
 
+	metaMgr := meta.NewMetaManager(
+		k8sClient,
+		networkConfig,
+		informerFactory,
+		loxilbClients,
+	)
+
 	go func() {
 		for {
 			select {
@@ -303,6 +311,7 @@ func run(o *Options) error {
 
 	go loxilbURLMgr.Start(loxilbURLInformerFactory, stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 	go egressMgr.Start(egressInformerFactory, stopCh)
+	go metaMgr.Run(stopCh)
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {

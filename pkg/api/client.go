@@ -230,6 +230,10 @@ func (l *LoxiClient) Firewall() *FirewallAPI {
 	return newFirewallAPI(l.GetRESTClient())
 }
 
+func (l *LoxiClient) K8sMeta() *K8sMetaAPI {
+	return newK8sMetaAPI(l.GetRESTClient())
+}
+
 func (l *LoxiClient) GetRESTClient() *RESTClient {
 	if l == nil {
 		return nil
