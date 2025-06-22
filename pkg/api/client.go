@@ -170,7 +170,7 @@ func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh c
 	l.IsAlive = false
 
 	go wait.Until(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*3)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*1)
 		if _, err := l.HealthCheck().Get(ctx, ""); err != nil {
 			if l.IsAlive {
 				klog.Infof("LoxiHealthCheckChan: loxilb-lb(%s) is down", l.Host)
