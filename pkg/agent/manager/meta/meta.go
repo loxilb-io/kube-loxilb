@@ -161,9 +161,13 @@ func (m *Manager) worker() {
 }
 
 func (m *Manager) createServiceMetaData(svc *corev1.Service) api.ServiceMetadata {
-	externalIP := svc.Status.LoadBalancer.Ingress[0].Hostname
-	if externalIP == "" {
-		externalIP = svc.Status.LoadBalancer.Ingress[0].IP
+
+	externalIP := ""
+	if svc.Status.LoadBalancer.Ingress != nil && len(svc.Status.LoadBalancer.Ingress) != 0 {
+		externalIP = svc.Status.LoadBalancer.Ingress[0].Hostname
+		if externalIP == "" {
+			externalIP = svc.Status.LoadBalancer.Ingress[0].IP
+		}
 	}
 
 	svcMeta := api.ServiceMetadata{
