@@ -416,9 +416,13 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	// Check for loxilb specific annotation - Multus Networks
 	_, needMultusEP := svc.Annotations[LoxiMultusServiceAnnotation]
-	if lbClassName == nil && !needMultusEP {
-		klog.V(4).Infof("service %s/%s missing loadBalancerClass & multus annotation", svc.Namespace, svc.Name)
-		return nil
+	if lbClassName == nil || strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 {
+		klog.V(4).Infof("service %s/%s missing loadBalancerClass", svc.Namespace, svc.Name)
+		if needMultusEP {
+			klog.V(4).Infof("but has multus annotation. so processing it")
+		} else {
+			return nil
+		}
 	}
 
 	var secIPs []string
@@ -443,10 +447,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	overrideZoneInst := ""
 	enProxyProtov2 := false
 	isEgress := false
-
-	if strings.Compare(*lbClassName, m.networkConfig.LoxilbLoadBalancerClass) != 0 && !needMultusEP {
-		return nil
-	}
 
 	// Check for loxilb specific annotations - Addressing
 	if lba := svc.Annotations[lbAddressAnnotation]; lba != "" {
