@@ -281,7 +281,17 @@ func (m *Manager) makeLoxiFirewallModel(ctx context.Context, egress *crdv1.Egres
 		cidrAddr := address
 		_, _, err := net.ParseCIDR(address)
 		if err != nil {
-			cidrAddr = address + "/32"
+			ip := net.ParseIP(address)
+			if ip != nil {
+				if ip.To4() == nil {
+					cidrAddr = address + "/128"
+				} else {
+					cidrAddr = address + "/32"
+				}
+			} else {
+				klog.Errorf("failed to parse IP address %s - err: %v", address, err)
+				continue
+			}
 		}
 		newFwModel := &api.FwRuleMod{
 			Rule: api.FwRuleArg{
