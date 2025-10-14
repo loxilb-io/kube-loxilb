@@ -4,9 +4,12 @@ metadata:
   name: test-egress
 spec:
   #selector: Label selector to select the Pods on which you want the egress rule applied
+  #  selector can be used independently without spec.addresses. 
+  #  In this case, it finds pods matching the selector and adds their IPs as targets for egress rules.
   selector:
     what: egress-test
   #address: IP list of the Pod on which you want the egress rule applied
+  #  IP supports the following formats: 10.42.0.1, 10.42.0.0/24, and IPv6 also
   addresses:        
   - 10.42.1.2
   - 10.42.0.5
