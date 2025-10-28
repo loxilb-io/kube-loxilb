@@ -85,7 +85,7 @@ func GetMultusNetworkStatus(ns, name string) (networkStatus, error) {
 func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr string, netList []string, addrType string) ([]string, error) {
 	var epList []string
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 	defer cancel()
 
 	podList, err := kubeClient.CoreV1().Pods(svcNs).List(ctx, metav1.ListOptions{LabelSelector: selectorLabelStr})
@@ -103,6 +103,10 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 	}
 
 	for _, pod := range podList.Items {
+		if pod.Spec.HostNetwork {
+			continue
+		}
+
 		multusNetworkListStr, ok := pod.Annotations["k8s.v1.cni.cncf.io/networks"]
 		if !ok {
 			continue
@@ -115,7 +119,7 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 
 		networkStatusListStr, ok := pod.Annotations["k8s.v1.cni.cncf.io/network-status"]
 		if !ok {
-			return epList, errors.New("net found k8s.v1.cni.cncf.io/network-status annotation")
+			return epList, errors.New("not found k8s.v1.cni.cncf.io/network-status annotation.")
 		}
 
 		networkStatusList, err := UnmarshalNetworkStatus(networkStatusListStr)
@@ -124,13 +128,21 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 		}
 
 		for _, mNet := range podNetList {
-			if !contain(netList, mNet.Name) {
+			podMultusNetNamespace := pod.Namespace
+			podMultusNetName := mNet.Name
+			// format of netList and podMultusNetName: <namespace>/<network-name>
+			// if namespace is not specified, use pod's namespace
+			if !strings.Contains(mNet.Name, "/") {
+				podMultusNetName = fmt.Sprintf("%s/%s", podMultusNetNamespace, podMultusNetName)
+			}
+
+			// check if podMultusNetName is in netList
+			if !contain(netList, podMultusNetName) {
 				continue
 			}
 
-			netName := GetMultusNetworkName(pod.Namespace, mNet.Name)
 			for _, ns := range networkStatusList {
-				if ns.Name == netName {
+				if ns.Name == podMultusNetName {
 					if len(ns.Ips) > 0 {
 						for _, ip := range ns.Ips {
 							if AddrInFamily(addrType, ip) {

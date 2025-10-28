@@ -18,10 +18,11 @@ package main
 
 import (
 	"flag"
-	"k8s.io/component-base/logs"
-	"k8s.io/klog/v2"
 	"os"
 	"os/exec"
+
+	"k8s.io/component-base/logs"
+	"k8s.io/klog/v2"
 
 	"github.com/spf13/cobra"
 
@@ -87,7 +88,7 @@ func newAgentCommand() *cobra.Command {
 	opts := newOptions()
 
 	cmd := &cobra.Command{
-		Use:  "loxilb-agent",
+		Use:  "kube-loxilb",
 		Long: "The loxilb agent runs on each node.",
 		Run: func(cmd *cobra.Command, args []string) {
 			log.InitLogFileLimits(cmd.Flags())
