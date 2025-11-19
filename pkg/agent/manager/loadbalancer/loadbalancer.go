@@ -1017,6 +1017,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	privateIP, _, _ := net.ParseCIDR(m.networkConfig.PrivateCIDR)
+	if _, isStaticIP := svc.Annotations[staticIPAnnotation]; isStaticIP {
+		privateIP = nil
+	}
+
 	for _, ingSvcPair := range ingSvcPairs {
 		var errChList []chan error
 		lbArgs := LbArgs{
