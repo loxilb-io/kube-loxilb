@@ -36,6 +36,7 @@ import (
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -100,6 +101,8 @@ type Manager struct {
 	nodeInformer        coreinformers.NodeInformer
 	nodeLister          corelisters.NodeLister
 	nodeListerSynced    cache.InformerSynced
+	endpointSliceLister discoverylisters.EndpointSliceLister
+	endpointSliceSynced cache.InformerSynced
 	ElectionRunOnce     bool
 	queue               workqueue.RateLimitingInterface
 	lbCache             LbCacheTable
@@ -255,6 +258,8 @@ func NewLoadBalancerManager(
 
 	serviceInformer := informerFactory.Core().V1().Services()
 	nodeInformer := informerFactory.Core().V1().Nodes()
+	endpointSliceInformer := informerFactory.Discovery().V1().EndpointSlices()
+
 	manager := &Manager{
 		kubeClient:          kubeClient,
 		LoxiClients:         loxiClients,
@@ -268,6 +273,8 @@ func NewLoadBalancerManager(
 		nodeInformer:        nodeInformer,
 		nodeLister:          nodeInformer.Lister(),
 		nodeListerSynced:    nodeInformer.Informer().HasSynced,
+		endpointSliceLister: endpointSliceInformer.Lister(),
+		endpointSliceSynced: endpointSliceInformer.Informer().HasSynced,
 		instAddrApplyCh:     make(chan struct{}),
 		loxiInstAddrMap:     make(map[string]net.IP),
 		zoneInstRoleMap:     make(map[string]*LoxiInstRole),
@@ -338,7 +345,8 @@ func (m *Manager) Run(stopCh <-chan struct{}) {
 		mgrName,
 		stopCh,
 		m.serviceListerSynced,
-		m.nodeListerSynced) {
+		m.nodeListerSynced,
+		m.endpointSliceSynced) {
 		return
 	}
 
@@ -1403,7 +1411,7 @@ func (m *Manager) getEndpoints(svc *corev1.Service, usePodNet, useExternalEndpoi
 
 	if usePodNet || useExternalEndpoint {
 		klog.V(4).Infof("usePodNet: %v. useExternalEndpoint: %v", usePodNet, useExternalEndpoint)
-		return k8s.GetServiceEndPoints(m.kubeClient, svc, addrType, matchNodeList)
+		return k8s.GetServiceEndPointsWithLister(m.endpointSliceLister, svc, addrType, matchNodeList)
 		//return k8s.GetServicePodEndpoints(m.kubeClient, svc, addrType, matchNodeList)
 	}
 
@@ -1523,7 +1531,7 @@ func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, end
 		loxiEndpointModelList := []api.LoadBalancerEndpoint{}
 		var tports []int
 		var err error
-		tports, err = k8s.GetServiceEndPointsPorts(m.kubeClient, svc)
+		tports, err = k8s.GetServiceEndPointsPortsWithLister(m.endpointSliceLister, svc)
 		if err != nil {
 			return true
 		}
@@ -1938,7 +1946,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 					return api.LoadBalancerModel{}, err
 				}
 			} else if lbArgs.useExternalEndpoint {
-				tports, err = k8s.GetServiceEndPointsPorts(m.kubeClient, svc)
+				tports, err = k8s.GetServiceEndPointsPortsWithLister(m.endpointSliceLister, svc)
 				if err != nil {
 					return api.LoadBalancerModel{}, err
 				}
@@ -2084,7 +2092,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 
 	// DNS lookup (not used now)
 	// ips, err := net.LookupIP("loxilb-lb-service")
-	ips, err := k8s.GetLoxilbServiceEndPoints(m.kubeClient, "loxilb-lb-service", "", matchNodeList)
+	ips, err := k8s.GetLoxilbServiceEndPointsWithLister(m.endpointSliceLister, "loxilb-lb-service", "", matchNodeList)
 	if err != nil {
 		klog.Infof("loxilb-service failed: %s", err)
 		ips = []string{}
@@ -2145,7 +2153,7 @@ func (m *Manager) DiscoverLoxiLBServices(loxiLBAliveCh chan *api.LoxiClient, lox
 
 func (m *Manager) DiscoverLoxiLBPeerServices(loxiLBAliveCh chan *api.LoxiClient, loxiLBDeadCh chan struct{}, loxiLBPurgeCh chan *api.LoxiClient) {
 	var tmploxilbPeerClients []*api.LoxiClient
-	ips, err := k8s.GetLoxilbServiceEndPoints(m.kubeClient, "loxilb-peer-service", "", []string{})
+	ips, err := k8s.GetLoxilbServiceEndPointsWithLister(m.endpointSliceLister, "loxilb-peer-service", "", []string{})
 	if len(ips) > 0 {
 		klog.Infof("loxilb-peer-service end-points:  %v", ips)
 	}

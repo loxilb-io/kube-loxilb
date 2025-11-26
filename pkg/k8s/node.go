@@ -20,27 +20,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"time"
+
 	tk "github.com/loxilb-io/loxilib"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	clientset "k8s.io/client-go/kubernetes"
-	"net"
-	"time"
 )
 
 // GetNodeAddr gets the available IP address of a Node.
 // GetNodeAddr will first try to get the NodeInternalIP, then try to get the NodeExternalIP.
-func GetNodeAddr(node *v1.Node) (net.IP, error) {
-	addresses := make(map[v1.NodeAddressType]string)
+func GetNodeAddr(node *corev1.Node) (net.IP, error) {
+	addresses := make(map[corev1.NodeAddressType]string)
 	for _, addr := range node.Status.Addresses {
 		addresses[addr.Type] = addr.Address
 	}
 	var ipAddrStr string
-	if internalIP, ok := addresses[v1.NodeInternalIP]; ok {
+	if internalIP, ok := addresses[corev1.NodeInternalIP]; ok {
 		ipAddrStr = internalIP
-	} else if externalIP, ok := addresses[v1.NodeExternalIP]; ok {
+	} else if externalIP, ok := addresses[corev1.NodeExternalIP]; ok {
 		ipAddrStr = externalIP
 	} else {
 		return nil, fmt.Errorf("node %s has neither external ip nor internal ip", node.Name)
