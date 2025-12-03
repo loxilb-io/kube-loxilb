@@ -270,11 +270,15 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 
 	svc, err := gm.createIngressLbService(ctx, newGw)
 	if err != nil {
-		klog.Errorf("gateway %s/%s failed to create service.", updatedGw.Namespace, updatedGw.Name)
+		klog.Errorf("gateway %s/%s failed to create service. err: %v", updatedGw.Namespace, updatedGw.Name, err)
 		return err
 	}
 
-	klog.Infof("gateway %s/%s is assigned an IP %v and created a service %s/%s.", updatedGw.Namespace, updatedGw.Name, updatedGw.Status.Addresses, svc.Namespace, svc.Name)
+	if svc != nil {
+		klog.Infof("gateway %s/%s is assigned an IP %v and created a service %s/%s.", updatedGw.Namespace, updatedGw.Name, updatedGw.Status.Addresses, svc.Namespace, svc.Name)
+	} else {
+		klog.Infof("gateway %s/%s is assigned an IP %v (no service created - no HTTP/HTTPS listeners).", updatedGw.Namespace, updatedGw.Name, updatedGw.Status.Addresses)
+	}
 	klog.Infof("gateway %s/%s is created.", updatedGw.Namespace, updatedGw.Name)
 	return nil
 }
@@ -306,6 +310,17 @@ func (gm *GatewayManager) deleteIngressLbService(ctx context.Context, gwNs, gwNa
 	return nil
 }
 
+// createIngressLbService creates a LoadBalancer Service for the Gateway.
+// It extracts HTTP/HTTPS listeners from the Gateway spec and creates corresponding service ports.
+// Service is only created if there are HTTP or HTTPS protocol listeners.
+//
+// Port mapping:
+//   - Service Port: Uses the port specified in the listener (defaults to 80 for HTTP, 443 for HTTPS)
+//   - TargetPort: Always uses standard ports (80 for HTTP, 443 for HTTPS)
+//
+// Returns:
+//   - *corev1.Service: The created or existing Service, or nil if no HTTP/HTTPS listeners exist
+//   - error: Any error encountered during service creation
 func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v1.Gateway) (*corev1.Service, error) {
 	newService := corev1.Service{}
 	newService.Name = fmt.Sprintf("%s-ingress-service", gateway.Name)
@@ -318,6 +333,40 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 
 	if len(gateway.Spec.Addresses) == 0 {
 		return nil, fmt.Errorf("gateway has no external IP address")
+	}
+
+	// Extract HTTP/HTTPS listeners and their ports
+	var servicePorts []corev1.ServicePort
+	for _, listener := range gateway.Spec.Listeners {
+		if listener.Protocol == v1.HTTPProtocolType {
+			port := int32(httpPort) // default 80
+			if listener.Port != 0 {
+				port = int32(listener.Port)
+			}
+			servicePorts = append(servicePorts, corev1.ServicePort{
+				Name:       string(listener.Name),
+				Port:       port,
+				TargetPort: intstr.FromInt(httpPort), // Always use default HTTP port 80
+				Protocol:   corev1.ProtocolTCP,
+			})
+		} else if listener.Protocol == v1.HTTPSProtocolType {
+			port := int32(httpsPort) // default 443
+			if listener.Port != 0 {
+				port = int32(listener.Port)
+			}
+			servicePorts = append(servicePorts, corev1.ServicePort{
+				Name:       string(listener.Name),
+				Port:       port,
+				TargetPort: intstr.FromInt(httpsPort), // Always use default HTTPS port 443
+				Protocol:   corev1.ProtocolTCP,
+			})
+		}
+	}
+
+	// If no HTTP/HTTPS listeners found, don't create service
+	if len(servicePorts) == 0 {
+		klog.Infof("gateway %s/%s has no HTTP/HTTPS listeners, skipping service creation", gateway.Namespace, gateway.Name)
+		return nil, nil
 	}
 
 	newService.SetAnnotations(gateway.Annotations)
@@ -337,23 +386,12 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	newService.Spec.Type = corev1.ServiceTypeLoadBalancer
 	newService.Spec.LoadBalancerClass = &loadBalancerClass
 	newService.Spec.LoadBalancerIP = gateway.Status.Addresses[0].Value
-	newService.Spec.Ports = []corev1.ServicePort{
-		{
-			Name:       "http",
-			Port:       int32(httpPort),
-			TargetPort: intstr.FromInt(httpPort),
-		},
-		{
-			Name:       "https",
-			Port:       int32(httpsPort),
-			TargetPort: intstr.FromInt(httpsPort),
-		},
-	}
+	newService.Spec.Ports = servicePorts
 
 	if newService.Spec.Selector == nil {
 		newService.Spec.Selector = map[string]string{}
 	}
-	newService.Spec.Selector["app"] = "loxilb-ingress-app"
+	newService.Spec.Selector["app"] = "loxilb-ingress"
 
 	svc, err = gm.kubeClient.CoreV1().Services(newService.Namespace).Create(ctx, &newService, metav1.CreateOptions{})
 	if err != nil {
