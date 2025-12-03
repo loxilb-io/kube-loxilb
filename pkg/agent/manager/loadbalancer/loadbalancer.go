@@ -42,6 +42,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/common"
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
@@ -216,33 +217,9 @@ func GenSPKey(IPString string, Port uint16, Protocol string) string {
 }
 
 func (m *Manager) genExtIPName(ipStr string) []string {
-	var hosts []string
-
-	prefix := ""
-	if m.networkConfig.Zone != "" {
-		prefix = m.networkConfig.Zone + "-"
-	}
-
-	IP := net.ParseIP(ipStr)
-	if IP != nil {
-		if IP.IsUnspecified() {
-			m.mtx.Lock()
-			defer m.mtx.Unlock()
-			if len(m.loxiInstAddrMap) <= 0 {
-				return []string{"llbanyextip"}
-			} else {
-				for _, host := range m.loxiInstAddrMap {
-					hosts = append(hosts, host.String())
-				}
-			}
-			return hosts
-		}
-	}
-	if tk.IsNetIPv6(ipStr) {
-		ipStrSlice := strings.Split(ipStr, ":")
-		ipStr = strings.Join(ipStrSlice, "-")
-	}
-	return []string{prefix + ipStr}
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	return common.GenExtIPName(m.networkConfig.Zone, m.loxiInstAddrMap, ipStr)
 }
 
 // Create and Init Manager.
@@ -1024,10 +1001,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("Secondary IP Pairs %v", m.lbCache[cacheKey].SecIPs)
 	}
 
-	privateIP, _, _ := net.ParseCIDR(m.networkConfig.PrivateCIDR)
-	if _, isStaticIP := svc.Annotations[staticIPAnnotation]; isStaticIP {
-		privateIP = nil
-	}
+	// Get private IP for the service (respects staticIP annotation)
+	privateIPStr := m.getServicePrivateIP(svc)
 
 	for _, ingSvcPair := range ingSvcPairs {
 		var errChList []chan error
@@ -1052,8 +1027,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
-		if privateIP != nil {
-			lbArgs.privateIP = privateIP.String()
+		if privateIPStr != "" {
+			lbArgs.privateIP = privateIPStr
 		}
 
 		sp := LbServicePairEntry{
@@ -1674,36 +1649,23 @@ func (m *Manager) getServiceIngressIPs(service *corev1.Service) []string {
 				ingressIP = ingress.IP
 			}
 		} else if ingress.Hostname != "" {
-			if ingress.Hostname == "llbanyextip" || hasZeroCIDR {
+			if hasZeroCIDR {
 				ingressIP = "0.0.0.0"
 			} else {
-				llbHost := strings.Split(ingress.Hostname, "-")
-
-				if len(llbHost) < 2 {
-					if net.ParseIP(llbHost[0]) != nil {
-						ingressIP = llbHost[0]
-					}
+				// Use common ParseIngressHostname utility
+				parsedIP := common.ParseIngressHostname(ingress.Hostname, m.networkConfig.Zone)
+				if parsedIP != "" {
+					ingressIP = parsedIP
 				} else {
-					if llbHost[0] == m.networkConfig.Zone {
-						if net.ParseIP(llbHost[1]) != nil {
-							ingressIP = llbHost[1]
-						} else if len(llbHost) > 2 {
-							ipStrSlice := llbHost[1:]
-							if len(ipStrSlice) > 0 {
-								ipStr := strings.Join(ipStrSlice, ":")
-								if net.ParseIP(ipStr) != nil {
-									ingressIP = ipStr
-								}
-							}
-						}
-					} else {
-						continue
-					}
+					// If parsing failed and zone doesn't match, skip this ingress
+					continue
 				}
 			}
 		}
 
-		ingressIPs = append(ingressIPs, ingressIP)
+		if ingressIP != "" {
+			ingressIPs = append(ingressIPs, ingressIP)
+		}
 	}
 
 	return ingressIPs
@@ -1719,6 +1681,26 @@ func (m *Manager) getServiceLoxiStaticIP(service *corev1.Service) string {
 			klog.Errorf("%s annotation has invalid IP (%s)", staticIPAnnotation, staticIPStr)
 		} else {
 			return staticIPStr
+		}
+	}
+
+	return ""
+}
+
+// getServicePrivateIP returns the private IP for the service.
+// If the service has a staticIP annotation, it returns an empty string (ignoring privateCIDR).
+// Otherwise, it returns the privateCIDR IP if configured.
+func (m *Manager) getServicePrivateIP(service *corev1.Service) string {
+	// If service has staticIP annotation, ignore privateCIDR
+	if _, isStaticIP := service.Annotations[staticIPAnnotation]; isStaticIP {
+		return ""
+	}
+
+	// Parse and return privateCIDR if configured
+	if m.networkConfig.PrivateCIDR != "" {
+		privateIP, _, err := net.ParseCIDR(m.networkConfig.PrivateCIDR)
+		if err == nil && privateIP != nil {
+			return privateIP.String()
 		}
 	}
 

@@ -216,11 +216,11 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 		if gw.Labels == nil {
 			gw.Labels = make(map[string]string)
 		}
-		gw.Labels["ipam-address"] = newIP.String()
 		gw.Labels["implementation"] = implementation
 		if gw.Annotations == nil {
 			gw.Annotations = make(map[string]string)
 		}
+		gw.Annotations["ipam-address"] = newIP.String()
 		gw.Annotations["ident-ipam"] = identIPAM
 
 		updatedGw, err = gm.sigsClient.GatewayV1().Gateways(gw.Namespace).Update(ctx, gw, metav1.UpdateOptions{})
@@ -327,9 +327,9 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 
 	newService.Annotations["gateway-api-controller"] = gm.networkConfig.LoxilbGatewayClass
 	newService.Annotations["parent-gateway"] = gateway.Name
+	newService.Annotations["ipam-address"] = gateway.Spec.Addresses[0].Value
 
 	newService.SetLabels(map[string]string{
-		"ipam-address":   gateway.Spec.Addresses[0].Value,
 		"implementation": implementation,
 	})
 
