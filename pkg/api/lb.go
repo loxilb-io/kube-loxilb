@@ -48,6 +48,34 @@ const (
 	LBOPDetach
 )
 
+type BackendProtocolType string
+
+const (
+	// BackendProtocolHTTP1 - HTTP/1.1 protocol
+	BackendProtocolHTTP1 BackendProtocolType = "http1"
+	// BackendProtocolHTTP2 - HTTP/2 protocol
+	BackendProtocolHTTP2 BackendProtocolType = "http2"
+)
+
+// IsValid checks if the backend protocol is valid
+func (b BackendProtocolType) IsValid() bool {
+	return b == "" || b == BackendProtocolHTTP1 || b == BackendProtocolHTTP2
+}
+
+type PathMatchModeType string
+
+const (
+	// PathMatchModePrefix - prefix match mode
+	PathMatchModePrefix PathMatchModeType = "prefix"
+	// PathMatchModeExact - exact match mode
+	PathMatchModeExact PathMatchModeType = "exact"
+)
+
+// IsValid checks if the path match mode is valid
+func (p PathMatchModeType) IsValid() bool {
+	return p == "" || p == PathMatchModePrefix || p == PathMatchModeExact
+}
+
 type LoadBalancerListModel struct {
 	Item []LoadBalancerModel `json:"lbAttr"`
 }
@@ -73,30 +101,33 @@ func (lbModel *LoadBalancerModel) GetKeyStruct() LoxiModel {
 }
 
 type LoadBalancerService struct {
-	ExternalIP   string   `json:"externalIP" key:"externalipaddress"`
-	PrivateIP    string   `json:"privateIP" key:"privateipaddress"`
-	Port         uint16   `json:"port" key:"port"`
-	Protocol     string   `json:"protocol" key:"protocol"`
-	Sel          EpSelect `json:"sel"`
-	Mode         LbMode   `json:"mode"`
-	BGP          bool     `json:"BGP" options:"bgp"`
-	Monitor      bool     `json:"Monitor"`
-	Timeout      uint32   `json:"inactiveTimeOut"`
-	Block        uint32   `json:"block" options:"block"`
-	Managed      bool     `json:"managed,omitempty"`
-	ProbeType    string   `json:"probetype"`
-	ProbePort    uint16   `json:"probeport"`
-	ProbeReq     string   `json:"probereq"`
-	ProbeResp    string   `json:"proberesp"`
-	ProbeRetries int32    `json:"probeRetries,omitempty"`
-	ProbeTimeout uint32   `json:"probeTimeout,omitempty"`
-	Security     int32    `json:"security,omitempty"`
-	Name         string   `json:"name,omitempty"`
-	Oper         LbOP     `json:"oper,omitempty"`
-	Host         string   `json:"host,omitempty"`
-	PpV2         bool     `json:"proxyprotocolv2,omitempty"`
-	Egress       bool     `json:"egress,omitempty"`
-	Snat         bool     `json:"snat,omitempty"`
+	ExternalIP      string              `json:"externalIP" key:"externalipaddress"`
+	PrivateIP       string              `json:"privateIP" key:"privateipaddress"`
+	Port            uint16              `json:"port" key:"port"`
+	Protocol        string              `json:"protocol" key:"protocol"`
+	Sel             EpSelect            `json:"sel"`
+	Mode            LbMode              `json:"mode"`
+	BGP             bool                `json:"BGP" options:"bgp"`
+	Monitor         bool                `json:"Monitor"`
+	Timeout         uint32              `json:"inactiveTimeOut"`
+	Block           uint32              `json:"block" options:"block"`
+	Managed         bool                `json:"managed,omitempty"`
+	ProbeType       string              `json:"probetype"`
+	ProbePort       uint16              `json:"probeport"`
+	ProbeReq        string              `json:"probereq"`
+	ProbeResp       string              `json:"proberesp"`
+	ProbeRetries    int32               `json:"probeRetries,omitempty"`
+	ProbeTimeout    uint32              `json:"probeTimeout,omitempty"`
+	Security        int32               `json:"security,omitempty"`
+	Name            string              `json:"name,omitempty"`
+	Oper            LbOP                `json:"oper,omitempty"`
+	Host            string              `json:"host,omitempty"`
+	PpV2            bool                `json:"proxyprotocolv2,omitempty"`
+	Egress          bool                `json:"egress,omitempty"`
+	Snat            bool                `json:"snat,omitempty"`
+	PathPrefix      string              `json:"path_prefix,omitempty"`
+	BackendProtocol BackendProtocolType `json:"backend_protocol,omitempty"`
+	PathMatchMode   PathMatchModeType   `json:"path_match_mode,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
