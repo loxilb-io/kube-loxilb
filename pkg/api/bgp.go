@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"strconv"
+
+	"k8s.io/klog/v2"
 )
 
 type BGPNeigh struct {
@@ -53,7 +55,10 @@ func (bgpGlobalModel *BGPGlobalConfig) GetKeyStruct() LoxiModel {
 }
 
 func (b *BGPAPI) CreateGlobalConfig(ctx context.Context, Model LoxiModel) error {
+	klog.Infof("[BGP] CreateGlobalConfig called with Model: %+v", Model)
 	resp := b.client.POST(b.resource + "/global").Body(Model).Do(ctx)
+	klog.Infof("[BGP] CreateGlobalConfig response - StatusCode: %d, Body: %s, Error: %v",
+		resp.statusCode, string(resp.body), resp.err)
 	if resp.err != nil {
 		return resp.err
 	}
