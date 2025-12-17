@@ -137,7 +137,18 @@ func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
 		return &LoxiResponse{statusCode: resp.StatusCode, err: err}
 	}
 
-	if resp.StatusCode == http.StatusOK && req.Method != http.MethodGet {
+	// For non-GET requests, validate response
+	if req.Method != http.MethodGet {
+		// Check HTTP status code first
+		if resp.StatusCode != http.StatusOK {
+			// Try to parse error message from response body
+			if err := json.Unmarshal(respByte, &result); err == nil && result.Result != "" {
+				return &LoxiResponse{statusCode: resp.StatusCode, body: respByte, err: errors.New(result.Result)}
+			}
+			return &LoxiResponse{statusCode: resp.StatusCode, body: respByte, err: errors.New(http.StatusText(resp.StatusCode))}
+		}
+
+		// Check result field for successful HTTP responses
 		if err := json.Unmarshal(respByte, &result); err != nil {
 			return &LoxiResponse{statusCode: resp.StatusCode, err: err}
 		}

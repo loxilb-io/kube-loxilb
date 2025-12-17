@@ -63,6 +63,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&cidr6Pools, "cidr6Pools", cidr6Pools, "CIDR6 Pools")
 	fs.BoolVar(&o.config.EnableGatewayAPI, "gatewayAPI", false, "Enable gateway API managers")
 	fs.BoolVar(&o.config.EnableBGPCRDs, "enableBGPCRDs", false, "Enable BGP CRDs")
+	fs.BoolVar(&o.config.EnableK8sMetadata, "enableK8sMetadata", false, "Enable K8s metadata sync to loxilb")
 	fs.StringVar(&o.config.LoxilbGatewayClass, "loxilbGatewayClass", o.config.LoxilbGatewayClass, "GatewayClass manager Name")
 	fs.Uint16Var(&o.config.SetBGP, "setBGP", o.config.SetBGP, "Use BGP routing")
 	fs.Uint16Var(&o.config.ListenBGPPort, "listenBGPPort", o.config.ListenBGPPort, "Custom BGP listen port")

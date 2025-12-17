@@ -311,7 +311,10 @@ func run(o *Options) error {
 
 	go loxilbURLMgr.Start(loxilbURLInformerFactory, stopCh, loxiLBLiveCh, loxiLBDeadCh, loxiLBPurgeCh)
 	go egressMgr.Start(egressInformerFactory, stopCh)
-	go metaMgr.Run(stopCh)
+
+	if o.config.EnableK8sMetadata {
+		go metaMgr.Run(stopCh)
+	}
 
 	// Run gateway API managers
 	if o.config.EnableGatewayAPI {

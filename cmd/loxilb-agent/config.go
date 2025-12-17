@@ -83,4 +83,6 @@ type AgentConfig struct {
 	UseExternalEndpoint bool `yaml:"useExternalEndpoint,omitempty"`
 	// If true, do not use the automatically appended zone name in the external IP of the Kubernetes service.
 	NoZoneName bool `yaml:"noZoneName,omitempty"`
+	// Enable K8s metadata sync to loxilb
+	EnableK8sMetadata bool `yaml:"enableK8sMetadata,omitempty"`
 }

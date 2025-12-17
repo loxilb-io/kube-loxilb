@@ -154,7 +154,7 @@ func (m *Manager) worker() {
 		if loxiClient.IsAlive {
 			err := loxiClient.K8sMeta().Create(ctx, body)
 			if err != nil {
-				klog.Errorf("Failed to send metadata to Loxi: %v", err)
+				klog.Errorf("Failed to send metadata to Loxi(%s): %v", loxiClient.Host, err)
 			}
 		}
 	}
