@@ -21,6 +21,8 @@ const (
 	LbSelLeastConnections
 	// LbSelN2 - select client based on N2 interface contents
 	LbSelN2
+	// LbSelN2DET - select client based on N2DET contents
+	LbSelN2DET
 	// LbSelN3 - select client based on N3 interface contents
 	LbSelN3
 )
