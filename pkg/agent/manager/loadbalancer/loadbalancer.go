@@ -682,6 +682,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		epSelect = api.LbSelN2
 	case "n3":
 		epSelect = api.LbSelN3
+	case "n2det":
+		epSelect = api.LbSelN2DET
 	case "rr":
 		epSelect = api.LbSelRr
 	case "roundrobin":
