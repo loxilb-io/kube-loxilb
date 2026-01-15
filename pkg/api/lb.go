@@ -23,6 +23,8 @@ const (
 	LbSelN2
 	// LbSelN3 - select client based on N3 interface contents
 	LbSelN3
+	// LbSelN2DET - select client based on N2DET contents
+	LbSelN2DET
 )
 
 type LbMode int32
