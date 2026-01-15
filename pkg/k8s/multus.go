@@ -26,6 +26,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 )
 
 type dnsIf interface{}
@@ -98,6 +99,12 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 			if str == s {
 				return true
 			}
+			if !strings.Contains(str, "/") {
+				str = fmt.Sprintf("%s/%s", svcNs, str)
+			}
+			if str == s {
+				return true
+			}
 		}
 		return false
 	}
@@ -136,6 +143,7 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 				podMultusNetName = fmt.Sprintf("%s/%s", podMultusNetNamespace, podMultusNetName)
 			}
 
+			klog.V(4).Infof("pod %s/%s multus network name: %s", pod.Namespace, pod.Name, podMultusNetName)
 			// check if podMultusNetName is in netList
 			if !contain(netList, podMultusNetName) {
 				continue
