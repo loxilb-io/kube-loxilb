@@ -42,6 +42,13 @@ rules:
       - patch
       - update
   - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+  - apiGroups:
       - gateway.networking.k8s.io
     resources:
       - gatewayclasses

@@ -78,6 +78,36 @@ func (p PathMatchModeType) IsValid() bool {
 	return p == "" || p == PathMatchModePrefix || p == PathMatchModeExact
 }
 
+// MtlsFrontend - Frontend mTLS configuration (client certificate verification)
+type MtlsFrontend struct {
+	// ClientCertMode - Client certificate mode: "disabled", "optional", "required"
+	ClientCertMode *string `json:"client_cert_mode,omitempty"`
+	// ClientCaPath - Client CA certificate file path
+	ClientCaPath string `json:"client_ca_path,omitempty"`
+	// ClientCaCertData - Base64 encoded client CA certificate data (for K8s secrets)
+	ClientCaCertData string `json:"client_ca_cert_data,omitempty"`
+	// RequireClientCn - Enable Common Name (CN) verification
+	RequireClientCn *bool `json:"require_client_cn,omitempty"`
+	// ClientCnPattern - CN pattern for verification (supports wildcard, e.g., "*.corp.com")
+	ClientCnPattern string `json:"client_cn_pattern,omitempty"`
+}
+
+// MtlsBackend - Backend mTLS configuration (backend server authentication for E2E HTTPS)
+type MtlsBackend struct {
+	// VerifyServerCert - Enable backend server certificate verification
+	VerifyServerCert *bool `json:"verify_server_cert,omitempty"`
+	// BackendCaPath - Backend CA certificate file path
+	BackendCaPath string `json:"backend_ca_path,omitempty"`
+	// ClientCertPath - LoxiLB client certificate file path
+	ClientCertPath string `json:"client_cert_path,omitempty"`
+	// ClientKeyPath - LoxiLB client key file path
+	ClientKeyPath string `json:"client_key_path,omitempty"`
+	// ClientCertData - Base64 encoded client certificate data
+	ClientCertData string `json:"client_cert_data,omitempty"`
+	// ClientKeyData - Base64 encoded client key data
+	ClientKeyData string `json:"client_key_data,omitempty"`
+}
+
 type LoadBalancerListModel struct {
 	Item []LoadBalancerModel `json:"lbAttr"`
 }
@@ -130,6 +160,8 @@ type LoadBalancerService struct {
 	PathPrefix      string              `json:"path_prefix,omitempty"`
 	BackendProtocol BackendProtocolType `json:"backend_protocol,omitempty"`
 	PathMatchMode   PathMatchModeType   `json:"path_match_mode,omitempty"`
+	MtlsFrontend    *MtlsFrontend       `json:"mtls_frontend,omitempty"`
+	MtlsBackend     *MtlsBackend        `json:"mtls_backend,omitempty"`
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
