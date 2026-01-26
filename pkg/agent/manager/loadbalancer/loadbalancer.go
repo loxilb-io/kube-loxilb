@@ -18,6 +18,7 @@ package loadbalancer
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"path"
@@ -84,6 +85,15 @@ const (
 	loxilbZoneInstance            = "loxilb.io/zoneinstance"
 	enProxyProtov2Annotation      = "loxilb.io/useproxyprotov2"
 	egressAnnotation              = "loxilb.io/egress"
+	// mTLS Frontend annotations
+	mtlsFrontendModeAnnotation      = "loxilb.io/mtls-frontend-mode"
+	mtlsFrontendSecretAnnotation    = "loxilb.io/mtls-frontend-secret"
+	mtlsFrontendRequireCnAnnotation = "loxilb.io/mtls-frontend-require-cn"
+	mtlsFrontendCnPatternAnnotation = "loxilb.io/mtls-frontend-cn-pattern"
+	// mTLS Backend annotations
+	mtlsBackendVerifyAnnotation       = "loxilb.io/mtls-backend-verify"
+	mtlsBackendCaSecretAnnotation     = "loxilb.io/mtls-backend-ca-secret"
+	mtlsBackendClientSecretAnnotation = "loxilb.io/mtls-backend-client-secret"
 )
 
 type LoxiInstRole struct {
@@ -140,6 +150,8 @@ type LbArgs struct {
 	inst                string
 	ppv2En              bool
 	egress              bool
+	mtlsFrontend        *api.MtlsFrontend
+	mtlsBackend         *api.MtlsBackend
 }
 
 type LbModelEnt struct {
@@ -550,6 +562,19 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		} else if eg == "no" {
 			isEgress = false
 		}
+	}
+
+	// Check for loxilb specific annotations - mTLS configuration
+	mtlsFrontend, err := m.getMtlsFrontendConfig(svc)
+	if err != nil {
+		klog.Errorf("Failed to get mTLS frontend config for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		return err
+	}
+
+	mtlsBackend, err := m.getMtlsBackendConfig(svc)
+	if err != nil {
+		klog.Errorf("Failed to get mTLS backend config for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		return err
 	}
 
 	// Check for loxilb specific annotations - loxilbZoneInstance
@@ -1026,6 +1051,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			needMultusEP:        needMultusEP,
 			usePodNetwork:       usePodNet,
 			useExternalEndpoint: useExternalEndpoint,
+			mtlsFrontend:        mtlsFrontend,
+			mtlsBackend:         mtlsBackend,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -2002,6 +2029,8 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			Egress:       lbArgs.egress,
 			Sel:          lbArgs.sel,
 			Name:         fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
+			MtlsFrontend: lbArgs.mtlsFrontend,
+			MtlsBackend:  lbArgs.mtlsBackend,
 		},
 		SrcIPs:       loxiLbAllowedSrcIpList,
 		SecondaryIPs: loxiSecIPModelList,
@@ -2780,4 +2809,136 @@ func (m *Manager) compareLoxiLBToK8sService() error {
 	}
 
 	return nil
+}
+
+// getMtlsFrontendConfig reads mTLS frontend configuration from service annotations and K8s secrets
+func (m *Manager) getMtlsFrontendConfig(svc *corev1.Service) (*api.MtlsFrontend, error) {
+	mode, ok := svc.Annotations[mtlsFrontendModeAnnotation]
+	if !ok || mode == "" || mode == "disabled" {
+		return nil, nil
+	}
+
+	if mode != "optional" && mode != "required" {
+		return nil, fmt.Errorf("invalid mtls-frontend-mode: %s (must be 'disabled', 'optional', or 'required')", mode)
+	}
+
+	mtlsFrontend := &api.MtlsFrontend{
+		ClientCertMode: &mode,
+	}
+
+	// Get client CA certificate from secret
+	secretName, ok := svc.Annotations[mtlsFrontendSecretAnnotation]
+	if !ok || secretName == "" {
+		return nil, fmt.Errorf("mtls-frontend-secret is required when mtls-frontend-mode is '%s'", mode)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	secret, err := m.kubeClient.CoreV1().Secrets(svc.Namespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secret %s/%s: %w", svc.Namespace, secretName, err)
+	}
+
+	// Try client-ca.crt first, fallback to server.crt
+	clientCACert, ok := secret.Data["client-ca.crt"]
+	if !ok || len(clientCACert) == 0 {
+		clientCACert, ok = secret.Data["server.crt"]
+		if !ok || len(clientCACert) == 0 {
+			return nil, fmt.Errorf("secret %s/%s does not contain 'client-ca.crt' or 'server.crt' key", svc.Namespace, secretName)
+		}
+		klog.V(4).Infof("getMtlsFrontendConfig: using 'server.crt' as fallback for client CA certificate")
+	}
+
+	// Encode to base64 for LoxiLB API
+	mtlsFrontend.ClientCaCertData = base64.StdEncoding.EncodeToString(clientCACert)
+
+	// Check CN verification
+	if requireCn, ok := svc.Annotations[mtlsFrontendRequireCnAnnotation]; ok && requireCn == "true" {
+		requireCnBool := true
+		mtlsFrontend.RequireClientCn = &requireCnBool
+
+		cnPattern, ok := svc.Annotations[mtlsFrontendCnPatternAnnotation]
+		if !ok || cnPattern == "" {
+			return nil, fmt.Errorf("mtls-frontend-cn-pattern is required when mtls-frontend-require-cn is true")
+		}
+		mtlsFrontend.ClientCnPattern = cnPattern
+	}
+
+	klog.V(4).Infof("getMtlsFrontendConfig: configured frontend mTLS mode=%s for service %s/%s", mode, svc.Namespace, svc.Name)
+	return mtlsFrontend, nil
+}
+
+// getMtlsBackendConfig reads mTLS backend configuration from service annotations and K8s secrets
+func (m *Manager) getMtlsBackendConfig(svc *corev1.Service) (*api.MtlsBackend, error) {
+	verify, ok := svc.Annotations[mtlsBackendVerifyAnnotation]
+	if !ok || verify != "true" {
+		return nil, nil
+	}
+
+	verifyBool := true
+	mtlsBackend := &api.MtlsBackend{
+		VerifyServerCert: &verifyBool,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	// Get backend CA certificate from secret (optional but recommended)
+	if caSecretName, ok := svc.Annotations[mtlsBackendCaSecretAnnotation]; ok && caSecretName != "" {
+		secret, err := m.kubeClient.CoreV1().Secrets(svc.Namespace).Get(ctx, caSecretName, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get backend CA secret %s/%s: %w", svc.Namespace, caSecretName, err)
+		}
+
+		// Try backend-ca.crt first, fallback to server.crt
+		backendCACert, ok := secret.Data["backend-ca.crt"]
+		if !ok || len(backendCACert) == 0 {
+			backendCACert, ok = secret.Data["server.crt"]
+			if !ok || len(backendCACert) == 0 {
+				return nil, fmt.Errorf("secret %s/%s does not contain 'backend-ca.crt' or 'server.crt' key", svc.Namespace, caSecretName)
+			}
+			klog.V(4).Infof("getMtlsBackendConfig: using 'server.crt' as fallback for backend CA certificate")
+		}
+
+		// Note: We're not setting BackendCaPath here because we're using base64 data
+		// LoxiLB will need to support backend_ca_cert_data field (not in current API)
+		// For now, we'll skip this or add a warning
+		klog.Warningf("Backend CA certificate from secret is not yet fully supported - LoxiLB API may need backend_ca_cert_data field")
+	}
+
+	// Get LoxiLB client certificate and key from secret
+	if clientSecretName, ok := svc.Annotations[mtlsBackendClientSecretAnnotation]; ok && clientSecretName != "" {
+		secret, err := m.kubeClient.CoreV1().Secrets(svc.Namespace).Get(ctx, clientSecretName, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get backend client secret %s/%s: %w", svc.Namespace, clientSecretName, err)
+		}
+
+		// Try tls.crt first, fallback to server.crt
+		clientCert, ok := secret.Data["tls.crt"]
+		if !ok || len(clientCert) == 0 {
+			clientCert, ok = secret.Data["server.crt"]
+			if !ok || len(clientCert) == 0 {
+				return nil, fmt.Errorf("secret %s/%s does not contain 'tls.crt' or 'server.crt' key", svc.Namespace, clientSecretName)
+			}
+			klog.V(4).Infof("getMtlsBackendConfig: using 'server.crt' as fallback for client certificate")
+		}
+
+		// Try tls.key first, fallback to server.key
+		clientKey, ok := secret.Data["tls.key"]
+		if !ok || len(clientKey) == 0 {
+			clientKey, ok = secret.Data["server.key"]
+			if !ok || len(clientKey) == 0 {
+				return nil, fmt.Errorf("secret %s/%s does not contain 'tls.key' or 'server.key' key", svc.Namespace, clientSecretName)
+			}
+			klog.V(4).Infof("getMtlsBackendConfig: using 'server.key' as fallback for client key")
+		}
+
+		// Encode to base64 for LoxiLB API
+		mtlsBackend.ClientCertData = base64.StdEncoding.EncodeToString(clientCert)
+		mtlsBackend.ClientKeyData = base64.StdEncoding.EncodeToString(clientKey)
+	}
+
+	klog.V(4).Infof("getMtlsBackendConfig: configured backend mTLS verification for service %s/%s", svc.Namespace, svc.Name)
+	return mtlsBackend, nil
 }
