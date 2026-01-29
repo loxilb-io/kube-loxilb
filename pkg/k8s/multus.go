@@ -32,7 +32,8 @@ import (
 type dnsIf interface{}
 
 type networkList struct {
-	Name string `json:"name"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
 }
 
 type networkStatus struct {
@@ -96,14 +97,15 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 
 	contain := func(strList []string, s string) bool {
 		for _, str := range strList {
+			// Exact match
 			if str == s {
 				return true
 			}
+			// If netList item doesn't have namespace, try matching with svcNs prefix
 			if !strings.Contains(str, "/") {
-				str = fmt.Sprintf("%s/%s", svcNs, str)
-			}
-			if str == s {
-				return true
+				if fmt.Sprintf("%s/%s", svcNs, str) == s {
+					return true
+				}
 			}
 		}
 		return false
@@ -137,13 +139,27 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 		for _, mNet := range podNetList {
 			podMultusNetNamespace := pod.Namespace
 			podMultusNetName := mNet.Name
+
+			// If namespace is specified in JSON annotation, use it (highest priority)
+			if mNet.Namespace != "" {
+				podMultusNetNamespace = mNet.Namespace
+				// Extract network name without namespace prefix if present
+				if strings.Contains(mNet.Name, "/") {
+					parts := strings.SplitN(mNet.Name, "/", 2)
+					if len(parts) == 2 {
+						podMultusNetName = parts[1]
+					}
+				}
+			}
+
 			// format of netList and podMultusNetName: <namespace>/<network-name>
 			// if namespace is not specified, use pod's namespace
-			if !strings.Contains(mNet.Name, "/") {
+			if !strings.Contains(podMultusNetName, "/") {
 				podMultusNetName = fmt.Sprintf("%s/%s", podMultusNetNamespace, podMultusNetName)
 			}
 
 			klog.V(4).Infof("pod %s/%s multus network name: %s", pod.Namespace, pod.Name, podMultusNetName)
+			klog.V(4).Infof("filter multus network list: %v", netList)
 			// check if podMultusNetName is in netList
 			if !contain(netList, podMultusNetName) {
 				continue
