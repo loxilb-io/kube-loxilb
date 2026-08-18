@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tk "github.com/loxilb-io/loxilib"
@@ -52,6 +53,63 @@ type LoxiClient struct {
 	Stop        chan struct{}
 	NoRole      bool
 	Name        string
+
+	// product - API flavor of the loxilb instance behind this client, learned
+	// once from GET /netlox/v1/version. nil means "not yet detected"; a non-nil
+	// empty string means "detected, and it is plain upstream loxilb".
+	//
+	// Written by the health-check goroutine and read by the load-balancer
+	// fan-out goroutines, hence atomic rather than a plain field.
+	product atomic.Pointer[string]
+}
+
+// Product - detected product identifier, or "" when the peer is plain upstream
+// loxilb or has not answered a version query yet.
+func (l *LoxiClient) Product() string {
+	if p := l.product.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// FlavorDetected - whether a version query has successfully completed.
+func (l *LoxiClient) FlavorDetected() bool {
+	return l.product.Load() != nil
+}
+
+// IsInferenceGateway - whether this peer is a loxilb-inference-gateway.
+//
+// An undetected peer reports false: absence of the `product` field is the
+// documented signal for plain upstream loxilb, so falling back to false keeps
+// gateway-only payload fields off the wire when in doubt.
+func (l *LoxiClient) IsInferenceGateway() bool {
+	return l.Product() == ProductInferenceGateway
+}
+
+// DetectFlavor - query GET /netlox/v1/version once and cache the product
+// field. Subsequent calls are no-ops, so it is safe to call on every health
+// tick. A failed query leaves the flavor undetected so a later call retries.
+func (l *LoxiClient) DetectFlavor(ctx context.Context) {
+	if l.FlavorDetected() {
+		return
+	}
+
+	versionModel, err := l.Version().Get(ctx, "")
+	if err != nil {
+		klog.V(4).Infof("loxilb-lb(%s): version query failed, flavor still unknown: %v", l.Host, err)
+		return
+	}
+
+	product := versionModel.Product
+	l.product.Store(&product)
+
+	if product == ProductInferenceGateway {
+		klog.Infof("loxilb-lb(%s): detected loxilb-inference-gateway (version %s, build %s)",
+			l.Host, versionModel.Version, versionModel.BuildInfo)
+	} else {
+		klog.Infof("loxilb-lb(%s): detected plain loxilb (version %s, build %s)",
+			l.Host, versionModel.Version, versionModel.BuildInfo)
+	}
 }
 
 // GenZoneInstName generate zone instance name
@@ -184,6 +242,9 @@ func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh c
 				}
 			}
 		} else {
+			// Flavor is a property of the peer binary, so one successful query
+			// is enough; detectFlavor() short-circuits once it has an answer.
+			l.DetectFlavor(ctx)
 			if !l.IsAlive {
 				klog.Infof("LoxiHealthCheckChan: loxilb-lb(%s) is alive", l.Host)
 				l.IsAlive = true
@@ -232,6 +293,10 @@ func (l *LoxiClient) Firewall() *FirewallAPI {
 
 func (l *LoxiClient) K8sMeta() *K8sMetaAPI {
 	return newK8sMetaAPI(l.GetRESTClient())
+}
+
+func (l *LoxiClient) Version() *VersionAPI {
+	return newVersionAPI(l.GetRESTClient())
 }
 
 func (l *LoxiClient) SniCert() *SniCertAPI {
