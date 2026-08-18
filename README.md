@@ -176,7 +176,9 @@ spec:
 
 The Service selector must cover both pools, since one rule carries both. The two role selectors then partition what it found.
 
-<b>KV-exact routing needs a staged tokenizer.</b> loxilb reads `/etc/loxilb/tokenizers/<model-slug>/tokenizer.json`, where `<model-slug>` is the model name with `/` replaced by `__`. kube-loxilb does not manage that file. If it is missing, loxilb logs `kv-router: tokenizer not available` once and silently falls back to load-based routing -- the rule is still created and traffic still flows, just without cache-aware placement.
+<b>KV-exact routing needs a staged tokenizer.</b> loxilb reads `/etc/loxilb/tokenizers/<model-slug>/tokenizer.json`, where `<model-slug>` is the model name with each `/` replaced by `__`. kube-loxilb does not manage that file and cannot see it, so whenever a rule enables `kv-exact-mode` it records a Normal `KvExactTokenizerRequired` event on the Service naming the exact path to check -- visible with `kubectl describe svc`.
+
+If the file is missing, loxilb logs `kv-router: tokenizer not available` once and silently falls back to load-based routing: the rule is still created and traffic still flows, just without cache-aware placement. <b>loxilb caches that failure</b>, so staging the tokenizer afterwards does not take effect until loxilb restarts. Stage it before creating the rule.
 
 Example - prefix-cache aware routing across a vLLM pool:
 

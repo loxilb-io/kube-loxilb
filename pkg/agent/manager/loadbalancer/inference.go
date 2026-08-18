@@ -20,11 +20,13 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/pkg/errors"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/klog/v2"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 )
@@ -376,15 +378,80 @@ const (
 	// ReasonInferenceGatewayRequired - the service asks for inference routing
 	// but the loxilb it would be programmed into is plain upstream loxilb.
 	ReasonInferenceGatewayRequired = "InferenceGatewayRequired"
+	// ReasonKvExactTokenizerRequired - the rule uses KV-exact routing, which
+	// needs a tokenizer staged inside loxilb that kube-loxilb cannot see.
+	ReasonKvExactTokenizerRequired = "KvExactTokenizerRequired"
 )
 
-// recordServiceWarning - surface a rejection on the Service itself, so
+// recordServiceEvent - surface something on the Service itself, so
 // `kubectl describe svc` explains it. A log line on the agent does not reach
 // the person who wrote the annotation.
-func (m *Manager) recordServiceWarning(svc *corev1.Service, reason, message string) {
+func (m *Manager) recordServiceEvent(svc *corev1.Service, eventType, reason, message string) {
 	if m.eventRecorder == nil || svc == nil {
 		return
 	}
 
-	m.eventRecorder.Event(svc, corev1.EventTypeWarning, reason, message)
+	m.eventRecorder.Event(svc, eventType, reason, message)
+}
+
+// recordServiceWarning - report a rejected configuration.
+func (m *Manager) recordServiceWarning(svc *corev1.Service, reason, message string) {
+	m.recordServiceEvent(svc, corev1.EventTypeWarning, reason, message)
+}
+
+// kvTokenizerDir - where the gateway looks for tokenizers
+// (kvTokenizerDir in its pkg/loxinet/ai_kv_router.go).
+const kvTokenizerDir = "/etc/loxilb/tokenizers"
+
+// kvModelSlug - the gateway's filesystem name for a model: every "/" becomes
+// "__" and nothing else changes. Mirrors kvModelSlug in ai_kv_router.go.
+func kvModelSlug(modelName string) string {
+	return strings.ReplaceAll(modelName, "/", "__")
+}
+
+// tokenizerNotice - what an operator has to check when a rule turns on KV-exact
+// routing, or "" when the rule does not use it.
+//
+// This is deliberately a notice and not a readiness signal. kube-loxilb cannot
+// verify any of it: the file lives inside the loxilb pod, and the gateway loads
+// it lazily on the first request for a model rather than when the rule is
+// created, so a rule that programs cleanly proves nothing. Reporting health
+// that was never checked would be worse than saying nothing. Naming the exact
+// path is the most that can honestly be said.
+//
+// The stakes are why it is said at all: a missing tokenizer does not fail the
+// rule, it silently downgrades KV-exact routing to load-based routing. The
+// gateway logs once per model and caches the failure, so staging the file
+// afterwards does not take effect until loxilb restarts.
+func tokenizerNotice(aiArgs api.AIArgs) string {
+	if aiArgs.KvExactMode == api.KvExactModeOff {
+		return ""
+	}
+
+	target := fmt.Sprintf("%s/%s/tokenizer.json", kvTokenizerDir, kvModelSlug(aiArgs.ModelName))
+	if aiArgs.ModelName == "" {
+		target = fmt.Sprintf("%s/<model>/tokenizer.json for every model this rule serves, where <model> is the requested model name with each \"/\" replaced by \"__\" (%s is unset, so the model comes from each request)",
+			kvTokenizerDir, modelNameAnnotation)
+	}
+
+	return fmt.Sprintf("KV-exact routing is enabled (%s=%d): loxilb must already have a tokenizer staged at %s. "+
+		"kube-loxilb cannot check this. If it is missing, loxilb logs \"kv-router: tokenizer not available\" once and "+
+		"falls back to load-based routing - the rule is still created and traffic still flows, just without cache-aware "+
+		"placement. loxilb caches that failure, so staging the file afterwards needs a loxilb restart to take effect.",
+		kvExactModeAnnotation, aiArgs.KvExactMode, target)
+}
+
+// recordTokenizerNotice - emit the notice above when a rule is programmed.
+//
+// Normal, not Warning: nothing has been detected as wrong, and a Warning that
+// fires on every correctly configured KV-exact service would devalue the
+// Warnings that report real rejections.
+func (m *Manager) recordTokenizerNotice(svc *corev1.Service, aiArgs api.AIArgs) {
+	notice := tokenizerNotice(aiArgs)
+	if notice == "" {
+		return
+	}
+
+	klog.Infof("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+	m.recordServiceEvent(svc, corev1.EventTypeNormal, ReasonKvExactTokenizerRequired, notice)
 }

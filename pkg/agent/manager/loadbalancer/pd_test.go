@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
@@ -517,5 +518,99 @@ func TestPDPayloadRejectedWhenAPoolIsEmpty(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "at least 1 prefill (ep_role=1) and 1 decode (ep_role=2)") {
 		t.Errorf("error = %q, want loxilb's own wording", err)
+	}
+}
+
+// KV-exact routing needs a tokenizer staged inside the loxilb pod. kube-loxilb
+// cannot see it, so it names the exact path instead of guessing at readiness.
+func TestTokenizerNotice(t *testing.T) {
+	tests := []struct {
+		name     string
+		aiArgs   api.AIArgs
+		wantNone bool
+		contains []string
+	}{
+		{
+			name:     "not used",
+			aiArgs:   api.AIArgs{SseMode: true},
+			wantNone: true,
+		},
+		{
+			name:   "named model gives an exact path",
+			aiArgs: api.AIArgs{KvExactMode: api.KvExactModeSingleRole, ModelName: "meta-llama/Llama-3.1-70B-Instruct"},
+			contains: []string{
+				"/etc/loxilb/tokenizers/meta-llama__Llama-3.1-70B-Instruct/tokenizer.json",
+				"needs a loxilb restart",
+			},
+		},
+		{
+			name:   "nested slashes each become a double underscore",
+			aiArgs: api.AIArgs{KvExactMode: api.KvExactModeZmq, ModelName: "a/b/c"},
+			contains: []string{
+				"/etc/loxilb/tokenizers/a__b__c/tokenizer.json",
+			},
+		},
+		{
+			name:   "catch-all rule can only name the directory",
+			aiArgs: api.AIArgs{KvExactMode: api.KvExactModeSingleRole},
+			contains: []string{
+				"/etc/loxilb/tokenizers/<model>/tokenizer.json",
+				"loxilb.io/model-name is unset",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tokenizerNotice(tt.aiArgs)
+
+			if tt.wantNone {
+				if got != "" {
+					t.Errorf("tokenizerNotice = %q, want empty", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatal("tokenizerNotice = empty, want a notice")
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("notice missing %q\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
+// The notice reaches the Service, as a Normal event: nothing has been detected
+// as wrong, so it must not devalue the Warnings that report real rejections.
+func TestRecordTokenizerNoticeEmitsNormalEvent(t *testing.T) {
+	recorder := record.NewFakeRecorder(4)
+	m := &Manager{eventRecorder: recorder}
+	svc := pdService()
+
+	m.recordTokenizerNotice(svc, api.AIArgs{
+		KvExactMode: api.KvExactModeSingleRole,
+		ModelName:   "meta-llama/Llama-3.1-70B-Instruct",
+	})
+
+	select {
+	case event := <-recorder.Events:
+		if !strings.HasPrefix(event, corev1.EventTypeNormal+" "+ReasonKvExactTokenizerRequired) {
+			t.Errorf("event = %q, want a Normal %s event", event, ReasonKvExactTokenizerRequired)
+		}
+		if !strings.Contains(event, "/etc/loxilb/tokenizers/meta-llama__Llama-3.1-70B-Instruct/tokenizer.json") {
+			t.Errorf("event does not name the tokenizer path: %s", event)
+		}
+	default:
+		t.Fatal("no event was recorded")
+	}
+
+	// a rule that does not use KV-exact routing stays quiet
+	m.recordTokenizerNotice(svc, api.AIArgs{SseMode: true})
+	select {
+	case event := <-recorder.Events:
+		t.Errorf("unexpected event for a non-KV-exact rule: %s", event)
+	default:
 	}
 }
