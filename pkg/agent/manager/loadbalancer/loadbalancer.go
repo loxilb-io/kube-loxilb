@@ -1088,6 +1088,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if !hasExistingEIP {
 			svc.Status.LoadBalancer.Ingress = nil
 		}
+		// Said here rather than on every reconcile: this is the point where a
+		// rule is actually programmed.
+		m.recordTokenizerNotice(svc, aiArgs)
+
 		klog.Infof("%s: Added(%v) Update(%v) needDelete(%v)", cacheKey, added, update, needDelete)
 		klog.Infof("Endpoint IP Pairs %v", endpointIPs)
 		klog.Infof("Secondary IP Pairs %v", m.lbCache[cacheKey].SecIPs)
