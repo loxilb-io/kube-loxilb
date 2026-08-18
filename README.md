@@ -91,9 +91,67 @@ Many of the above flags and arguments can be overriden on a per-service basis ba
 | <b>loxilb.io/proberesp</b> | Specifies the response to the probe request. It is not applied if the loxilb.io/probetype annotation is not used or if it is of type icmp or none.<br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetype : "tcp"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probeport : "3000"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probereq : "health"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberesp : "ok"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
 | <b>loxilb.io/probetimeout</b> | Specifies the timeout for starting a probe request (in seconds). The default value is 60 seconds <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
 | <b>loxilb.io/proberetries</b> | Specifies the number of probe request retries before considering an endpoint as inoperative. The default value is 2 <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberetries : "3"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
-| <b>loxilb.io/epselect</b> | Specifies the algorithm for end-point slection e.g "rr", "hash", "persist", "lc" etc. The default value is roundrobin. <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberetries : "3"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/epselect : "hash"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
+| <b>loxilb.io/epselect</b> | Specifies the algorithm for end-point slection e.g "rr", "hash", "persist", "lc" etc. The default value is roundrobin. The values "chwbl", "gpuaware" and "wrr-hash" additionally require <b>loxilb.io/lbmode: "fullproxy"</b> and a loxilb-inference-gateway backend - see [Inference gateway annotations](#inference-gateway-annotations). <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberetries : "3"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/epselect : "hash"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
 | <b>loxilb.io/usepodnetwork</b> | Whether to select PodIP and targetPort as EndPoints <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberetries : "3"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/usepodnetwork : "yes"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
 | <b>loxilb.io/useproxyprotov2</b> | Whether to enable proxy protocol v2 <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: tcp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/lbmode : "fullnat"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/useproxyprotov2 : "yes"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: tcp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 80<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: TCP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 8080<br>&nbsp;&nbsp;type: LoadBalancer   |
+
+<a name="inference-gateway-annotations"></a>
+* Inference gateway annotations:
+
+These are served by [loxilb-inference-gateway](https://github.com/loxilb-io/loxilb-inference-gateway), a superset of upstream loxilb aimed at LLM serving fleets. kube-loxilb detects the flavor at runtime from the `product` field of `GET /netlox/v1/version`, so the same kube-loxilb drives both. A service that asks for any of the annotations below while its loxilb is plain upstream loxilb is rejected with a Warning event on the Service rather than being silently downgraded.
+
+All of these require <b>loxilb.io/lbmode: "fullproxy"</b> in practice; the selection and KV-exact paths run in the userspace proxy, which only fullproxy traffic reaches. Omitting an annotation leaves the field out of the request entirely, so loxilb applies its own default.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/model-name</b> | Route by the `model` field of the request body. Several services can share one VIP:port, each claiming a model name; a service with no model name is the catch-all. |
+| <b>loxilb.io/sse-mode</b> | Server-sent-events awareness: suppresses the idle timeout during token streaming. Also arms AI key and rate-limit enforcement. `"true"`/`"yes"`. |
+| <b>loxilb.io/max-stream-duration</b> | Ceiling in seconds for a single streamed response. Default 0 (unbounded). |
+| <b>loxilb.io/backend-keepalive-interval</b> | Backend keepalive interval in seconds. Default 0. |
+| <b>loxilb.io/session-header-name</b> | Pin a session to one endpoint by an HTTP header, e.g. `"mcp-session-id"` for an MCP gateway. |
+| <b>loxilb.io/trace-type</b> | Protocol-aware tracing, e.g. `"mcp"`. |
+| <b>loxilb.io/cb-enable</b> | Per-endpoint circuit breaker. `"true"`/`"yes"`. |
+| <b>loxilb.io/chwbl-prefix-hash-level</b> | Prefix-hash depth for consistent hashing with bounded loads: `1`, `2` or `3`. Default 1. Used by `epselect: chwbl` and `epselect: wrr-hash`. |
+| <b>loxilb.io/chwbl-prefix-hash-flags</b> | Prefix-hash flags, 0..255. Default 0. |
+| <b>loxilb.io/chwbl-mean-load-factor</b> | Bounded-load factor as a percentage, 100..300. Default 125. Lower values spread load more evenly at the cost of cache locality. |
+| <b>loxilb.io/chwbl-replication</b> | Virtual nodes per endpoint on the hash ring, 1..1024. Default 100. |
+| <b>loxilb.io/chwbl-enable-cache-salt</b> | Salt the cache key. `"true"`/`"yes"`. Default false. |
+| <b>loxilb.io/kv-exact-mode</b> | KV-cache exact routing. Use `"3"` for a single role-less serving pool. Mode `1` is for prefill/decode disaggregation and is not reachable from annotations (see below). |
+| <b>loxilb.io/kv-engine-type</b> | `"vllm"` (default) or `"sglang"`. Immutable once the rule exists: changing it needs a delete and recreate. |
+| <b>loxilb.io/kv-dp-rank-count</b> | SGLang `--dp-size`, 1..8. Default 1. |
+| <b>loxilb.io/kv-block-size</b> | KV block size in tokens. Default 16. Must match the engine. |
+| <b>loxilb.io/kv-zmq-port</b> | Engine event socket port. Default 5557. |
+| <b>loxilb.io/kv-warmup-sec</b> | Warmup window in seconds. The gateway's swagger documents a default of 30 but no code applies it, so set this explicitly if warmup matters. |
+| <b>loxilb.io/kv-hash-algo</b> | `"sha256_cbor"`, `"xxhash_cbor"` or `"sha256_sglang"`. Best omitted: loxilb then derives it from the engine type and the pair can never be incoherent. |
+
+<b>Prefill/decode disaggregation is not available through annotations.</b> It needs a per-endpoint role (prefill or decode), and a single Service's EndpointSlice has no way to say which pod is which. Enabling it without roles is rejected by loxilb every time. It is being designed separately.
+
+<b>KV-exact routing needs a staged tokenizer.</b> loxilb reads `/etc/loxilb/tokenizers/<model-slug>/tokenizer.json`, where `<model-slug>` is the model name with `/` replaced by `__`. kube-loxilb does not manage that file. If it is missing, loxilb logs `kv-router: tokenizer not available` once and silently falls back to load-based routing -- the rule is still created and traffic still flows, just without cache-aware placement.
+
+Example - prefix-cache aware routing across a vLLM pool:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-llama70b
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+    loxilb.io/epselect: "chwbl"
+    loxilb.io/chwbl-prefix-hash-level: "2"
+    loxilb.io/chwbl-mean-load-factor: "125"
+    loxilb.io/sse-mode: "true"
+    loxilb.io/model-name: "meta-llama/Llama-3.1-70B-Instruct"
+spec:
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: vllm
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: LoadBalancer
+```
 
 * Apply the yaml after making necessary changes :
 

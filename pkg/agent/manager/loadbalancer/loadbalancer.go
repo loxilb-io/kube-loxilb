@@ -36,9 +36,12 @@ import (
 	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
@@ -127,6 +130,7 @@ type Manager struct {
 	ClientPurgeCh       chan *api.LoxiClient
 	ClientSelMasterCh   chan bool
 	ClientDeadCh        chan struct{}
+	eventRecorder       record.EventRecorder
 }
 
 type LbArgs struct {
@@ -152,6 +156,7 @@ type LbArgs struct {
 	egress              bool
 	mtlsFrontend        *api.MtlsFrontend
 	mtlsBackend         *api.MtlsBackend
+	aiArgs              api.AIArgs
 }
 
 type LbModelEnt struct {
@@ -186,6 +191,7 @@ type LbCacheEntry struct {
 	ProbeTimeo     uint32
 	ProbeRetries   int
 	EpSelect       api.EpSelect
+	AIArgs         api.AIArgs
 	IPPool         *ippool.IPPool
 	SIPPools       []*ippool.IPPool
 	SecIPs         []string
@@ -249,8 +255,15 @@ func NewLoadBalancerManager(
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	endpointSliceInformer := informerFactory.Discovery().V1().EndpointSlices()
 
+	// Events are how a rejected configuration reaches the user who wrote the
+	// annotation; a log line on the agent does not.
+	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
+	eventRecorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "kube-loxilb"})
+
 	manager := &Manager{
 		kubeClient:          kubeClient,
+		eventRecorder:       eventRecorder,
 		LoxiClients:         loxiClients,
 		LoxiPeerClients:     loxiPeerClients,
 		ipPoolTbl:           ipPoolTbl,
@@ -707,6 +720,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		epSelect = api.LbSelN2
 	case "n3":
 		epSelect = api.LbSelN3
+	case "chwbl":
+		epSelect = api.LbSelCHWBL
+	case "gpuaware":
+		epSelect = api.LbSelGPUAware
+	case "wrr-hash", "wrrhash":
+		epSelect = api.LbSelWRRHash
 	case "rr":
 		epSelect = api.LbSelRr
 	case "roundrobin":
@@ -717,6 +736,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				svc.Namespace, svc.Name, endPointSelAnnotation, eps)
 		}
 		epSelect = api.LbSelRr
+	}
+
+	// Check for loxilb specific annotations - loxilb-inference-gateway routing
+	aiArgs, err := m.getAIArgs(svc, lbMode, epSelect)
+	if err != nil {
+		klog.Errorf("Failed to get inference-gateway config for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidInferenceConfig, err.Error())
+		return err
 	}
 
 	cacheKey := GenKey(svc.Namespace, svc.Name)
@@ -760,6 +787,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				ProbeTimeo:     probeTimeout,
 				ProbeRetries:   probeRetries,
 				EpSelect:       epSelect,
+				AIArgs:         aiArgs,
 				Addr:           addrType,
 				SecIPs:         []string{},
 				IPPool:         ipPool,
@@ -944,6 +972,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: EpSelect update", cacheKey)
 	}
 
+	if aiArgs != m.lbCache[cacheKey].AIArgs {
+		m.lbCache[cacheKey].AIArgs = aiArgs
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: inference-gateway args update", cacheKey)
+	}
+
 	if enProxyProtov2 != m.lbCache[cacheKey].ppv2En {
 		m.lbCache[cacheKey].ppv2En = enProxyProtov2
 		update = true
@@ -1055,6 +1092,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			useExternalEndpoint: useExternalEndpoint,
 			mtlsFrontend:        mtlsFrontend,
 			mtlsBackend:         mtlsBackend,
+			aiArgs:              m.lbCache[cacheKey].AIArgs,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -1096,6 +1134,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				errCount++
 			}
 		}
+		if errors.Is(loxilbAPIErr, ErrInferenceGatewayRequired) {
+			m.recordServiceWarning(svc, ReasonInferenceGatewayRequired, loxilbAPIErr.Error())
+		}
+
 		if loxilbAPIErr != nil && errCount >= len(m.LoxiClients.Clients) {
 			retIPAMOnErr = true
 			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
@@ -1328,10 +1370,10 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 	// model. This must run after the prefLocal branch above, which re-aliases
 	// model.Endpoints back onto the caller's slice.
 	if !c.IsInferenceGateway() {
-		if model.Service.AIArgs.IsSet() {
+		if model.Service.AIArgs.IsSet() || model.Service.Sel.IsInferenceGatewayOnly() {
 			// Refuse loudly. Silently downgrading to non-AI routing would look
 			// like success while serving the wrong traffic policy.
-			err = fmt.Errorf("inference-gateway routing requested but loxilb-lb(%s) is plain loxilb", c.Host)
+			err = fmt.Errorf("inference-gateway routing requested but loxilb-lb(%s) is plain loxilb: %w", c.Host, ErrInferenceGatewayRequired)
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 			return err
 		}
@@ -2026,6 +2068,12 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 		}
 	}
 
+	// Re-check against the assembled payload: getAIArgs runs before endpoints
+	// are known, and some of loxilb's rejections are about endpoint roles.
+	if err := lbArgs.aiArgs.Validate(lbModeSvc, loxiEndpointModelList); err != nil {
+		return api.LoadBalancerModel{}, err
+	}
+
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
 			ExternalIP:   lbArgs.externalIP,
@@ -2050,6 +2098,7 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			Name:         fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
 			MtlsFrontend: lbArgs.mtlsFrontend,
 			MtlsBackend:  lbArgs.mtlsBackend,
+			AIArgs:       lbArgs.aiArgs,
 		},
 		SrcIPs:       loxiLbAllowedSrcIpList,
 		SecondaryIPs: loxiSecIPModelList,

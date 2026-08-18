@@ -49,6 +49,13 @@ rules:
       - get
       - list
   - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  - apiGroups:
       - gateway.networking.k8s.io
     resources:
       - gatewayclasses

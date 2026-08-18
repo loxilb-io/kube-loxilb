@@ -37,6 +37,14 @@ const (
 	LbSelWRRHash
 )
 
+// IsInferenceGatewayOnly - whether this selector exists only in
+// loxilb-inference-gateway. These also require mode=fullproxy: they are
+// implemented in the userspace sockproxy, and outside fullproxy the kernel
+// selector matches no case and black-holes every connection.
+func (s EpSelect) IsInferenceGatewayOnly() bool {
+	return s == LbSelCHWBL || s == LbSelGPUAware || s == LbSelWRRHash
+}
+
 type LbMode int32
 
 const (
