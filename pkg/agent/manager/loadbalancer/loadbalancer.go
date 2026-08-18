@@ -705,8 +705,6 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		epSelect = api.LbSelLeastConnections
 	case "n2":
 		epSelect = api.LbSelN2
-	case "n2det":
-		epSelect = api.LbSelN2DET
 	case "n3":
 		epSelect = api.LbSelN3
 	case "rr":
@@ -714,6 +712,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	case "roundrobin":
 		epSelect = api.LbSelRr
 	default:
+		if eps != "" {
+			klog.Warningf("service %s/%s: unknown %s value %q - falling back to round-robin",
+				svc.Namespace, svc.Name, endPointSelAnnotation, eps)
+		}
 		epSelect = api.LbSelRr
 	}
 

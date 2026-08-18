@@ -21,10 +21,20 @@ const (
 	LbSelLeastConnections
 	// LbSelN2 - select client based on N2 interface contents
 	LbSelN2
-	// LbSelN2DET - select client based on N2DET contents
-	LbSelN2DET
 	// LbSelN3 - select client based on N3 interface contents
 	LbSelN3
+	// 7 - reserved by loxilb (was QUIC selection). Kept as a hole so the
+	// constants below keep the values loxilb actually assigns.
+	_
+	// LbSelCHWBL - Consistent Hash with Bounded Loads, for prefix-cache aware
+	// routing. loxilb-inference-gateway only, and fullproxy only.
+	LbSelCHWBL
+	// LbSelGPUAware - GPU-aware selection for LLM workloads.
+	// loxilb-inference-gateway only, and fullproxy only.
+	LbSelGPUAware
+	// LbSelWRRHash - Weighted Consistent Hash with Bounded Loads.
+	// loxilb-inference-gateway only, and fullproxy only.
+	LbSelWRRHash
 )
 
 type LbMode int32
