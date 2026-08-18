@@ -24,7 +24,6 @@ import (
 	"github.com/pkg/errors"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -296,15 +295,13 @@ type pdEndpointRole struct {
 	NixlPort int32
 }
 
-// resolvePDRoles - map endpoint address to prefill/decode role by looking up
-// the pods each selector matches.
+// resolvePDRoles - map endpoint address to prefill/decode role from the labels
+// of the pods each selector matches.
 //
 // Returns nil when the service does not use disaggregation, which leaves every
-// endpoint at ep_role=0 and keeps the payload unchanged.
-//
-// Pods are listed on demand rather than through an informer: this runs only for
-// services that opt into disaggregation, and a cluster-wide pod watch would
-// cost every kube-loxilb user memory for a feature few of them use.
+// endpoint at ep_role=0 and keeps the payload unchanged. That early return is
+// also what keeps the pod watch lazy: a cluster with no disaggregated service
+// never reaches the watcher.
 func (m *Manager) resolvePDRoles(ctx context.Context, svc *corev1.Service, aiArgs api.AIArgs) (map[string]pdEndpointRole, error) {
 	if !aiArgs.PDDisaggMode {
 		return nil, nil
@@ -315,17 +312,19 @@ func (m *Manager) resolvePDRoles(ctx context.Context, svc *corev1.Service, aiArg
 		return nil, err
 	}
 
+	podLister, err := m.pdPods.Lister(ctx, svc.Namespace, podCacheScope(pools))
+	if err != nil {
+		return nil, err
+	}
+
 	roles := make(map[string]pdEndpointRole)
 	for _, pool := range pools {
-		podList, err := m.kubeClient.CoreV1().Pods(svc.Namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: pool.selector.String(),
-		})
+		pods, err := podLister.Pods(svc.Namespace).List(pool.selector)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list pods for %s pool: %v", roleName(pool.role), err)
+			return nil, fmt.Errorf("failed to select pods for the %s pool: %v", roleName(pool.role), err)
 		}
 
-		for i := range podList.Items {
-			pod := &podList.Items[i]
+		for _, pod := range pods {
 			for _, podIP := range podIPs(pod) {
 				if existing, dup := roles[podIP]; dup && existing.Role != pool.role {
 					// One pod matching both selectors would make the rule

@@ -131,6 +131,7 @@ type Manager struct {
 	ClientSelMasterCh   chan bool
 	ClientDeadCh        chan struct{}
 	eventRecorder       record.EventRecorder
+	pdPods              *pdPodWatcher
 }
 
 type LbArgs struct {
@@ -295,6 +296,10 @@ func NewLoadBalancerManager(
 		manager.zoneInstRoleMap[name] = &LoxiInstRole{instID: i}
 	}
 
+	// Pod roles feed prefill/decode disaggregation. The watcher registers no
+	// informer until a service actually asks for it.
+	manager.pdPods = newPDPodWatcher(kubeClient, resyncPeriod, manager.enqueueServicesForPod)
+
 	serviceInformer.Informer().AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(cur interface{}) {
@@ -352,6 +357,8 @@ func (m *Manager) Run(stopCh <-chan struct{}) {
 		m.endpointSliceSynced) {
 		return
 	}
+
+	m.pdPods.SetStopCh(stopCh)
 
 	go m.manageLoxiLbLifeCycle(stopCh)
 
@@ -1048,7 +1055,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	if !update {
-		update = m.checkUpdateEndpoints(svc, cacheKey, endpointIPs, useExternalEndpoint) || m.checkUpdateExternalIP(ingSvcPairs, svc)
+		update = m.checkUpdateEndpoints(svc, cacheKey, endpointIPs, pdRoles, useExternalEndpoint) || m.checkUpdateExternalIP(ingSvcPairs, svc)
 	}
 
 	if !update {
@@ -1609,7 +1616,29 @@ func (m *Manager) checkUpdateExternalIP(ingSvcPairs []SvcPair, svc *corev1.Servi
 	return false
 }
 
-func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, endpointIPs []string, matchPorts bool) bool {
+// derivedEndpoint - the part of an endpoint kube-loxilb derives itself rather
+// than reading back from loxilb.
+//
+// The change detector compares these rather than addresses, because a pod
+// relabelled in place keeps its address: the endpoint set looks identical and
+// the write would be skipped while loxilb still holds the old role. Any future
+// pod-derived field belongs in this struct and is then covered for free.
+type derivedEndpoint struct {
+	IP       string
+	EpRole   int32
+	NixlPort int32
+}
+
+func derivedEndpointOf(ep api.LoadBalancerEndpoint) derivedEndpoint {
+	return derivedEndpoint{IP: ep.EndpointIP, EpRole: ep.EpRole, NixlPort: ep.NixlPort}
+}
+
+func wantedDerivedEndpoint(ip string, pdRoles map[string]pdEndpointRole) derivedEndpoint {
+	role := pdRoles[ip]
+	return derivedEndpoint{IP: ip, EpRole: role.Role, NixlPort: role.NixlPort}
+}
+
+func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, endpointIPs []string, pdRoles map[string]pdEndpointRole, matchPorts bool) bool {
 	var update bool
 
 	if matchPorts {
@@ -1621,11 +1650,14 @@ func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, end
 			return true
 		}
 		for _, endpoint := range endpointIPs {
+			pdRole := pdRoles[endpoint]
 			for _, tport := range tports {
 				loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
 					EndpointIP: endpoint,
 					TargetPort: uint16(tport),
 					Weight:     1,
+					EpRole:     pdRole.Role,
+					NixlPort:   pdRole.NixlPort,
 				})
 			}
 		}
@@ -1637,8 +1669,8 @@ func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, end
 					for _, endpoint := range loxiEndpointModelList {
 						found := false
 						for _, oldEp := range lb.Endpoints {
-							if oldEp.EndpointIP == endpoint.EndpointIP &&
-								oldEp.TargetPort == endpoint.TargetPort {
+							if oldEp.TargetPort == endpoint.TargetPort &&
+								derivedEndpointOf(oldEp) == derivedEndpointOf(endpoint) {
 								found = true
 								break
 							}
@@ -1664,9 +1696,10 @@ func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, end
 			if len(endpointIPs) == len(lb.Endpoints) {
 				nEps := 0
 				for _, ep := range endpointIPs {
+					want := wantedDerivedEndpoint(ep, pdRoles)
 					found := false
 					for _, oldEp := range lb.Endpoints {
-						if ep == oldEp.EndpointIP {
+						if want == derivedEndpointOf(oldEp) {
 							found = true
 							nEps++
 							break
