@@ -157,6 +157,7 @@ type LbArgs struct {
 	mtlsFrontend        *api.MtlsFrontend
 	mtlsBackend         *api.MtlsBackend
 	aiArgs              api.AIArgs
+	pdRoles             map[string]pdEndpointRole
 }
 
 type LbModelEnt struct {
@@ -746,8 +747,26 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return err
 	}
 
+	// Roles are per pod, so the endpoints have to be pods. In the default mode
+	// the endpoints are node addresses, where every pod on a node collapses
+	// into one entry and the prefill/decode split cannot be represented.
+	if aiArgs.PDDisaggMode && !usePodNet && !needMultusEP && !useExternalEndpoint {
+		err := fmt.Errorf("%s needs pod endpoints - set %s: \"yes\", or use a multus network",
+			pdDisaggAnnotation, usePodNetworkAnnotation)
+		klog.Errorf("Failed to configure P/D for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidInferenceConfig, err.Error())
+		return err
+	}
+
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	lbCacheEntry, added := m.lbCache[cacheKey]
+
+	pdRoles, err := m.resolvePDRoles(context.Background(), svc, aiArgs)
+	if err != nil {
+		klog.Errorf("Failed to resolve P/D endpoint roles for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidInferenceConfig, err.Error())
+		return err
+	}
 
 	endpointIPs, err := m.getEndpoints(svc, usePodNet, useExternalEndpoint, needMultusEP, epAddrType, matchNodeLabel)
 	if err != nil {
@@ -1093,6 +1112,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			mtlsFrontend:        mtlsFrontend,
 			mtlsBackend:         mtlsBackend,
 			aiArgs:              m.lbCache[cacheKey].AIArgs,
+			pdRoles:             pdRoles,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -2030,11 +2050,17 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 				return api.LoadBalancerModel{}, errors.New("no endpoints to make lbmodel")
 			}
 
+			// Zero value when the service is not disaggregated, which leaves
+			// ep_role and nixl_port out of the payload entirely.
+			pdRole := lbArgs.pdRoles[endpoint]
+
 			for _, tport := range tports {
 				loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
 					EndpointIP: endpoint,
 					TargetPort: uint16(tport),
 					Weight:     1,
+					EpRole:     pdRole.Role,
+					NixlPort:   pdRole.NixlPort,
 				})
 			}
 		}

@@ -120,11 +120,23 @@ const (
 	EpRoleDecode int32 = 2
 )
 
-// Validate - reject, client side, the combinations the gateway rejects server
-// side, so the operator surfaces an actionable message instead of a 500 from
-// loxilb.
+// Validate - the full client-side check: service arguments first, then the
+// endpoint roles. Use this once the payload is assembled.
+func (a AIArgs) Validate(mode LbMode, eps []LoadBalancerEndpoint) error {
+	if err := a.ValidateServiceArgs(mode); err != nil {
+		return err
+	}
+
+	return a.ValidateEndpoints(eps)
+}
+
+// ValidateServiceArgs - the subset of the checks that does not need endpoints,
+// for callers that validate while parsing configuration, before endpoint
+// discovery has run.
 //
-// The checks and their wording mirror loxilb-inference-gateway
+// Rejects, client side, the combinations the gateway rejects server side, so
+// the operator surfaces an actionable message instead of a 500 from loxilb. The
+// checks and their wording mirror loxilb-inference-gateway
 // pkg/loxinet/rules.go (addLbRule validation block) and the bounds declared in
 // its api/swagger.yml.
 //
@@ -134,26 +146,14 @@ const (
 // Endpoint-selection algorithms (sel=8/9/10) carry their own fullproxy
 // requirement, but they are validated where the sel value is resolved, not
 // here.
-func (a AIArgs) Validate(mode LbMode, eps []LoadBalancerEndpoint) error {
+func (a AIArgs) ValidateServiceArgs(mode LbMode) error {
 	if !a.IsSet() {
 		return nil
 	}
 
 	// --- P/D disaggregation ---
-	if a.PDDisaggMode {
-		if mode != LBModeFullProxy {
-			return fmt.Errorf("pd-disagg requires mode=fullproxy")
-		}
-
-		hasPrefill := slices.ContainsFunc(eps, func(ep LoadBalancerEndpoint) bool {
-			return ep.EpRole == EpRolePrefill
-		})
-		hasDecode := slices.ContainsFunc(eps, func(ep LoadBalancerEndpoint) bool {
-			return ep.EpRole == EpRoleDecode
-		})
-		if !hasPrefill || !hasDecode {
-			return fmt.Errorf("pd-disagg requires at least 1 prefill (ep_role=1) and 1 decode (ep_role=2) endpoint")
-		}
+	if a.PDDisaggMode && mode != LBModeFullProxy {
+		return fmt.Errorf("pd-disagg requires mode=fullproxy")
 	}
 
 	if a.PDCacheAwareMode && !a.PDDisaggMode {
@@ -225,6 +225,15 @@ func (a AIArgs) Validate(mode LbMode, eps []LoadBalancerEndpoint) error {
 		return fmt.Errorf("backend_keepalive_interval_sec must be >= 0, got %d", a.BackendKeepaliveIntervalSec)
 	}
 
+	return nil
+}
+
+// ValidateEndpoints - the checks that need the assembled endpoint list.
+func (a AIArgs) ValidateEndpoints(eps []LoadBalancerEndpoint) error {
+	if !a.IsSet() {
+		return nil
+	}
+
 	for i, ep := range eps {
 		switch ep.EpRole {
 		case EpRoleNormal, EpRolePrefill, EpRoleDecode:
@@ -235,6 +244,19 @@ func (a AIArgs) Validate(mode LbMode, eps []LoadBalancerEndpoint) error {
 		if ep.NixlPort < 0 || ep.NixlPort > 65535 {
 			return fmt.Errorf("endpoint[%d] %s: nixl_port must be within 0..65535, got %d",
 				i, ep.EndpointIP, ep.NixlPort)
+		}
+	}
+
+	// loxilb refuses a disaggregated rule that cannot actually split work.
+	if a.PDDisaggMode {
+		hasPrefill := slices.ContainsFunc(eps, func(ep LoadBalancerEndpoint) bool {
+			return ep.EpRole == EpRolePrefill
+		})
+		hasDecode := slices.ContainsFunc(eps, func(ep LoadBalancerEndpoint) bool {
+			return ep.EpRole == EpRoleDecode
+		})
+		if !hasPrefill || !hasDecode {
+			return fmt.Errorf("pd-disagg requires at least 1 prefill (ep_role=1) and 1 decode (ep_role=2) endpoint")
 		}
 	}
 
