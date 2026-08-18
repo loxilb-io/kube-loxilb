@@ -17,12 +17,15 @@
 package loadbalancer
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 
 	"github.com/pkg/errors"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 )
@@ -56,6 +59,17 @@ const (
 	chwblReplicationAnnotation     = "loxilb.io/chwbl-replication"
 	chwblEnableCacheSaltAnnotation = "loxilb.io/chwbl-enable-cache-salt"
 
+	// --- Prefill/decode disaggregation ---
+	pdDisaggAnnotation              = "loxilb.io/pd-disagg"
+	pdPrefillSelectorAnnotation     = "loxilb.io/pd-prefill-selector"
+	pdDecodeSelectorAnnotation      = "loxilb.io/pd-decode-selector"
+	pdPrefillNixlPortAnnotation     = "loxilb.io/pd-prefill-nixl-port"
+	pdDecodeNixlPortAnnotation      = "loxilb.io/pd-decode-nixl-port"
+	pdCacheAwareAnnotation          = "loxilb.io/pd-cache-aware"
+	pdCacheThresholdAnnotation      = "loxilb.io/pd-cache-threshold"
+	pdSessionTTLAnnotation          = "loxilb.io/pd-session-ttl"
+	pdBalanceAbsThresholdAnnotation = "loxilb.io/pd-balance-abs-threshold"
+
 	// --- KV-cache exact routing ---
 	kvExactModeAnnotation   = "loxilb.io/kv-exact-mode"
 	kvZmqPortAnnotation     = "loxilb.io/kv-zmq-port"
@@ -78,6 +92,10 @@ var aiAnnotations = []string{
 	kvExactModeAnnotation, kvZmqPortAnnotation, kvBlockSizeAnnotation,
 	kvHashAlgoAnnotation, kvEngineTypeAnnotation, kvDpRankCountAnnotation,
 	kvWarmupSecAnnotation,
+	pdDisaggAnnotation, pdPrefillSelectorAnnotation, pdDecodeSelectorAnnotation,
+	pdPrefillNixlPortAnnotation, pdDecodeNixlPortAnnotation,
+	pdCacheAwareAnnotation, pdCacheThresholdAnnotation, pdSessionTTLAnnotation,
+	pdBalanceAbsThresholdAnnotation,
 }
 
 // hasAIAnnotation - whether the service asks for anything gateway-specific,
@@ -187,6 +205,12 @@ func (m *Manager) getAIArgs(svc *corev1.Service, lbMode int, sel api.EpSelect) (
 	aiArgs.ChwblMeanLoadFactor = int(intVal(chwblMeanLoadFactorAnnotation))
 	aiArgs.ChwblReplication = int(intVal(chwblReplicationAnnotation))
 
+	aiArgs.PDDisaggMode = boolVal(pdDisaggAnnotation)
+	aiArgs.PDCacheAwareMode = boolVal(pdCacheAwareAnnotation)
+	aiArgs.PDCacheThreshold = int32(intVal(pdCacheThresholdAnnotation))
+	aiArgs.PDSessionTTLSec = int32(intVal(pdSessionTTLAnnotation))
+	aiArgs.PDBalanceAbsThreshold = int32(intVal(pdBalanceAbsThresholdAnnotation))
+
 	aiArgs.KvExactMode = intVal(kvExactModeAnnotation)
 	aiArgs.KvZmqPort = intVal(kvZmqPortAnnotation)
 	aiArgs.KvBlockSize = intVal(kvBlockSizeAnnotation)
@@ -207,13 +231,137 @@ func (m *Manager) getAIArgs(svc *corev1.Service, lbMode int, sel api.EpSelect) (
 			endPointSelAnnotation, svc.Annotations[endPointSelAnnotation], lbModeAnnotation)
 	}
 
-	// Endpoints are not known yet; the endpoint-role rules are re-checked
-	// against the real payload in makeLoxiLoadBalancerModel.
-	if err := aiArgs.Validate(mode, nil); err != nil {
+	// Endpoints are not known yet, so only the service-level rules can run here.
+	// The endpoint-role rules are checked against the real payload in
+	// makeLoxiLoadBalancerModel.
+	if err := aiArgs.ValidateServiceArgs(mode); err != nil {
 		return api.AIArgs{}, err
 	}
 
+	if aiArgs.PDDisaggMode {
+		if svc.Annotations[pdPrefillSelectorAnnotation] == "" || svc.Annotations[pdDecodeSelectorAnnotation] == "" {
+			return api.AIArgs{}, fmt.Errorf("%s requires both %s and %s",
+				pdDisaggAnnotation, pdPrefillSelectorAnnotation, pdDecodeSelectorAnnotation)
+		}
+		if _, err := parsePDPools(svc); err != nil {
+			return api.AIArgs{}, err
+		}
+	}
+
 	return aiArgs, nil
+}
+
+// pdPool - one side of a disaggregated pair: which pods belong to it, and the
+// NIXL side-channel port they listen on.
+type pdPool struct {
+	role     int32
+	selector labels.Selector
+	nixlPort int32
+}
+
+// parsePDPools - read the prefill and decode pool definitions from annotations.
+func parsePDPools(svc *corev1.Service) ([]pdPool, error) {
+	pools := []pdPool{
+		{role: api.EpRolePrefill},
+		{role: api.EpRoleDecode},
+	}
+	selAnnotations := []string{pdPrefillSelectorAnnotation, pdDecodeSelectorAnnotation}
+	portAnnotations := []string{pdPrefillNixlPortAnnotation, pdDecodeNixlPortAnnotation}
+
+	for i := range pools {
+		sel, err := labels.Parse(svc.Annotations[selAnnotations[i]])
+		if err != nil {
+			return nil, fmt.Errorf("%s: %q is not a label selector: %v",
+				selAnnotations[i], svc.Annotations[selAnnotations[i]], err)
+		}
+		pools[i].selector = sel
+
+		port, err := annoInt(svc, portAnnotations[i])
+		if err != nil {
+			return nil, err
+		}
+		if port < 0 || port > 65535 {
+			return nil, fmt.Errorf("%s must be within 0..65535, got %d", portAnnotations[i], port)
+		}
+		pools[i].nixlPort = int32(port)
+	}
+
+	return pools, nil
+}
+
+// pdEndpointRole - what to stamp onto an endpoint whose address belongs to a
+// pod of one of the pools.
+type pdEndpointRole struct {
+	Role     int32
+	NixlPort int32
+}
+
+// resolvePDRoles - map endpoint address to prefill/decode role by looking up
+// the pods each selector matches.
+//
+// Returns nil when the service does not use disaggregation, which leaves every
+// endpoint at ep_role=0 and keeps the payload unchanged.
+//
+// Pods are listed on demand rather than through an informer: this runs only for
+// services that opt into disaggregation, and a cluster-wide pod watch would
+// cost every kube-loxilb user memory for a feature few of them use.
+func (m *Manager) resolvePDRoles(ctx context.Context, svc *corev1.Service, aiArgs api.AIArgs) (map[string]pdEndpointRole, error) {
+	if !aiArgs.PDDisaggMode {
+		return nil, nil
+	}
+
+	pools, err := parsePDPools(svc)
+	if err != nil {
+		return nil, err
+	}
+
+	roles := make(map[string]pdEndpointRole)
+	for _, pool := range pools {
+		podList, err := m.kubeClient.CoreV1().Pods(svc.Namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: pool.selector.String(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list pods for %s pool: %v", roleName(pool.role), err)
+		}
+
+		for i := range podList.Items {
+			pod := &podList.Items[i]
+			for _, podIP := range podIPs(pod) {
+				if existing, dup := roles[podIP]; dup && existing.Role != pool.role {
+					// One pod matching both selectors would make the rule
+					// depend on map iteration order. Refuse instead.
+					return nil, fmt.Errorf("pod %s/%s (%s) matches both the prefill and the decode selector",
+						pod.Namespace, pod.Name, podIP)
+				}
+				roles[podIP] = pdEndpointRole{Role: pool.role, NixlPort: pool.nixlPort}
+			}
+		}
+	}
+
+	return roles, nil
+}
+
+// podIPs - every address a pod answers on, covering dual-stack.
+func podIPs(pod *corev1.Pod) []string {
+	var ips []string
+
+	if pod.Status.PodIP != "" {
+		ips = append(ips, pod.Status.PodIP)
+	}
+	for _, ip := range pod.Status.PodIPs {
+		if ip.IP != "" && ip.IP != pod.Status.PodIP {
+			ips = append(ips, ip.IP)
+		}
+	}
+
+	return ips
+}
+
+func roleName(role int32) string {
+	if role == api.EpRolePrefill {
+		return "prefill"
+	}
+	return "decode"
 }
 
 // ErrInferenceGatewayRequired - the peer cannot serve the requested routing.

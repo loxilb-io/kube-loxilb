@@ -116,7 +116,7 @@ All of these require <b>loxilb.io/lbmode: "fullproxy"</b> in practice; the selec
 | <b>loxilb.io/chwbl-mean-load-factor</b> | Bounded-load factor as a percentage, 100..300. Default 125. Lower values spread load more evenly at the cost of cache locality. |
 | <b>loxilb.io/chwbl-replication</b> | Virtual nodes per endpoint on the hash ring, 1..1024. Default 100. |
 | <b>loxilb.io/chwbl-enable-cache-salt</b> | Salt the cache key. `"true"`/`"yes"`. Default false. |
-| <b>loxilb.io/kv-exact-mode</b> | KV-cache exact routing. Use `"3"` for a single role-less serving pool. Mode `1` is for prefill/decode disaggregation and is not reachable from annotations (see below). |
+| <b>loxilb.io/kv-exact-mode</b> | KV-cache exact routing. Use `"3"` for a single role-less serving pool, or `"1"` alongside prefill/decode disaggregation (see below). |
 | <b>loxilb.io/kv-engine-type</b> | `"vllm"` (default) or `"sglang"`. Immutable once the rule exists: changing it needs a delete and recreate. |
 | <b>loxilb.io/kv-dp-rank-count</b> | SGLang `--dp-size`, 1..8. Default 1. |
 | <b>loxilb.io/kv-block-size</b> | KV block size in tokens. Default 16. Must match the engine. |
@@ -124,7 +124,57 @@ All of these require <b>loxilb.io/lbmode: "fullproxy"</b> in practice; the selec
 | <b>loxilb.io/kv-warmup-sec</b> | Warmup window in seconds. The gateway's swagger documents a default of 30 but no code applies it, so set this explicitly if warmup matters. |
 | <b>loxilb.io/kv-hash-algo</b> | `"sha256_cbor"`, `"xxhash_cbor"` or `"sha256_sglang"`. Best omitted: loxilb then derives it from the engine type and the pair can never be incoherent. |
 
-<b>Prefill/decode disaggregation is not available through annotations.</b> It needs a per-endpoint role (prefill or decode), and a single Service's EndpointSlice has no way to say which pod is which. Enabling it without roles is rejected by loxilb every time. It is being designed separately.
+* Prefill/decode disaggregation:
+
+Disaggregation needs a role per endpoint, which a Service cannot state directly. kube-loxilb derives it: two label selectors name the prefill and the decode pods, and each endpoint is stamped with the role of the pod it belongs to.
+
+Because the role is per pod, the endpoints have to <b>be</b> pods. Set <b>loxilb.io/usepodnetwork: "yes"</b> (or use a multus network). In the default mode the endpoints are node addresses, every pod on a node collapses into one entry, and the split cannot be represented - kube-loxilb rejects that combination rather than programming a rule that cannot work.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/pd-disagg</b> | Turn on prefill/decode disaggregation. `"true"`/`"yes"`. Requires fullproxy, pod endpoints, and both selectors below. |
+| <b>loxilb.io/pd-prefill-selector</b> | Label selector for the prefill pods, e.g. `"llm-role=prefill"`. |
+| <b>loxilb.io/pd-decode-selector</b> | Label selector for the decode pods. A pod may not match both. |
+| <b>loxilb.io/pd-prefill-nixl-port</b> | NIXL side-channel port the prefill pods listen on, matching their `VLLM_NIXL_SIDE_CHANNEL_PORT`. 0 or unset reuses the target port. |
+| <b>loxilb.io/pd-decode-nixl-port</b> | The same for the decode pods. |
+| <b>loxilb.io/pd-cache-aware</b> | Cache-aware prefill placement. Requires `pd-disagg`. |
+| <b>loxilb.io/pd-cache-threshold</b> | Cache-hit percentage above which the cached prefill endpoint is preferred, 0..100. Default 20. |
+| <b>loxilb.io/pd-session-ttl</b> | Session lifetime in seconds. Default 0. |
+| <b>loxilb.io/pd-balance-abs-threshold</b> | Absolute load gap before rebalancing. Default 3. |
+
+With disaggregation on, <b>loxilb.io/kv-exact-mode: "1"</b> becomes available; mode `3` is for a single role-less pool and loxilb rejects it here.
+
+The port is uniform per pool, not per pod: all prefill pods are assumed to share one NIXL port and all decode pods another, which is how one Deployment per role deploys. Per-pod ports would need a pod annotation and are not supported.
+
+Example - a prefill pool and a decode pool behind one Service:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-pd
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+    loxilb.io/usepodnetwork: "yes"
+    loxilb.io/pd-disagg: "true"
+    loxilb.io/pd-prefill-selector: "llm-role=prefill"
+    loxilb.io/pd-decode-selector: "llm-role=decode"
+    loxilb.io/pd-prefill-nixl-port: "9001"
+    loxilb.io/pd-decode-nixl-port: "9002"
+    loxilb.io/kv-exact-mode: "1"
+    loxilb.io/sse-mode: "true"
+spec:
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: vllm          # selects both pools
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: LoadBalancer
+```
+
+The Service selector must cover both pools, since one rule carries both. The two role selectors then partition what it found.
 
 <b>KV-exact routing needs a staged tokenizer.</b> loxilb reads `/etc/loxilb/tokenizers/<model-slug>/tokenizer.json`, where `<model-slug>` is the model name with `/` replaced by `__`. kube-loxilb does not manage that file. If it is missing, loxilb logs `kv-router: tokenizer not available` once and silently falls back to load-based routing -- the rule is still created and traffic still flows, just without cache-aware placement.
 
