@@ -172,6 +172,11 @@ type LoadBalancerService struct {
 	PathMatchMode   PathMatchModeType   `json:"path_match_mode,omitempty"`
 	MtlsFrontend    *MtlsFrontend       `json:"mtls_frontend,omitempty"`
 	MtlsBackend     *MtlsBackend        `json:"mtls_backend,omitempty"`
+
+	// AIArgs - loxilb-inference-gateway-only fields. Embedded, not named,
+	// because they sit flat inside serviceArguments on the wire. Promoted
+	// access means callers write svc.KvExactMode as if it were declared here.
+	AIArgs
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
@@ -184,6 +189,19 @@ type LoadBalancerEndpoint struct {
 	Weight     uint8  `json:"weight"`
 	State      string `json:"state"`
 	Counter    string `json:"counter"`
+
+	// --- loxilb-inference-gateway only: P/D disaggregation ---
+
+	// EpRole - 0=normal, 1=prefill, 2=decode. Only meaningful when the service
+	// sets pd_disagg_mode.
+	//
+	// Keep this (and every other field here) a value type: StripAIFields relies
+	// on a shallow slices.Clone to detach the per-client payload, which only
+	// holds while the element contains no pointers.
+	EpRole int32 `json:"ep_role,omitempty"`
+	// NixlPort - NIXL side-channel port for KV-cache transfer. 0 means reuse
+	// TargetPort. Must match the engine's VLLM_NIXL_SIDE_CHANNEL_PORT.
+	NixlPort int32 `json:"nixl_port,omitempty"`
 }
 
 type LoadBalancerSecIp struct {

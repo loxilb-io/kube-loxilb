@@ -1321,6 +1321,23 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 			model.Endpoints = lb.Endpoints
 		}
 	}
+
+	// Flavor gating. The same lb value is fanned out to every client in the
+	// pool, and a pool may mix loxilb-inference-gateway with plain upstream
+	// loxilb, so gateway-only fields are removed per client rather than per
+	// model. This must run after the prefLocal branch above, which re-aliases
+	// model.Endpoints back onto the caller's slice.
+	if !c.IsInferenceGateway() {
+		if model.Service.AIArgs.IsSet() {
+			// Refuse loudly. Silently downgrading to non-AI routing would look
+			// like success while serving the wrong traffic policy.
+			err = fmt.Errorf("inference-gateway routing requested but loxilb-lb(%s) is plain loxilb", c.Host)
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
+		api.StripAIFields(model)
+	}
+
 	if err = c.LoadBalancer().Create(ctx, model); err != nil {
 		if !strings.Contains(err.Error(), "exist") {
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
