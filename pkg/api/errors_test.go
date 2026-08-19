@@ -42,6 +42,18 @@ func TestIsConflict(t *testing.T) {
 			want: true,
 		},
 		{
+			// "not-exists" contains "exist" - the case a substring test cannot
+			// tell from a duplicate, and the server sorts to 404
+			name: "404 not-exists is a missing resource, not a duplicate",
+			err:  &APIError{StatusCode: http.StatusNotFound, Message: "lbrule not-exists error"},
+			want: false,
+		},
+		{
+			name: "a 4xx that says not found in words",
+			err:  &APIError{StatusCode: http.StatusBadRequest, Message: "no such rule"},
+			want: false,
+		},
+		{
 			name: "a transport error is not a conflict",
 			err:  errors.New("connection refused"),
 			want: false,

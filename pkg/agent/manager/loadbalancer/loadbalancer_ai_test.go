@@ -631,3 +631,18 @@ func TestInstallLBCarriesLoxiLBReason(t *testing.T) {
 		t.Error("a 400 must be reported as something the user has to fix")
 	}
 }
+
+// The other half of what the substring test could not separate: "not-exists"
+// contains "exist", so a missing rule used to read as an idempotent duplicate.
+func TestInstallLBDoesNotSwallowNotFound(t *testing.T) {
+	srv := rejectingLoxiLB(t, http.StatusNotFound, "lbrule not-exists error")
+
+	m := &Manager{}
+	err := m.installLB(clientFor(t, srv), aiLoadBalancerModel(), false)
+	if err == nil {
+		t.Fatal("a 404 not-exists was swallowed as a duplicate")
+	}
+	if !api.IsClientError(err) {
+		t.Error("a 404 must be reported as something the user has to fix")
+	}
+}
