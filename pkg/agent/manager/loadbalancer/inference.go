@@ -440,11 +440,9 @@ var ErrGPUMonitoringDisabled = errors.New("GPU monitoring is disabled on the lox
 // whose state cannot be observed at all, stage 1 reports itself. A check that is
 // available and not made is a different thing from blindness.
 func (m *Manager) checkGPUAware(ctx context.Context, c *api.LoxiClient) error {
-	status, err := c.GPU().Status(ctx)
-	if err != nil {
+	status, readable := m.gpuStatus(ctx, c)
+	if !readable {
 		// A failed diagnostic must not take down a rule that would have worked.
-		klog.Warningf("loxilb-lb(%s): could not read GPU monitoring status, programming sel=gpuaware anyway: %v",
-			c.Host, err)
 		return nil
 	}
 
@@ -483,13 +481,53 @@ func (m *Manager) reportGPUDisarmed(svc *corev1.Service) {
 			continue
 		}
 
-		// An unreachable peer fails the status query, which checkGPUAware
-		// treats as "cannot tell" - so a peer that is simply down stays quiet.
-		if err := m.checkGPUAware(ctx, c); err != nil {
-			klog.Errorf("service %s/%s: %v", svc.Namespace, svc.Name, err)
-			m.recordServiceWarning(svc, ReasonGPUMonitoringDisabled, err.Error())
+		status, readable := m.gpuStatus(ctx, c)
+		if !readable {
+			// "Cannot tell" is not "disarmed". Leave the remembered state
+			// alone so a blip does not read as a transition either way.
+			continue
 		}
+
+		if !m.gpuArmingChangedToOff(c.Host, status.GPUArmed()) {
+			continue
+		}
+
+		msg := fmt.Sprintf("loxilb-lb(%s) no longer has GPU-aware routing armed (enabled=%v, routing_mode=%q), "+
+			"so this rule now selects as CHWBL",
+			c.Host, status.Enabled, status.RoutingMode)
+		klog.Errorf("service %s/%s: %s", svc.Namespace, svc.Name, msg)
+		m.recordServiceWarning(svc, ReasonGPUMonitoringDisabled, msg)
 	}
+}
+
+// gpuArmingChangedToOff - remember the arming state per peer and report only
+// the edge into disarmed.
+//
+// A warning on every reconcile is noise even with event aggregation; a warning
+// at the moment arming is lost is something an operator can act on. A peer seen
+// disarmed for the first time also reports, since that covers a controller
+// restarting after the mode was turned off.
+func (m *Manager) gpuArmingChangedToOff(host string, armed bool) bool {
+	m.gpuArmedMu.Lock()
+	defer m.gpuArmedMu.Unlock()
+
+	previous, seen := m.gpuArmed[host]
+	m.gpuArmed[host] = armed
+
+	return !armed && (!seen || previous)
+}
+
+// gpuStatus - read GPU monitoring state, distinguishing "disarmed" from
+// "cannot tell". The difference matters: an unreachable peer must neither
+// block a rule nor be reported as a regression.
+func (m *Manager) gpuStatus(ctx context.Context, c *api.LoxiClient) (*api.GPUStatusModel, bool) {
+	status, err := c.GPU().Status(ctx)
+	if err != nil {
+		klog.V(4).Infof("loxilb-lb(%s): GPU monitoring status unreadable: %v", c.Host, err)
+		return nil, false
+	}
+
+	return status, true
 }
 
 // Event reasons raised against a Service.

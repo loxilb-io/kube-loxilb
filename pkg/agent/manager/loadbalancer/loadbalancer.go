@@ -132,6 +132,11 @@ type Manager struct {
 	ClientDeadCh        chan struct{}
 	eventRecorder       record.EventRecorder
 	pdPods              *pdPodWatcher
+
+	// gpuArmed - last observed GPU arming state per peer, so the reconcile
+	// check reports the edge into disarmed rather than every observation.
+	gpuArmedMu sync.Mutex
+	gpuArmed   map[string]bool
 }
 
 type LbArgs struct {
@@ -301,6 +306,7 @@ func NewLoadBalancerManager(
 	// Pod roles feed prefill/decode disaggregation. The watcher registers no
 	// informer until a service actually asks for it.
 	manager.pdPods = newPDPodWatcher(kubeClient, resyncPeriod, manager.enqueueServicesForPod)
+	manager.gpuArmed = make(map[string]bool)
 
 	serviceInformer.Informer().AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
