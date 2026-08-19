@@ -3,6 +3,7 @@ package loadbalancer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -545,5 +546,88 @@ func TestReportGPUDisarmedBlipDoesNotFabricateTransition(t *testing.T) {
 	case event := <-recorder.Events:
 		t.Errorf("a blip produced an event: %s", event)
 	default:
+	}
+}
+
+// rejectingLoxiLB answers the load-balancer POST with a loxilb-shaped error.
+func rejectingLoxiLB(t *testing.T, status int, reason string) *httptest.Server {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/netlox/v1/version" {
+			// a gateway, so the flavor gate lets the AI model through and the
+			// rejection under test is the one that surfaces
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&api.VersionModel{
+				Version: "test", Product: api.ProductInferenceGateway,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = fmt.Fprintf(w, `{"result":%q}`, reason)
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv
+}
+
+func clientFor(t *testing.T, srv *httptest.Server) *api.LoxiClient {
+	t.Helper()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse url: %v", err)
+	}
+	rc, err := api.NewRESTClient(base, "netlox", "v1", srv.Client())
+	if err != nil {
+		t.Fatalf("NewRESTClient: %v", err)
+	}
+	c := &api.LoxiClient{RestClient: rc, Url: srv.URL, Host: base.Host}
+	c.DetectFlavor(context.Background())
+
+	return c
+}
+
+// A duplicate is the steady state and must stay silent. Keyed on 409, not on
+// the wording.
+func TestInstallLBTreats409AsAlreadyDone(t *testing.T) {
+	srv := rejectingLoxiLB(t, http.StatusConflict, "lbrule-exist error")
+
+	m := &Manager{}
+	if err := m.installLB(clientFor(t, srv), aiLoadBalancerModel(), false); err != nil {
+		t.Errorf("a 409 duplicate surfaced as an error: %v", err)
+	}
+}
+
+// The failure the wording test used to swallow.
+func TestInstallLBDoesNotSwallowServerErrorMentioningExist(t *testing.T) {
+	srv := rejectingLoxiLB(t, http.StatusInternalServerError, "datapath sync failed: map does not exist")
+
+	m := &Manager{}
+	err := m.installLB(clientFor(t, srv), aiLoadBalancerModel(), false)
+	if err == nil {
+		t.Fatal("a 500 was swallowed because its wording contained \"exist\"")
+	}
+	if api.IsClientError(err) {
+		t.Error("a 500 must not be reported as something the user has to fix")
+	}
+}
+
+// loxilb's own reason has to reach the caller intact - it is more specific than
+// anything kube-loxilb could reconstruct.
+func TestInstallLBCarriesLoxiLBReason(t *testing.T) {
+	srv := rejectingLoxiLB(t, http.StatusBadRequest, "kv-exact zmq mode requires pd_disagg_mode=true")
+
+	m := &Manager{}
+	err := m.installLB(clientFor(t, srv), aiLoadBalancerModel(), false)
+	if err == nil {
+		t.Fatal("a 400 rejection was not reported")
+	}
+	if !strings.Contains(err.Error(), "kv-exact zmq mode requires pd_disagg_mode=true") {
+		t.Errorf("loxilb's reason was lost: %v", err)
+	}
+	if !api.IsClientError(err) {
+		t.Error("a 400 must be reported as something the user has to fix")
 	}
 }
