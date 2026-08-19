@@ -295,6 +295,10 @@ func (l *LoxiClient) K8sMeta() *K8sMetaAPI {
 	return newK8sMetaAPI(l.GetRESTClient())
 }
 
+func (l *LoxiClient) GPU() *GPUAPI {
+	return newGPUAPI(l.GetRESTClient())
+}
+
 func (l *LoxiClient) Version() *VersionAPI {
 	return newVersionAPI(l.GetRESTClient())
 }

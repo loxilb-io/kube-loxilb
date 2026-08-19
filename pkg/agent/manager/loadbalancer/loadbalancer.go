@@ -1168,6 +1168,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if errors.Is(loxilbAPIErr, ErrInferenceGatewayRequired) {
 			m.recordServiceWarning(svc, ReasonInferenceGatewayRequired, loxilbAPIErr.Error())
 		}
+		if errors.Is(loxilbAPIErr, ErrGPUMonitoringDisabled) {
+			m.recordServiceWarning(svc, ReasonGPUMonitoringDisabled, loxilbAPIErr.Error())
+		}
 
 		if loxilbAPIErr != nil && errCount >= len(m.LoxiClients.Clients) {
 			retIPAMOnErr = true
@@ -1409,6 +1412,15 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 			return err
 		}
 		api.StripAIFields(model)
+	}
+
+	// sel=gpuaware is armed instance-wide, not by the rule, so a peer that
+	// accepts this rule may still select as CHWBL. That state is readable.
+	if model.Service.Sel == api.LbSelGPUAware && c.IsInferenceGateway() {
+		if err = m.checkGPUAware(ctx, c); err != nil {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
 	}
 
 	if err = c.LoadBalancer().Create(ctx, model); err != nil {

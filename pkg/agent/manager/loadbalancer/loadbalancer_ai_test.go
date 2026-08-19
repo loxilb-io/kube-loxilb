@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/pkg/errors"
+
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 )
 
@@ -18,6 +20,10 @@ import (
 // /netlox/v1/config/loadbalancer and reports the given product on /version.
 type fakeLoxiLB struct {
 	srv *httptest.Server
+
+	// gpuStatus is served from /config/gpu/status; nil makes the endpoint fail,
+	// standing in for a peer that cannot answer.
+	gpuStatus *api.GPUStatusModel
 
 	mu     sync.Mutex
 	bodies []string
@@ -33,6 +39,14 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			v := api.VersionModel{Version: "test", Product: product}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(&v)
+
+		case r.URL.Path == "/netlox/v1/config/gpu/status":
+			if f.gpuStatus == nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(f.gpuStatus)
 
 		case r.URL.Path == "/netlox/v1/config/loadbalancer" && r.Method == http.MethodPost:
 			body, err := io.ReadAll(r.Body)
@@ -246,5 +260,114 @@ func TestInstallLBPlainRuleUnchanged(t *testing.T) {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("plain payload gained %q\n%s", unwanted, body)
 		}
+	}
+}
+
+// gpuLB - a sel=gpuaware rule.
+func gpuLoadBalancerModel() api.LoadBalancerModel {
+	return api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			Protocol:   "tcp",
+			Mode:       api.LBModeFullProxy,
+			Sel:        api.LbSelGPUAware,
+		},
+		Endpoints: []api.LoadBalancerEndpoint{
+			{EndpointIP: "31.31.31.1", TargetPort: 8000, Weight: 1},
+		},
+	}
+}
+
+// GPU-aware selection is armed instance-wide, not by the rule. A peer with it
+// disarmed accepts sel=9 and then selects as CHWBL, so the rule must be refused
+// rather than programmed into a mode it will not run.
+func TestInstallLBRefusesGPUAwareWhenDisarmed(t *testing.T) {
+	tests := []struct {
+		name   string
+		status *api.GPUStatusModel
+	}{
+		{"monitoring off", &api.GPUStatusModel{Enabled: false, RoutingMode: "standard_chwbl"}},
+		{"enabled but still routing as chwbl", &api.GPUStatusModel{Enabled: true, RoutingMode: "standard_chwbl"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+			gw.gpuStatus = tt.status
+
+			m := &Manager{}
+			err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false)
+
+			if err == nil {
+				t.Fatal("installLB programmed a gpuaware rule into a disarmed peer")
+			}
+			if !errors.Is(err, ErrGPUMonitoringDisabled) {
+				t.Errorf("error %q does not wrap ErrGPUMonitoringDisabled", err)
+			}
+
+			gw.mu.Lock()
+			defer gw.mu.Unlock()
+			if len(gw.bodies) != 0 {
+				t.Errorf("a rule was still POSTed: %v", gw.bodies)
+			}
+		})
+	}
+}
+
+func TestInstallLBAllowsGPUAwareWhenArmed(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 4}
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+
+	if body := gw.lastBody(t); !strings.Contains(body, `"sel":9`) {
+		t.Errorf("gateway body missing sel=9\n%s", body)
+	}
+}
+
+// Armed but tracking nothing is a warning, not a refusal: the telemetry feed
+// may simply not have run yet.
+func TestInstallLBAllowsGPUAwareWithNoWorkersYet(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 0}
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false); err != nil {
+		t.Fatalf("installLB refused an armed peer that is merely idle: %v", err)
+	}
+	gw.lastBody(t)
+}
+
+// A diagnostic that cannot be read must not take down a rule that would have
+// worked.
+func TestInstallLBAllowsGPUAwareWhenStatusUnreadable(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = nil // endpoint returns 500
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false); err != nil {
+		t.Fatalf("installLB refused on an unreadable status: %v", err)
+	}
+	gw.lastBody(t)
+}
+
+// The pre-flight is scoped to sel=gpuaware, so every other rule costs nothing.
+func TestInstallLBSkipsGPUCheckForOtherSelectors(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = nil // any query would fail loudly in the handler
+
+	m := &Manager{}
+	lb := gpuLoadBalancerModel()
+	lb.Service.Sel = api.LbSelCHWBL
+
+	if err := m.installLB(gw.client(t), lb, false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+	if body := gw.lastBody(t); !strings.Contains(body, `"sel":8`) {
+		t.Errorf("gateway body missing sel=8\n%s", body)
 	}
 }
