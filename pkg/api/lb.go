@@ -210,6 +210,10 @@ type LoadBalancerEndpoint struct {
 	// NixlPort - NIXL side-channel port for KV-cache transfer. 0 means reuse
 	// TargetPort. Must match the engine's VLLM_NIXL_SIDE_CHANNEL_PORT.
 	NixlPort int32 `json:"nixl_port,omitempty"`
+
+	// EndpointProbe - gateway-only health-monitor fields. Embedded because the
+	// wire shape is flat inside each endpoint object.
+	EndpointProbe
 }
 
 type LoadBalancerSecIp struct {

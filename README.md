@@ -95,6 +95,35 @@ Many of the above flags and arguments can be overriden on a per-service basis ba
 | <b>loxilb.io/usepodnetwork</b> | Whether to select PodIP and targetPort as EndPoints <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberetries : "3"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/usepodnetwork : "yes"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
 | <b>loxilb.io/useproxyprotov2</b> | Whether to enable proxy protocol v2 <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: tcp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/lbmode : "fullnat"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/useproxyprotov2 : "yes"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: tcp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 80<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: TCP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 8080<br>&nbsp;&nbsp;type: LoadBalancer   |
 
+* Endpoint health-monitor annotations:
+
+These configure the gateway's per-endpoint health monitor directly, instead of through the `probereq` / `proberesp` escape hatch. They are <b>loxilb-inference-gateway only</b>; a service using them against plain upstream loxilb is refused rather than allowed to fall back to a different probe path silently.
+
+The values apply uniformly to every endpoint of the service, which is the normal case for a health check.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/probe-method</b> | HTTP method for the probe. Default `GET`. |
+| <b>loxilb.io/probe-path</b> | Probe path, e.g. `"/healthz"`. Must start with `/`. <b>Wins over `loxilb.io/probereq`</b>, which stays available as the escape hatch. |
+| <b>loxilb.io/probe-expected-codes</b> | Accepted status codes: `"200"`, a list `"200,202"`, or a range `"200-204"`. Default `"200"`. Replaces the `loxilb.io/proberesp` substring match when set. |
+| <b>loxilb.io/probe-http-version</b> | `"1.0"` or `"1.1"`. At `"1.1"` a Host header is sent. |
+| <b>loxilb.io/probe-domain</b> | TLS SNI for HTTPS monitors, and the Host header at HTTP/1.1. |
+
+<b>Setting `probe-domain` turns on HTTP/1.1 for you.</b> The domain is two things at once: it is always the TLS SNI, but it only becomes the Host header at HTTP/1.1. Someone configuring virtual-host health checks would otherwise get SNI and no Host header, with nothing to indicate it, so `probe-http-version` defaults to `"1.1"` whenever `probe-domain` is set. Setting it explicitly to `"1.0"` still wins.
+
+Example:
+
+```yaml
+metadata:
+  annotations:
+    loxilb.io/liveness: "yes"
+    loxilb.io/probetype: "https"
+    loxilb.io/probe-method: "GET"
+    loxilb.io/probe-path: "/healthz"
+    loxilb.io/probe-expected-codes: "200-204"
+    loxilb.io/probe-domain: "api.example.com"
+```
+
 <a name="inference-gateway-annotations"></a>
 * Inference gateway annotations:
 

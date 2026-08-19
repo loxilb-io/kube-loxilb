@@ -130,7 +130,7 @@ func TestAIArgsDoesNotDisturbKeyReflection(t *testing.T) {
 	}
 }
 
-func TestStripAIFieldsLeavesSourceIntact(t *testing.T) {
+func TestStripGatewayFieldsLeavesSourceIntact(t *testing.T) {
 	src := LoadBalancerModel{
 		Service: LoadBalancerService{
 			ExternalIP: "10.0.0.1",
@@ -146,18 +146,18 @@ func TestStripAIFieldsLeavesSourceIntact(t *testing.T) {
 
 	// exactly how installLB copies the model
 	stripped := src
-	StripAIFields(&stripped)
+	StripGatewayFields(&stripped)
 
 	assertNoAIKeys(t, "stripped", mustMarshal(t, &stripped))
 
 	if after := mustMarshal(t, &src); after != before {
-		t.Errorf("StripAIFields mutated the source model\nbefore: %s\nafter:  %s", before, after)
+		t.Errorf("StripGatewayFields mutated the source model\nbefore: %s\nafter:  %s", before, after)
 	}
 }
 
-func TestStripAIFieldsNilEndpoints(t *testing.T) {
+func TestStripGatewayFieldsNilEndpoints(t *testing.T) {
 	m := LoadBalancerModel{Service: LoadBalancerService{AIArgs: AIArgs{SseMode: true}}}
-	StripAIFields(&m)
+	StripGatewayFields(&m)
 
 	if m.Endpoints != nil {
 		t.Errorf("nil endpoints became %v", m.Endpoints)

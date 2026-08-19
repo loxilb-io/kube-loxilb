@@ -82,6 +82,61 @@ const (
 	kvWarmupSecAnnotation   = "loxilb.io/kv-warmup-sec"
 )
 
+// Endpoint health-monitor annotations.
+//
+// These configure the gateway's per-endpoint health monitor. They are named
+// inside the existing probe family rather than after the wire fields, so the
+// whole probe surface reads as one group.
+//
+// They do not replace loxilb.io/probereq and loxilb.io/proberesp: the gateway
+// keeps those as its escape hatch, and a field set here simply wins over them.
+const (
+	probeMethodAnnotation        = "loxilb.io/probe-method"
+	probePathAnnotation          = "loxilb.io/probe-path"
+	probeExpectedCodesAnnotation = "loxilb.io/probe-expected-codes"
+	probeHTTPVersionAnnotation   = "loxilb.io/probe-http-version"
+	probeDomainAnnotation        = "loxilb.io/probe-domain"
+)
+
+// getEndpointProbe - build the health-monitor block from annotations.
+//
+// The values are uniform across the pool: one health-check path and one set of
+// expected codes for every endpoint of a service is the normal case, so a
+// single Service annotation fans out to all of them. Per-endpoint variation
+// would need the pod-label mechanism built for P/D roles, and nothing asks for
+// it yet.
+func getEndpointProbe(svc *corev1.Service) (api.EndpointProbe, error) {
+	probe := api.EndpointProbe{
+		HTTPMethod:    svc.Annotations[probeMethodAnnotation],
+		URLPath:       svc.Annotations[probePathAnnotation],
+		ExpectedCodes: svc.Annotations[probeExpectedCodesAnnotation],
+		HTTPVersion:   svc.Annotations[probeHTTPVersionAnnotation],
+		DomainName:    svc.Annotations[probeDomainAnnotation],
+	}
+
+	if !probe.IsSet() {
+		return probe, nil
+	}
+
+	// domainName is two features wearing one name, and they arm differently:
+	// it is always the TLS SNI for an HTTPS monitor, but it only becomes the
+	// Host header at httpVersion 1.1. Someone who sets a domain for
+	// virtual-host health checks and leaves the version alone gets SNI only,
+	// with no error and no warning. Default the version instead, which is what
+	// they meant; setting it explicitly to 1.0 still wins.
+	if probe.DomainName != "" && probe.HTTPVersion == "" {
+		probe.HTTPVersion = "1.1"
+		klog.V(4).Infof("service %s/%s: %s implies %s=1.1 so the domain is sent as the Host header",
+			svc.Namespace, svc.Name, probeDomainAnnotation, probeHTTPVersionAnnotation)
+	}
+
+	if err := probe.Validate(); err != nil {
+		return api.EndpointProbe{}, err
+	}
+
+	return probe, nil
+}
+
 // aiAnnotations - every annotation handled by getAIArgs, used to tell "the user
 // asked for inference routing" from "the user asked for nothing".
 var aiAnnotations = []string{
@@ -451,6 +506,8 @@ const (
 	// ReasonGPUMonitoringDisabled - the rule selects GPU-aware routing on a
 	// loxilb instance where that mode is not armed.
 	ReasonGPUMonitoringDisabled = "GPUMonitoringDisabled"
+	// ReasonInvalidProbeConfig - the health-monitor annotations are malformed.
+	ReasonInvalidProbeConfig = "InvalidProbeConfig"
 )
 
 // recordServiceEvent - surface something on the Service itself, so
@@ -524,4 +581,18 @@ func (m *Manager) recordTokenizerNotice(svc *corev1.Service, aiArgs api.AIArgs) 
 
 	klog.Infof("service %s/%s: %s", svc.Namespace, svc.Name, notice)
 	m.recordServiceEvent(svc, corev1.EventTypeNormal, ReasonKvExactTokenizerRequired, notice)
+}
+
+// hasEndpointProbe - whether any endpoint carries gateway-only health-monitor
+// fields. Plain upstream loxilb would drop them and probe with the older
+// probereq/proberesp configuration instead, which can mark healthy endpoints
+// down; that is refused rather than allowed to happen quietly.
+func hasEndpointProbe(eps []api.LoadBalancerEndpoint) bool {
+	for _, ep := range eps {
+		if ep.EndpointProbe.IsSet() {
+			return true
+		}
+	}
+
+	return false
 }
