@@ -1193,6 +1193,13 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if errors.Is(loxilbAPIErr, ErrGPUMonitoringDisabled) {
 			m.recordServiceWarning(svc, ReasonGPUMonitoringDisabled, loxilbAPIErr.Error())
 		}
+		// loxilb rejected the request itself. Retrying it unchanged will fail
+		// the same way, so the person who wrote the Service has to see the
+		// reason - and loxilb already sends one. A 5xx is not reported: that is
+		// the peer's problem and the next reconcile retries it.
+		if api.IsClientError(loxilbAPIErr) {
+			m.recordServiceWarning(svc, ReasonLoxiLBRejected, loxilbAPIErr.Error())
+		}
 
 		if loxilbAPIErr != nil && errCount >= len(m.LoxiClients.Clients) {
 			retIPAMOnErr = true
@@ -1446,10 +1453,13 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 	}
 
 	if err = c.LoadBalancer().Create(ctx, model); err != nil {
-		if !strings.Contains(err.Error(), "exist") {
-			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
-		} else {
+		// Re-creating a rule that is already there is the normal steady state,
+		// and loxilb answers 409 for it. Keyed on the status rather than on the
+		// wording, which the peer keeps adding to.
+		if api.IsConflict(err) {
 			err = nil
+		} else {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 		}
 	}
 

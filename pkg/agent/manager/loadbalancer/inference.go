@@ -485,6 +485,10 @@ const (
 	// ReasonProbeFieldsDowngraded - a plain upstream peer in the pool cannot
 	// honour part of the probe configuration.
 	ReasonProbeFieldsDowngraded = "ProbeFieldsDowngraded"
+	// ReasonLoxiLBRejected - loxilb refused the rule and said why. Carries
+	// loxilb's own wording, since it is more specific than anything
+	// kube-loxilb could reconstruct.
+	ReasonLoxiLBRejected = "LoxiLBRejected"
 )
 
 // recordServiceEvent - surface something on the Service itself, so

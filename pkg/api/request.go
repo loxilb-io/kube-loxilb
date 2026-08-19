@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -141,11 +140,14 @@ func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
 	if req.Method != http.MethodGet {
 		// Check HTTP status code first
 		if resp.StatusCode != http.StatusOK {
-			// Try to parse error message from response body
+			// loxilb puts the specific reason in `result` and a generic
+			// category in `message`; keep the reason, and the code with it.
 			if err := json.Unmarshal(respByte, &result); err == nil && result.Result != "" {
-				return &LoxiResponse{statusCode: resp.StatusCode, body: respByte, err: errors.New(result.Result)}
+				return &LoxiResponse{statusCode: resp.StatusCode, body: respByte,
+					err: &APIError{StatusCode: resp.StatusCode, Message: result.Result}}
 			}
-			return &LoxiResponse{statusCode: resp.StatusCode, body: respByte, err: errors.New(http.StatusText(resp.StatusCode))}
+			return &LoxiResponse{statusCode: resp.StatusCode, body: respByte,
+				err: &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}}
 		}
 
 		// Check result field for successful HTTP responses
@@ -154,7 +156,8 @@ func (l *LoxiRequest) Do(ctx context.Context) *LoxiResponse {
 		}
 
 		if result.Result != "Success" {
-			return &LoxiResponse{statusCode: resp.StatusCode, err: errors.New(result.Result)}
+			return &LoxiResponse{statusCode: resp.StatusCode,
+				err: &APIError{StatusCode: resp.StatusCode, Message: result.Result}}
 		}
 	}
 
