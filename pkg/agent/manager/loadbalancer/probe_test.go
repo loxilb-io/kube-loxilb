@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pkg/errors"
-
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 )
 
@@ -118,10 +116,11 @@ func TestValidateExpectedCodes(t *testing.T) {
 	}
 }
 
-// The health-monitor fields exist only in the gateway. Sending them to plain
-// loxilb would drop them and probe with the older probereq configuration, which
-// can mark healthy endpoints down - refuse instead.
-func TestInstallLBRefusesProbeFieldsOnPlainLoxilb(t *testing.T) {
+// Clearing urlPath for a plain peer would reproduce exactly the failure the
+// field exists to avoid: a rule that still probes, and probes "/". The path is
+// carried across to probereq instead, and the rule is still programmed -
+// refusing would leave that peer with no rule at all.
+func TestInstallLBTranslatesProbePathForPlainLoxilb(t *testing.T) {
 	plain := newFakeLoxiLB(t, "")
 
 	m := &Manager{}
@@ -129,16 +128,66 @@ func TestInstallLBRefusesProbeFieldsOnPlainLoxilb(t *testing.T) {
 		Service: api.LoadBalancerService{ExternalIP: "10.0.0.1", Port: 8080, Protocol: "tcp"},
 		Endpoints: []api.LoadBalancerEndpoint{
 			{EndpointIP: "31.31.31.1", TargetPort: 8000, Weight: 1,
-				EndpointProbe: api.EndpointProbe{URLPath: "/healthz"}},
+				EndpointProbe: api.EndpointProbe{
+					URLPath: "/healthz", HTTPMethod: "HEAD", ExpectedCodes: "200-204",
+					HTTPVersion: "1.1", DomainName: "api.example.com",
+				}},
 		},
 	}
 
-	err := m.installLB(plain.client(t), lb, false)
-	if err == nil {
-		t.Fatal("installLB accepted gateway-only probe fields on plain loxilb")
+	if err := m.installLB(plain.client(t), lb, false); err != nil {
+		t.Fatalf("installLB: %v", err)
 	}
-	if !errors.Is(err, ErrInferenceGatewayRequired) {
-		t.Errorf("error %q does not wrap ErrInferenceGatewayRequired", err)
+
+	body := plain.lastBody(t)
+	if !strings.Contains(body, `"probereq":"/healthz"`) {
+		t.Errorf("probe path was not carried across to probereq\n%s", body)
+	}
+	for _, unwanted := range []string{"urlPath", "httpMethod", "expectedCodes", "httpVersion", "domainName"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("plain payload carries gateway-only key %q\n%s", unwanted, body)
+		}
+	}
+
+	// the source model must be untouched, as ever
+	if lb.Service.ProbeReq != "" {
+		t.Errorf("translation leaked into the source model: %q", lb.Service.ProbeReq)
+	}
+	if lb.Endpoints[0].URLPath != "/healthz" {
+		t.Error("translation cleared the source endpoint")
+	}
+}
+
+// urlPath wins over a probereq the operator also set, which is the precedence
+// the gateway applies.
+func TestTranslatedProbePathWinsOverProbeReq(t *testing.T) {
+	m := api.LoadBalancerModel{
+		Service: api.LoadBalancerService{ProbeReq: "/old"},
+		Endpoints: []api.LoadBalancerEndpoint{
+			{EndpointIP: "31.31.31.1", EndpointProbe: api.EndpointProbe{URLPath: "/healthz"}},
+		},
+	}
+
+	api.StripGatewayFields(&m)
+
+	if m.Service.ProbeReq != "/healthz" {
+		t.Errorf("probereq = %q, want /healthz", m.Service.ProbeReq)
+	}
+}
+
+// With no path set there is nothing to carry, and probereq must be left alone.
+func TestTranslationLeavesProbeReqAloneWithoutPath(t *testing.T) {
+	m := api.LoadBalancerModel{
+		Service: api.LoadBalancerService{ProbeReq: "/old"},
+		Endpoints: []api.LoadBalancerEndpoint{
+			{EndpointIP: "31.31.31.1", EndpointProbe: api.EndpointProbe{DomainName: "api.example.com"}},
+		},
+	}
+
+	api.StripGatewayFields(&m)
+
+	if m.Service.ProbeReq != "/old" {
+		t.Errorf("probereq = %q, want it untouched", m.Service.ProbeReq)
 	}
 }
 
@@ -191,5 +240,85 @@ func TestStripClearsProbeFields(t *testing.T) {
 	}
 	if !src.Endpoints[0].EndpointProbe.IsSet() {
 		t.Error("stripping mutated the source model")
+	}
+}
+
+// Any one of the five fields switches the gateway's prober into status-code
+// mode. httpVersion is the asymmetric one: only "1.1" counts.
+func TestSwitchesProberMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe api.EndpointProbe
+		want  bool
+	}{
+		{"empty", api.EndpointProbe{}, false},
+		{"expected codes", api.EndpointProbe{ExpectedCodes: "200"}, true},
+		{"method", api.EndpointProbe{HTTPMethod: "HEAD"}, true},
+		{"path", api.EndpointProbe{URLPath: "/healthz"}, true},
+		{"domain", api.EndpointProbe{DomainName: "api.example.com"}, true},
+		{"http 1.1", api.EndpointProbe{HTTPVersion: "1.1"}, true},
+		{"http 1.0 alone does not switch", api.EndpointProbe{HTTPVersion: "1.0"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.probe.SwitchesProberMode(); got != tt.want {
+				t.Errorf("SwitchesProberMode() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Adding a probe annotation retires a proberesp body check that the operator
+// never touched. Say so.
+func TestProbeModeNotice(t *testing.T) {
+	svc := aiSvc(map[string]string{probeRespAnnotation: "OK"})
+
+	notice := probeModeNotice(svc, api.EndpointProbe{DomainName: "api.example.com", HTTPVersion: "1.1"})
+	if notice == "" {
+		t.Fatal("no notice for proberesp retired by the probe annotations")
+	}
+	for _, want := range []string{probeRespAnnotation, `"OK"`, "HTTP 200"} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("notice missing %q\n%s", want, notice)
+		}
+	}
+
+	if got := probeModeNotice(svc, api.EndpointProbe{HTTPVersion: "1.0"}); got != "" {
+		t.Errorf("http/1.0 alone does not switch the prober, but produced: %s", got)
+	}
+	if got := probeModeNotice(aiSvc(nil), api.EndpointProbe{URLPath: "/healthz"}); got != "" {
+		t.Errorf("no proberesp set, but produced: %s", got)
+	}
+
+	explicit := probeModeNotice(svc, api.EndpointProbe{URLPath: "/x", ExpectedCodes: "200-204"})
+	if !strings.Contains(explicit, "HTTP 200-204") {
+		t.Errorf("notice does not name the configured codes\n%s", explicit)
+	}
+}
+
+func TestProbeDowngradeNotice(t *testing.T) {
+	probe := api.EndpointProbe{
+		URLPath: "/healthz", HTTPMethod: "HEAD", DomainName: "api.example.com", HTTPVersion: "1.1",
+	}
+
+	if got := probeDowngradeNotice(nil, probe); got != "" {
+		t.Errorf("no plain peers, but produced: %s", got)
+	}
+
+	notice := probeDowngradeNotice([]string{"10.0.0.9"}, probe)
+	for _, want := range []string{probeMethodAnnotation, probeDomainAnnotation, probeHTTPVersionAnnotation, "10.0.0.9", probeReqAnnotation} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("notice missing %q\n%s", want, notice)
+		}
+	}
+	// the path is honoured on plain peers, so it must not be listed as dropped
+	if strings.Contains(notice, probePathAnnotation) {
+		t.Errorf("the probe path is translated, not dropped\n%s", notice)
+	}
+
+	// a path-only configuration loses nothing at all
+	if got := probeDowngradeNotice([]string{"10.0.0.9"}, api.EndpointProbe{URLPath: "/healthz"}); got != "" {
+		t.Errorf("a path-only probe loses nothing, but produced: %s", got)
 	}
 }

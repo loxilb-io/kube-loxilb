@@ -39,6 +39,37 @@ type EndpointProbe struct {
 // IsSet - whether any health-monitor field carries a value.
 func (p EndpointProbe) IsSet() bool { return p != EndpointProbe{} }
 
+// SwitchesProberMode - whether this configuration flips the gateway's prober
+// out of legacy mode.
+//
+// The prober does not merge old and new configuration field by field: it picks
+// a mode, and any one of these switches the whole probe over. In the new mode
+// the response check becomes a status-code match against ExpectedCodes,
+// defaulting to "200", and proberesp is not consulted at all. So adding one of
+// these fields silently retires a body-substring check the operator never
+// touched.
+//
+// Mirrors the condition in the gateway's rules.go. Note the asymmetry:
+// httpVersion only counts at "1.1" - an explicit "1.0" on its own leaves the
+// legacy prober in place.
+func (p EndpointProbe) SwitchesProberMode() bool {
+	return p.ExpectedCodes != "" ||
+		p.HTTPMethod != "" ||
+		p.URLPath != "" ||
+		p.HTTPVersion == "1.1" ||
+		p.DomainName != ""
+}
+
+// EffectiveExpectedCodes - the codes the gateway will actually match once the
+// prober is in structured mode.
+func (p EndpointProbe) EffectiveExpectedCodes() string {
+	if p.ExpectedCodes != "" {
+		return p.ExpectedCodes
+	}
+
+	return "200"
+}
+
 // HTTP methods a health monitor may use. The gateway does not constrain this,
 // but an unlisted method in a probe is a typo far more often than an intent,
 // and a mistyped method silently fails every check.

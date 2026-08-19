@@ -332,7 +332,34 @@ func kvHashAlgoValidate(algo, engine string) error {
 // first).
 func StripGatewayFields(m *LoadBalancerModel) {
 	m.Service.AIArgs = AIArgs{}
+	translateProbeForPlainPeer(m)
 	m.Endpoints = stripGatewayEndpointFields(m.Endpoints)
+}
+
+// translateProbeForPlainPeer - carry the probe path across to the name upstream
+// loxilb understands, instead of dropping it.
+//
+// Clearing urlPath on its own reproduces the failure the field was added to
+// avoid: the peer still gets a rule, still probes, and probes "/" because
+// probereq is empty. urlPath and probereq are two spellings of one intent - the
+// gateway itself defines probereq as urlPath's fallback - so the path survives
+// under the other name and the probe stays correct.
+//
+// urlPath wins over any probereq already set, which is the precedence the
+// gateway applies. The other four fields have no upstream equivalent and are
+// simply dropped; expectedCodes in particular must not be folded into
+// proberesp, because that is a body-substring match rather than a status check
+// and translating one into the other would change what is being tested.
+//
+// Safe to assign: Service is a value field, already independent of the caller's
+// model after the struct copy.
+func translateProbeForPlainPeer(m *LoadBalancerModel) {
+	for _, ep := range m.Endpoints {
+		if ep.URLPath != "" {
+			m.Service.ProbeReq = ep.URLPath
+			return
+		}
+	}
 }
 
 // stripGatewayEndpointFields - copy eps with the gateway-only endpoint fields

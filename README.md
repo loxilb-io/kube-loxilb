@@ -97,9 +97,9 @@ Many of the above flags and arguments can be overriden on a per-service basis ba
 
 * Endpoint health-monitor annotations:
 
-These configure the gateway's per-endpoint health monitor directly, instead of through the `probereq` / `proberesp` escape hatch. They are <b>loxilb-inference-gateway only</b>; a service using them against plain upstream loxilb is refused rather than allowed to fall back to a different probe path silently.
+These configure the gateway's per-endpoint health monitor directly, instead of through the `probereq` / `proberesp` escape hatch. The values apply uniformly to every endpoint of the service, which is the normal case for a health check.
 
-The values apply uniformly to every endpoint of the service, which is the normal case for a health check.
+All five exist only in loxilb-inference-gateway. Against a plain upstream loxilb the probe path is <b>carried across to `probereq`</b>, which upstream formats into the probe URL, so the path is still honoured; the other four have no upstream equivalent and are dropped, with a `ProbeFieldsDowngraded` event naming which. `expectedCodes` is deliberately not folded into `proberesp` -- that is a body-substring match rather than a status check, and translating one into the other would change what is being tested.
 
 | Annotation | Description |
 | ---------- | ----------- |
@@ -108,6 +108,8 @@ The values apply uniformly to every endpoint of the service, which is the normal
 | <b>loxilb.io/probe-expected-codes</b> | Accepted status codes: `"200"`, a list `"200,202"`, or a range `"200-204"`. Default `"200"`. Replaces the `loxilb.io/proberesp` substring match when set. |
 | <b>loxilb.io/probe-http-version</b> | `"1.0"` or `"1.1"`. At `"1.1"` a Host header is sent. |
 | <b>loxilb.io/probe-domain</b> | TLS SNI for HTTPS monitors, and the Host header at HTTP/1.1. |
+
+<b>These replace the legacy probe, they do not refine it.</b> loxilb picks one probe mode rather than merging the two configurations, and any one of the five annotations switches it over. In the new mode the check is a status-code match against `probe-expected-codes` (default `"200"`) and <b>`loxilb.io/proberesp` is no longer consulted at all</b>. So a service running `proberesp: "OK"` that adds `probe-domain` purely to fix SNI loses the body check. kube-loxilb raises a `ProbeModeChanged` warning event when both are configured, naming what will actually be checked. One asymmetry: `probe-http-version: "1.0"` on its own does not switch the mode -- only `"1.1"` does.
 
 <b>Setting `probe-domain` turns on HTTP/1.1 for you.</b> The domain is two things at once: it is always the TLS SNI, but it only becomes the Host header at HTTP/1.1. Someone configuring virtual-host health checks would otherwise get SNI and no Host header, with nothing to indicate it, so `probe-http-version` defaults to `"1.1"` whenever `probe-domain` is set. Setting it explicitly to `"1.0"` still wins.
 
