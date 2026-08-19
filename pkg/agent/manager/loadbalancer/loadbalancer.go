@@ -165,6 +165,8 @@ type LbArgs struct {
 	aiArgs              api.AIArgs
 	pdRoles             map[string]pdEndpointRole
 	endpointProbe       api.EndpointProbe
+	gatewayArgs         api.GatewayArgs
+	gatewayLists        api.GatewayTLSLists
 }
 
 type LbModelEnt struct {
@@ -182,29 +184,31 @@ type LbServicePairEntry struct {
 }
 
 type LbCacheEntry struct {
-	LbMode         int
-	Timeout        int
-	ActCheck       bool
-	PrefLocal      bool
-	ppv2En         bool
-	egress         bool
-	Inst           string
-	Addr           string
-	State          string
-	NodeLabel      string
-	ProbeType      string
-	ProbePort      uint16
-	ProbeReq       string
-	ProbeResp      string
-	ProbeTimeo     uint32
-	ProbeRetries   int
-	EpSelect       api.EpSelect
-	AIArgs         api.AIArgs
-	EndpointProbe  api.EndpointProbe
-	IPPool         *ippool.IPPool
-	SIPPools       []*ippool.IPPool
-	SecIPs         []string
-	LbServicePairs map[string]*LbServicePairEntry
+	LbMode          int
+	Timeout         int
+	ActCheck        bool
+	PrefLocal       bool
+	ppv2En          bool
+	egress          bool
+	Inst            string
+	Addr            string
+	State           string
+	NodeLabel       string
+	ProbeType       string
+	ProbePort       uint16
+	ProbeReq        string
+	ProbeResp       string
+	ProbeTimeo      uint32
+	ProbeRetries    int
+	EpSelect        api.EpSelect
+	AIArgs          api.AIArgs
+	EndpointProbe   api.EndpointProbe
+	GatewayArgs     api.GatewayArgs
+	GatewayTLSLists api.GatewayTLSLists
+	IPPool          *ippool.IPPool
+	SIPPools        []*ippool.IPPool
+	SecIPs          []string
+	LbServicePairs  map[string]*LbServicePairEntry
 }
 
 type LbCacheTable map[string]*LbCacheEntry
@@ -781,6 +785,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return err
 	}
 
+	// Check for loxilb specific annotations - gateway-only service arguments
+	gatewayArgs, gatewayLists, err := m.getGatewayArgs(svc)
+	if err != nil {
+		klog.Errorf("Failed to get gateway service args for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidGatewayArgs, err.Error())
+		return err
+	}
+
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	lbCacheEntry, added := m.lbCache[cacheKey]
 
@@ -816,28 +828,30 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				}
 			}
 			addNewLbCacheEntryChan <- &LbCacheEntry{
-				LbMode:         lbMode,
-				ActCheck:       livenessCheck,
-				PrefLocal:      prefLocal,
-				Timeout:        timeout,
-				State:          "Added",
-				NodeLabel:      matchNodeLabel,
-				ProbeType:      probeType,
-				ProbePort:      uint16(probePort),
-				ProbeReq:       probeReq,
-				ProbeResp:      probeResp,
-				ProbeTimeo:     probeTimeout,
-				ProbeRetries:   probeRetries,
-				EpSelect:       epSelect,
-				AIArgs:         aiArgs,
-				EndpointProbe:  endpointProbe,
-				Addr:           addrType,
-				SecIPs:         []string{},
-				IPPool:         ipPool,
-				SIPPools:       sipPools,
-				Inst:           zoneInstName,
-				ppv2En:         enProxyProtov2,
-				LbServicePairs: make(map[string]*LbServicePairEntry),
+				LbMode:          lbMode,
+				ActCheck:        livenessCheck,
+				PrefLocal:       prefLocal,
+				Timeout:         timeout,
+				State:           "Added",
+				NodeLabel:       matchNodeLabel,
+				ProbeType:       probeType,
+				ProbePort:       uint16(probePort),
+				ProbeReq:        probeReq,
+				ProbeResp:       probeResp,
+				ProbeTimeo:      probeTimeout,
+				ProbeRetries:    probeRetries,
+				EpSelect:        epSelect,
+				AIArgs:          aiArgs,
+				EndpointProbe:   endpointProbe,
+				GatewayArgs:     gatewayArgs,
+				GatewayTLSLists: gatewayLists,
+				Addr:            addrType,
+				SecIPs:          []string{},
+				IPPool:          ipPool,
+				SIPPools:        sipPools,
+				Inst:            zoneInstName,
+				ppv2En:          enProxyProtov2,
+				LbServicePairs:  make(map[string]*LbServicePairEntry),
 			}
 		}()
 
@@ -1015,6 +1029,25 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: EpSelect update", cacheKey)
 	}
 
+	if gatewayArgs != m.lbCache[cacheKey].GatewayArgs {
+		m.lbCache[cacheKey].GatewayArgs = gatewayArgs
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: gateway service args update", cacheKey)
+	}
+
+	// Equal() rather than !=, since these carry slices.
+	if !gatewayLists.Equal(m.lbCache[cacheKey].GatewayTLSLists) {
+		m.lbCache[cacheKey].GatewayTLSLists = gatewayLists
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: gateway TLS list update", cacheKey)
+	}
+
 	if endpointProbe != m.lbCache[cacheKey].EndpointProbe {
 		m.lbCache[cacheKey].EndpointProbe = endpointProbe
 		update = true
@@ -1125,6 +1158,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		// rule is actually programmed.
 		m.recordTokenizerNotice(svc, aiArgs)
 		m.recordProbeNotices(svc, endpointProbe)
+		m.recordGatewayArgNotices(svc)
 
 		klog.Infof("%s: Added(%v) Update(%v) needDelete(%v)", cacheKey, added, update, needDelete)
 		klog.Infof("Endpoint IP Pairs %v", endpointIPs)
@@ -1159,6 +1193,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			aiArgs:              m.lbCache[cacheKey].AIArgs,
 			pdRoles:             pdRoles,
 			endpointProbe:       m.lbCache[cacheKey].EndpointProbe,
+			gatewayArgs:         m.lbCache[cacheKey].GatewayArgs,
+			gatewayLists:        m.lbCache[cacheKey].GatewayTLSLists,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -2197,29 +2233,31 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
-			ExternalIP:   lbArgs.externalIP,
-			PrivateIP:    lbArgs.privateIP,
-			Port:         uint16(port.Port),
-			Protocol:     strings.ToLower(string(port.Protocol)),
-			BGP:          bgpMode,
-			Mode:         lbModeSvc,
-			Oper:         lbOper,
-			Monitor:      lbArgs.livenessCheck,
-			Timeout:      uint32(lbArgs.timeout),
-			Managed:      true,
-			ProbeType:    lbArgs.probeType,
-			ProbePort:    lbArgs.probePort,
-			ProbeReq:     lbArgs.probeReq,
-			ProbeResp:    lbArgs.probeResp,
-			ProbeTimeout: lbArgs.probeTimeo,
-			ProbeRetries: int32(lbArgs.probeRetries),
-			PpV2:         lbArgs.ppv2En,
-			Egress:       lbArgs.egress,
-			Sel:          lbArgs.sel,
-			Name:         fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
-			MtlsFrontend: lbArgs.mtlsFrontend,
-			MtlsBackend:  lbArgs.mtlsBackend,
-			AIArgs:       lbArgs.aiArgs,
+			ExternalIP:      lbArgs.externalIP,
+			PrivateIP:       lbArgs.privateIP,
+			Port:            uint16(port.Port),
+			Protocol:        strings.ToLower(string(port.Protocol)),
+			BGP:             bgpMode,
+			Mode:            lbModeSvc,
+			Oper:            lbOper,
+			Monitor:         lbArgs.livenessCheck,
+			Timeout:         uint32(lbArgs.timeout),
+			Managed:         true,
+			ProbeType:       lbArgs.probeType,
+			ProbePort:       lbArgs.probePort,
+			ProbeReq:        lbArgs.probeReq,
+			ProbeResp:       lbArgs.probeResp,
+			ProbeTimeout:    lbArgs.probeTimeo,
+			ProbeRetries:    int32(lbArgs.probeRetries),
+			PpV2:            lbArgs.ppv2En,
+			Egress:          lbArgs.egress,
+			Sel:             lbArgs.sel,
+			Name:            fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
+			MtlsFrontend:    lbArgs.mtlsFrontend,
+			MtlsBackend:     lbArgs.mtlsBackend,
+			AIArgs:          lbArgs.aiArgs,
+			GatewayArgs:     lbArgs.gatewayArgs,
+			GatewayTLSLists: lbArgs.gatewayLists,
 		},
 		SrcIPs:       loxiLbAllowedSrcIpList,
 		SecondaryIPs: loxiSecIPModelList,

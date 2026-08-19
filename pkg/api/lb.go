@@ -185,6 +185,11 @@ type LoadBalancerService struct {
 	// because they sit flat inside serviceArguments on the wire. Promoted
 	// access means callers write svc.KvExactMode as if it were declared here.
 	AIArgs
+	// GatewayArgs - gateway-only limits, member timeouts and TLS/HSTS policy.
+	GatewayArgs
+	// GatewayTLSLists - the two gateway-only list fields, kept apart so the
+	// two structs above stay comparable.
+	GatewayTLSLists
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {

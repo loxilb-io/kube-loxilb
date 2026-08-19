@@ -552,6 +552,11 @@ const (
 	// ReasonProbeFieldsDowngraded - a plain upstream peer in the pool cannot
 	// honour part of the probe configuration.
 	ReasonProbeFieldsDowngraded = "ProbeFieldsDowngraded"
+	// ReasonInvalidGatewayArgs - a gateway-only service annotation is malformed.
+	ReasonInvalidGatewayArgs = "InvalidGatewayArgs"
+	// ReasonGatewayArgsDowngraded - a plain upstream peer in the pool will not
+	// apply part of the gateway-only service configuration.
+	ReasonGatewayArgsDowngraded = "GatewayArgsDowngraded"
 	// ReasonLoxiLBRejected - loxilb refused the rule and said why. Carries
 	// loxilb's own wording, since it is more specific than anything
 	// kube-loxilb could reconstruct.
