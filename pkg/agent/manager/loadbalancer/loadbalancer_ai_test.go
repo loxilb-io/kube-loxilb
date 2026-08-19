@@ -384,6 +384,7 @@ func TestReportGPUDisarmedRaisesEvent(t *testing.T) {
 	m := &Manager{
 		eventRecorder: recorder,
 		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
 	}
 
 	m.reportGPUDisarmed(pdService())
@@ -406,6 +407,7 @@ func TestReportGPUDisarmedQuietWhenArmed(t *testing.T) {
 	m := &Manager{
 		eventRecorder: recorder,
 		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
 	}
 
 	m.reportGPUDisarmed(pdService())
@@ -427,6 +429,7 @@ func TestReportGPUDisarmedQuietWhenUnreachable(t *testing.T) {
 	m := &Manager{
 		eventRecorder: recorder,
 		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
 	}
 
 	m.reportGPUDisarmed(pdService())
@@ -447,6 +450,7 @@ func TestReportGPUDisarmedSkipsPlainPeers(t *testing.T) {
 	m := &Manager{
 		eventRecorder: recorder,
 		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{plain.client(t)}},
+		gpuArmed:      map[string]bool{},
 	}
 
 	m.reportGPUDisarmed(pdService())
@@ -454,6 +458,92 @@ func TestReportGPUDisarmedSkipsPlainPeers(t *testing.T) {
 	select {
 	case event := <-recorder.Events:
 		t.Errorf("unexpected event for a plain peer: %s", event)
+	default:
+	}
+}
+
+// The reconcile check reports the edge into disarmed, not every observation:
+// a warning each reconcile is noise, a warning when arming is lost is a signal.
+func TestReportGPUDisarmedOnlyOnTransition(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 2}
+
+	recorder := record.NewFakeRecorder(8)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
+	}
+	svc := pdService()
+
+	drain := func() int {
+		n := 0
+		for {
+			select {
+			case <-recorder.Events:
+				n++
+			default:
+				return n
+			}
+		}
+	}
+
+	m.reportGPUDisarmed(svc)
+	if n := drain(); n != 0 {
+		t.Fatalf("armed peer raised %d events", n)
+	}
+
+	// operator disarms the mode
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: false, RoutingMode: "standard_chwbl"}
+	m.reportGPUDisarmed(svc)
+	if n := drain(); n != 1 {
+		t.Fatalf("the transition into disarmed raised %d events, want 1", n)
+	}
+
+	// still disarmed on the next few reconciles - already reported
+	for i := 0; i < 3; i++ {
+		m.reportGPUDisarmed(svc)
+	}
+	if n := drain(); n != 0 {
+		t.Errorf("staying disarmed raised %d further events, want 0", n)
+	}
+
+	// armed again, then disarmed again: a new edge, a new event
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 2}
+	m.reportGPUDisarmed(svc)
+	drain()
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: false, RoutingMode: "standard_chwbl"}
+	m.reportGPUDisarmed(svc)
+	if n := drain(); n != 1 {
+		t.Errorf("a second transition raised %d events, want 1", n)
+	}
+}
+
+// An unreadable status must not be remembered as either state, so a blip does
+// not fabricate a transition once the peer answers again.
+func TestReportGPUDisarmedBlipDoesNotFabricateTransition(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 1}
+
+	recorder := record.NewFakeRecorder(8)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
+	}
+	svc := pdService()
+
+	m.reportGPUDisarmed(svc)
+
+	gw.gpuStatus = nil // unreachable
+	m.reportGPUDisarmed(svc)
+
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 1}
+	m.reportGPUDisarmed(svc)
+
+	select {
+	case event := <-recorder.Events:
+		t.Errorf("a blip produced an event: %s", event)
 	default:
 	}
 }
