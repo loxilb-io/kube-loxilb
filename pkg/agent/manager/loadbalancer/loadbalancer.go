@@ -159,6 +159,7 @@ type LbArgs struct {
 	mtlsBackend         *api.MtlsBackend
 	aiArgs              api.AIArgs
 	pdRoles             map[string]pdEndpointRole
+	endpointProbe       api.EndpointProbe
 }
 
 type LbModelEnt struct {
@@ -194,6 +195,7 @@ type LbCacheEntry struct {
 	ProbeRetries   int
 	EpSelect       api.EpSelect
 	AIArgs         api.AIArgs
+	EndpointProbe  api.EndpointProbe
 	IPPool         *ippool.IPPool
 	SIPPools       []*ippool.IPPool
 	SecIPs         []string
@@ -765,6 +767,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return err
 	}
 
+	// Check for loxilb specific annotations - endpoint health monitor
+	endpointProbe, err := getEndpointProbe(svc)
+	if err != nil {
+		klog.Errorf("Failed to get probe config for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidProbeConfig, err.Error())
+		return err
+	}
+
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	lbCacheEntry, added := m.lbCache[cacheKey]
 
@@ -814,6 +824,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				ProbeRetries:   probeRetries,
 				EpSelect:       epSelect,
 				AIArgs:         aiArgs,
+				EndpointProbe:  endpointProbe,
 				Addr:           addrType,
 				SecIPs:         []string{},
 				IPPool:         ipPool,
@@ -998,6 +1009,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: EpSelect update", cacheKey)
 	}
 
+	if endpointProbe != m.lbCache[cacheKey].EndpointProbe {
+		m.lbCache[cacheKey].EndpointProbe = endpointProbe
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: endpoint probe update", cacheKey)
+	}
+
 	if aiArgs != m.lbCache[cacheKey].AIArgs {
 		m.lbCache[cacheKey].AIArgs = aiArgs
 		update = true
@@ -1124,6 +1144,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			mtlsBackend:         mtlsBackend,
 			aiArgs:              m.lbCache[cacheKey].AIArgs,
 			pdRoles:             pdRoles,
+			endpointProbe:       m.lbCache[cacheKey].EndpointProbe,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -1404,14 +1425,14 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 	// model. This must run after the prefLocal branch above, which re-aliases
 	// model.Endpoints back onto the caller's slice.
 	if !c.IsInferenceGateway() {
-		if model.Service.AIArgs.IsSet() || model.Service.Sel.IsInferenceGatewayOnly() {
+		if model.Service.AIArgs.IsSet() || model.Service.Sel.IsInferenceGatewayOnly() || hasEndpointProbe(model.Endpoints) {
 			// Refuse loudly. Silently downgrading to non-AI routing would look
 			// like success while serving the wrong traffic policy.
 			err = fmt.Errorf("inference-gateway routing requested but loxilb-lb(%s) is plain loxilb: %w", c.Host, ErrInferenceGatewayRequired)
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 			return err
 		}
-		api.StripAIFields(model)
+		api.StripGatewayFields(model)
 	}
 
 	// sel=gpuaware is armed instance-wide, not by the rule, so a peer that
@@ -2105,11 +2126,12 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 
 			for _, tport := range tports {
 				loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
-					EndpointIP: endpoint,
-					TargetPort: uint16(tport),
-					Weight:     1,
-					EpRole:     pdRole.Role,
-					NixlPort:   pdRole.NixlPort,
+					EndpointIP:    endpoint,
+					TargetPort:    uint16(tport),
+					Weight:        1,
+					EpRole:        pdRole.Role,
+					NixlPort:      pdRole.NixlPort,
+					EndpointProbe: lbArgs.endpointProbe,
 				})
 			}
 		}

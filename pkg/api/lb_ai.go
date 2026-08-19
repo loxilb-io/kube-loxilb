@@ -320,7 +320,7 @@ func kvHashAlgoValidate(algo, engine string) error {
 	return nil
 }
 
-// StripAIFields - remove every loxilb-inference-gateway-only field from a
+// StripGatewayFields - remove every loxilb-inference-gateway-only field from a
 // payload bound for plain upstream loxilb.
 //
 // The same LoadBalancerModel is fanned out to every client in the pool, and
@@ -330,15 +330,15 @@ func kvHashAlgoValidate(algo, engine string) error {
 // through is not - so this reassigns both the embedded AIArgs (a value field,
 // already independent after the struct copy) and the endpoint slice (cloned
 // first).
-func StripAIFields(m *LoadBalancerModel) {
+func StripGatewayFields(m *LoadBalancerModel) {
 	m.Service.AIArgs = AIArgs{}
-	m.Endpoints = stripEpRoles(m.Endpoints)
+	m.Endpoints = stripGatewayEndpointFields(m.Endpoints)
 }
 
-// stripEpRoles - copy eps with the gateway-only endpoint fields cleared.
-// A shallow clone suffices because every LoadBalancerEndpoint field is a value
-// type.
-func stripEpRoles(src []LoadBalancerEndpoint) []LoadBalancerEndpoint {
+// stripGatewayEndpointFields - copy eps with the gateway-only endpoint fields
+// cleared: the P/D roles and the health-monitor block. A shallow clone suffices
+// because every LoadBalancerEndpoint field is a value type.
+func stripGatewayEndpointFields(src []LoadBalancerEndpoint) []LoadBalancerEndpoint {
 	if src == nil {
 		return nil
 	}
@@ -347,6 +347,7 @@ func stripEpRoles(src []LoadBalancerEndpoint) []LoadBalancerEndpoint {
 	for i := range out {
 		out[i].EpRole = 0
 		out[i].NixlPort = 0
+		out[i].EndpointProbe = EndpointProbe{}
 	}
 
 	return out
