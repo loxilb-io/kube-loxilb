@@ -546,6 +546,12 @@ const (
 	ReasonGPUMonitoringDisabled = "GPUMonitoringDisabled"
 	// ReasonInvalidProbeConfig - the health-monitor annotations are malformed.
 	ReasonInvalidProbeConfig = "InvalidProbeConfig"
+	// ReasonProbeModeChanged - the probe annotations retire a proberesp check
+	// that is still configured.
+	ReasonProbeModeChanged = "ProbeModeChanged"
+	// ReasonProbeFieldsDowngraded - a plain upstream peer in the pool cannot
+	// honour part of the probe configuration.
+	ReasonProbeFieldsDowngraded = "ProbeFieldsDowngraded"
 )
 
 // recordServiceEvent - surface something on the Service itself, so
@@ -621,16 +627,87 @@ func (m *Manager) recordTokenizerNotice(svc *corev1.Service, aiArgs api.AIArgs) 
 	m.recordServiceEvent(svc, corev1.EventTypeNormal, ReasonKvExactTokenizerRequired, notice)
 }
 
-// hasEndpointProbe - whether any endpoint carries gateway-only health-monitor
-// fields. Plain upstream loxilb would drop them and probe with the older
-// probereq/proberesp configuration instead, which can mark healthy endpoints
-// down; that is refused rather than allowed to happen quietly.
-func hasEndpointProbe(eps []api.LoadBalancerEndpoint) bool {
-	for _, ep := range eps {
-		if ep.EndpointProbe.IsSet() {
-			return true
+// recordProbeNotices - report the two things about a probe configuration that
+// the annotations do not show on their own.
+func (m *Manager) recordProbeNotices(svc *corev1.Service, probe api.EndpointProbe) {
+	if !probe.IsSet() {
+		return
+	}
+
+	if notice := probeModeNotice(svc, probe); notice != "" {
+		klog.Warningf("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+		m.recordServiceWarning(svc, ReasonProbeModeChanged, notice)
+	}
+
+	if notice := probeDowngradeNotice(m.plainLoxilbPeers(), probe); notice != "" {
+		klog.Infof("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+		m.recordServiceEvent(svc, corev1.EventTypeNormal, ReasonProbeFieldsDowngraded, notice)
+	}
+}
+
+// probeModeNotice - warn when the structured fields retire a proberesp check
+// the operator did not touch.
+//
+// The five fields are not additive refinements of the legacy probe; any one of
+// them switches the prober into structured mode, where the response check
+// becomes a status-code match and proberesp stops being consulted. Someone
+// running proberesp: "OK" who adds probe-domain purely to fix SNI loses the
+// body check, and nothing in the annotation they edited suggests that.
+func probeModeNotice(svc *corev1.Service, probe api.EndpointProbe) string {
+	if svc.Annotations[probeRespAnnotation] == "" || !probe.SwitchesProberMode() {
+		return ""
+	}
+
+	return fmt.Sprintf("%s is set but will no longer be checked: the probe annotations switch loxilb to "+
+		"status-code matching, so the probe now passes on HTTP %s instead of on the response containing %q. "+
+		"Remove the probe-* annotations to keep the body check",
+		probeRespAnnotation, probe.EffectiveExpectedCodes(), svc.Annotations[probeRespAnnotation])
+}
+
+// probeDowngradeNotice - say which probe settings a plain upstream peer in the
+// pool cannot honour.
+//
+// The path itself survives: it is carried across to probereq, which upstream
+// formats into the probe URL. The rest have no upstream equivalent, so on those
+// peers the probe keeps the older behaviour.
+func probeDowngradeNotice(plainPeers []string, probe api.EndpointProbe) string {
+	if len(plainPeers) == 0 {
+		return ""
+	}
+
+	var dropped []string
+	if probe.HTTPMethod != "" {
+		dropped = append(dropped, probeMethodAnnotation)
+	}
+	if probe.ExpectedCodes != "" {
+		dropped = append(dropped, probeExpectedCodesAnnotation)
+	}
+	if probe.HTTPVersion != "" {
+		dropped = append(dropped, probeHTTPVersionAnnotation)
+	}
+	if probe.DomainName != "" {
+		dropped = append(dropped, probeDomainAnnotation)
+	}
+	if len(dropped) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("%s have no equivalent in plain upstream loxilb and are not applied on %s; "+
+		"the probe path is still honoured there, carried as %s",
+		strings.Join(dropped, ", "), strings.Join(plainPeers, ", "), probeReqAnnotation)
+}
+
+// plainLoxilbPeers - peers known to be plain upstream loxilb. Undetected peers
+// are excluded: reporting a downgrade before the flavor is known would be a
+// guess.
+func (m *Manager) plainLoxilbPeers() []string {
+	var plain []string
+
+	for _, c := range m.LoxiClients.Clients {
+		if c.FlavorDetected() && !c.IsInferenceGateway() {
+			plain = append(plain, c.Host)
 		}
 	}
 
-	return false
+	return plain
 }

@@ -1124,6 +1124,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		// Said here rather than on every reconcile: this is the point where a
 		// rule is actually programmed.
 		m.recordTokenizerNotice(svc, aiArgs)
+		m.recordProbeNotices(svc, endpointProbe)
 
 		klog.Infof("%s: Added(%v) Update(%v) needDelete(%v)", cacheKey, added, update, needDelete)
 		klog.Infof("Endpoint IP Pairs %v", endpointIPs)
@@ -1438,7 +1439,7 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 	// model. This must run after the prefLocal branch above, which re-aliases
 	// model.Endpoints back onto the caller's slice.
 	if !c.IsInferenceGateway() {
-		if model.Service.AIArgs.IsSet() || model.Service.Sel.IsInferenceGatewayOnly() || hasEndpointProbe(model.Endpoints) {
+		if model.Service.AIArgs.IsSet() || model.Service.Sel.IsInferenceGatewayOnly() {
 			// Refuse loudly. Silently downgrading to non-AI routing would look
 			// like success while serving the wrong traffic policy.
 			err = fmt.Errorf("inference-gateway routing requested but loxilb-lb(%s) is plain loxilb: %w", c.Host, ErrInferenceGatewayRequired)
