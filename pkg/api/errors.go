@@ -41,16 +41,25 @@ func StatusCodeOf(err error) int {
 	return 0
 }
 
+// notFoundPhrases - the wordings loxilb classifies as 404, checked before the
+// conflict wordings because the server checks them in that order too.
+//
+// This ordering is the whole point. "not-exists" contains "exist", so a plain
+// substring test - which is what the duplicate check used to be - reads a
+// missing resource as an existing one and silently treats a real 404 as an
+// idempotent no-op. The two cases the wording cannot separate are exactly the
+// two the status code separates cleanly.
+var notFoundPhrases = []string{"not-exists", "not exists", "not found", "no such", "not such"}
+
 // IsConflict - the peer is saying the resource is already there.
 //
-// 409 is authoritative: loxilb and loxilb-inference-gateway both map every
-// "exists" variant onto it through the same ResultErrorResponseErrorMessage
-// helper, verified on both mains.
+// 409 is authoritative. loxilb and loxilb-inference-gateway share one
+// ResultErrorResponseErrorMessage helper, verified on both mains, and it sorts
+// the "already there" wordings to 409 and the "not there" wordings to 404.
 //
-// The wording test is kept for peers that answer without a usable status, but
-// never for a 5xx. Matching text alone - which is what this used to do - can
-// swallow a genuine server failure whose message merely contains the word, and
-// the set of distinct messages only grows.
+// The wording test below only covers a peer old enough not to make that
+// distinction. It never applies to a 5xx, and it defers to the not-found
+// family, so it cannot reproduce either of the failures the status code fixes.
 func IsConflict(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
@@ -60,11 +69,18 @@ func IsConflict(err error) bool {
 	if apiErr.StatusCode == http.StatusConflict {
 		return true
 	}
-	if apiErr.StatusCode >= http.StatusInternalServerError {
+	if apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode >= http.StatusInternalServerError {
 		return false
 	}
 
-	return strings.Contains(strings.ToLower(apiErr.Message), "exist")
+	message := strings.ToLower(apiErr.Message)
+	for _, phrase := range notFoundPhrases {
+		if strings.Contains(message, phrase) {
+			return false
+		}
+	}
+
+	return strings.Contains(message, "exist")
 }
 
 // IsClientError - loxilb rejected the request itself, so retrying it unchanged
