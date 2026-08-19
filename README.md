@@ -126,6 +126,40 @@ metadata:
     loxilb.io/probe-domain: "api.example.com"
 ```
 
+* Gateway-only service annotations:
+
+Per-service limits, member timeouts, and TLS/HSTS policy. All twelve exist only in loxilb-inference-gateway. A plain upstream peer in the pool simply does not get them -- the rule is still programmed there without them, with a `GatewayArgsDowngraded` event naming which. They are additive hardening on a rule that works without them, so refusing would be worse than reporting.
+
+kube-loxilb checks that the annotation parses and nothing more. Whether a cipher string is understood, a TLS version supported, or a certificate id present in loxilb's registry is not knowable from the request, so the value goes through and loxilb's own refusal comes back as a `LoxiLBRejected` event on the Service.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/connection-limit</b> | Ceiling on simultaneous connections across all endpoints of the service, enforced in eBPF. 0 or unset means unlimited. |
+| <b>loxilb.io/timeout-member-connect</b> | Seconds to wait for a backend connection. |
+| <b>loxilb.io/timeout-member-data</b> | Seconds a backend connection may stay idle. |
+| <b>loxilb.io/timeout-tcp-inspect</b> | Seconds allowed for TCP inspection. |
+| <b>loxilb.io/tls-ciphers</b> | OpenSSL cipher string, colon-separated -- one string, not a list. |
+| <b>loxilb.io/tls-versions</b> | Comma-separated, e.g. `"TLSv1.2,TLSv1.3"`. loxilb collapses it to a min/max range. |
+| <b>loxilb.io/alpn-protocols</b> | Comma-separated, e.g. `"h2,http/1.1"`. Advertised on both listener and pool. |
+| <b>loxilb.io/hsts-max-age</b> | HSTS `max-age` in seconds. |
+| <b>loxilb.io/hsts-include-subdomains</b> | Add `includeSubDomains`. `"true"`/`"yes"`. |
+| <b>loxilb.io/hsts-preload</b> | Add `preload`. `"true"`/`"yes"`. |
+| <b>loxilb.io/backend-ca-cert-id</b> | Names a CA certificate <b>already registered in loxilb</b>. Distinct from the Secret-mounted `loxilb.io/mtls-backend-ca-secret`: separate mechanism, separate dataplane slot, and the two do not collide. |
+| <b>loxilb.io/backend-client-cert-id</b> | The same for the client certificate. |
+
+Example:
+
+```yaml
+metadata:
+  annotations:
+    loxilb.io/connection-limit: "5000"
+    loxilb.io/timeout-member-data: "50"
+    loxilb.io/tls-versions: "TLSv1.2,TLSv1.3"
+    loxilb.io/alpn-protocols: "h2,http/1.1"
+    loxilb.io/hsts-max-age: "31536000"
+    loxilb.io/hsts-include-subdomains: "true"
+```
+
 <a name="inference-gateway-annotations"></a>
 * Inference gateway annotations:
 

@@ -332,6 +332,11 @@ func kvHashAlgoValidate(algo, engine string) error {
 // first).
 func StripGatewayFields(m *LoadBalancerModel) {
 	m.Service.AIArgs = AIArgs{}
+	m.Service.GatewayArgs = GatewayArgs{}
+	// Reassigned, not cleared element by element: these are the first slices in
+	// the service payload, so after the shallow copy in installLB their backing
+	// arrays are shared with the caller's model too.
+	m.Service.GatewayTLSLists = GatewayTLSLists{}
 	translateProbeForPlainPeer(m)
 	m.Endpoints = stripGatewayEndpointFields(m.Endpoints)
 }
