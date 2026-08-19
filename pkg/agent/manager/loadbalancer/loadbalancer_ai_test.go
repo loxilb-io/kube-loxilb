@@ -26,6 +26,12 @@ type fakeLoxiLB struct {
 	// standing in for a peer that cannot answer.
 	gpuStatus *api.GPUStatusModel
 
+	// ruleStatus is served from the per-rule status sub-resource; nil answers
+	// 404, standing in for a rule this peer does not have.
+	ruleStatus *api.LoadBalancerStatusModel
+	// statusQueries counts the per-rule status reads this peer received.
+	statusQueries int
+
 	mu     sync.Mutex
 	bodies []string
 }
@@ -48,6 +54,20 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(f.gpuStatus)
+
+		case strings.HasSuffix(r.URL.Path, "/status") && strings.Contains(r.URL.Path, "/config/loadbalancer/"):
+			f.mu.Lock()
+			f.statusQueries++
+			status := f.ruleStatus
+			f.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			if status == nil {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"result":"lbrule not-exists error"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(status)
 
 		case r.URL.Path == "/netlox/v1/config/loadbalancer" && r.Method == http.MethodPost:
 			body, err := io.ReadAll(r.Body)

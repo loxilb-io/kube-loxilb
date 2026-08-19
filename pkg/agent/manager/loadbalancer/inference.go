@@ -490,6 +490,12 @@ const (
 	// ReasonGatewayArgsDowngraded - a plain upstream peer in the pool will not
 	// apply part of the gateway-only service configuration.
 	ReasonGatewayArgsDowngraded = "GatewayArgsDowngraded"
+	// ReasonRuleMissing - a peer no longer has a rule kube-loxilb programmed.
+	ReasonRuleMissing = "RuleMissing"
+	// ReasonRuleUnhealthy - loxilb reports the rule as degraded or offline.
+	ReasonRuleUnhealthy = "RuleUnhealthy"
+	// ReasonRuleHealthy - the rule recovered.
+	ReasonRuleHealthy = "RuleHealthy"
 	// ReasonLoxiLBRejected - loxilb refused the rule and said why. Carries
 	// loxilb's own wording, since it is more specific than anything
 	// kube-loxilb could reconstruct.

@@ -160,6 +160,16 @@ metadata:
     loxilb.io/hsts-include-subdomains: "true"
 ```
 
+* Rule health on the Service:
+
+Against a loxilb-inference-gateway, kube-loxilb reads what loxilb says about each rule it programmed and records it on the Service, so a rule loxilb has marked down is visible from Kubernetes instead of only from loxilb's own logs.
+
+It appears in two places. `Service.status.loadBalancer.ingress[].ports[].error` carries a fixed value -- `loxilb.io/RuleDegraded` when some endpoints are down, `loxilb.io/RuleOffline` when none can take traffic, and nothing at all when the rule is healthy. Changes also raise an event, `RuleUnhealthy` when it breaks and `RuleHealthy` when it recovers, naming which loxilb instance reported it.
+
+<b>This needs `loxilb.io/liveness: "yes"`.</b> loxilb checks whether a monitor is configured before it looks at any endpoint, so a service without liveness reports `NO_MONITOR` and carries no health information at all. Without it the field simply stays empty.
+
+A rule fanned out to several instances is reported at its worst: if one instance says the rule is offline, that is what the Service says, because the field exists to answer whether something needs attention. Which instance it was goes in the event. Plain upstream loxilb peers are not consulted -- the sub-resource does not exist there.
+
 <a name="inference-gateway-annotations"></a>
 * Inference gateway annotations:
 

@@ -196,6 +196,7 @@ type LbCacheEntry struct {
 	ProbeTimeo      uint32
 	ProbeRetries    int
 	EpSelect        api.EpSelect
+	RuleStatus      map[string]string
 	AIArgs          api.AIArgs
 	EndpointProbe   api.EndpointProbe
 	GatewayArgs     api.GatewayArgs
@@ -1106,6 +1107,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			m.lbCache[cacheKey].SecIPs = append(m.lbCache[cacheKey].SecIPs, ingSecSvcPair.IPString)
 		}
 	}
+
+	// What loxilb says about the rules that already exist. Read on the loop
+	// that runs anyway rather than on one of its own, and before the early
+	// return below, since a rule can go unhealthy without its configuration
+	// changing at all.
+	m.syncRuleStatus(svc, cacheKey)
 
 	if !update {
 		update = m.checkUpdateEndpoints(svc, cacheKey, endpointIPs, pdRoles, useExternalEndpoint) || m.checkUpdateExternalIP(ingSvcPairs, svc)
