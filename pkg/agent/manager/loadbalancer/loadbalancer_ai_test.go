@@ -13,6 +13,8 @@ import (
 
 	"github.com/pkg/errors"
 
+	"k8s.io/client-go/tools/record"
+
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 )
 
@@ -369,5 +371,89 @@ func TestInstallLBSkipsGPUCheckForOtherSelectors(t *testing.T) {
 	}
 	if body := gw.lastBody(t); !strings.Contains(body, `"sel":8`) {
 		t.Errorf("gateway body missing sel=8\n%s", body)
+	}
+}
+
+// A peer disarmed after the rule was programmed raises an event on the
+// reconcile path, since the creation-time pre-flight cannot see it.
+func TestReportGPUDisarmedRaisesEvent(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: false, RoutingMode: "standard_chwbl"}
+
+	recorder := record.NewFakeRecorder(4)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+	}
+
+	m.reportGPUDisarmed(pdService())
+
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, ReasonGPUMonitoringDisabled) {
+			t.Errorf("event = %q, want %s", event, ReasonGPUMonitoringDisabled)
+		}
+	default:
+		t.Fatal("no event was raised for a disarmed peer")
+	}
+}
+
+func TestReportGPUDisarmedQuietWhenArmed(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 2}
+
+	recorder := record.NewFakeRecorder(4)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+	}
+
+	m.reportGPUDisarmed(pdService())
+
+	select {
+	case event := <-recorder.Events:
+		t.Errorf("unexpected event for an armed peer: %s", event)
+	default:
+	}
+}
+
+// A peer that cannot answer must not produce a warning: "cannot tell" is not
+// "disarmed".
+func TestReportGPUDisarmedQuietWhenUnreachable(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = nil // status endpoint returns 500
+
+	recorder := record.NewFakeRecorder(4)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+	}
+
+	m.reportGPUDisarmed(pdService())
+
+	select {
+	case event := <-recorder.Events:
+		t.Errorf("unexpected event for an unreadable status: %s", event)
+	default:
+	}
+}
+
+// Plain loxilb peers are skipped: gpuaware never reaches them anyway.
+func TestReportGPUDisarmedSkipsPlainPeers(t *testing.T) {
+	plain := newFakeLoxiLB(t, "")
+	plain.gpuStatus = nil
+
+	recorder := record.NewFakeRecorder(4)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{plain.client(t)}},
+	}
+
+	m.reportGPUDisarmed(pdService())
+
+	select {
+	case event := <-recorder.Events:
+		t.Errorf("unexpected event for a plain peer: %s", event)
+	default:
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 
@@ -406,6 +407,34 @@ func (m *Manager) checkGPUAware(ctx context.Context, c *api.LoxiClient) error {
 	}
 
 	return nil
+}
+
+// reportGPUDisarmed - re-check GPU arming on the reconcile path.
+//
+// The pre-flight in installLB only runs when a rule is programmed, so it cannot
+// see an operator disarming the mode afterwards: the rule stops being
+// GPU-aware, nothing about the rule changed, and no event is raised. Same shape
+// as a pod relabelled in place, and the same fix - look on the loop that runs
+// anyway rather than only at the write.
+//
+// This reports rather than refuses. The rule already exists and is serving; the
+// mode being off is not something reprogramming would repair.
+func (m *Manager) reportGPUDisarmed(svc *corev1.Service) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	for _, c := range m.LoxiClients.Clients {
+		if !c.IsInferenceGateway() {
+			continue
+		}
+
+		// An unreachable peer fails the status query, which checkGPUAware
+		// treats as "cannot tell" - so a peer that is simply down stays quiet.
+		if err := m.checkGPUAware(ctx, c); err != nil {
+			klog.Errorf("service %s/%s: %v", svc.Namespace, svc.Name, err)
+			m.recordServiceWarning(svc, ReasonGPUMonitoringDisabled, err.Error())
+		}
+	}
 }
 
 // Event reasons raised against a Service.

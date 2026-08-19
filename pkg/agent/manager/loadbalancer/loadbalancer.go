@@ -1054,6 +1054,13 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	// Checked every reconcile, not only when programming: the mode can be
+	// disarmed after the rule exists, and nothing about the rule changes when
+	// it is. Scoped to gpuaware services, so no other service pays for it.
+	if epSelect == api.LbSelGPUAware {
+		m.reportGPUDisarmed(svc)
+	}
+
 	if !update {
 		update = m.checkUpdateEndpoints(svc, cacheKey, endpointIPs, pdRoles, useExternalEndpoint) || m.checkUpdateExternalIP(ingSvcPairs, svc)
 	}
