@@ -201,6 +201,7 @@ type LbCacheEntry struct {
 	ProbeTimeo      uint32
 	ProbeRetries    int
 	EpSelect        api.EpSelect
+	RuleStatus      map[string]string
 	AIArgs          api.AIArgs
 	EndpointProbe   api.EndpointProbe
 	GatewayArgs     api.GatewayArgs
@@ -1119,6 +1120,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	if epSelect == api.LbSelGPUAware {
 		m.reportGPUDisarmed(svc)
 	}
+
+	// What loxilb says about the rules that already exist. Same shape, and
+	// before the early return below, since a rule can go unhealthy without its
+	// configuration changing at all.
+	m.syncRuleStatus(svc, cacheKey)
 
 	if !update {
 		update = m.checkUpdateEndpoints(svc, cacheKey, endpointIPs, pdRoles, useExternalEndpoint) || m.checkUpdateExternalIP(ingSvcPairs, svc)
