@@ -176,6 +176,15 @@ spec:
 
 The Service selector must cover both pools, since one rule carries both. The two role selectors then partition what it found.
 
+<b>GPU-aware routing has to be armed outside Kubernetes.</b> `loxilb.io/epselect: "gpuaware"` sets the rule's selector, but whether that selector actually runs is decided by a process-global routing mode on each loxilb instance, and it is off by default. A rule created against a loxilb with it off is accepted and then routes as plain CHWBL, indistinguishable from `epselect: "chwbl"`.
+
+Two things have to happen on the loxilb side, and neither is something kube-loxilb can do:
+
+1. `POST /netlox/v1/config/gpu/enable` on each instance, which arms the routing mode.
+2. Per-endpoint GPU telemetry pushed to `POST /netlox/v1/config/worker/metrics`. This comes from the serving engine or DCGM; without it the selector is armed but has no data.
+
+kube-loxilb does not drive either: the first is one instance-wide switch with no reference counting, and the second needs metrics the Kubernetes API does not have. What it does do is check. Before programming a `gpuaware` rule it reads `GET /netlox/v1/config/gpu/status`, and if the mode is disarmed it refuses the rule on that instance with a `GPUMonitoringDisabled` warning event rather than letting it silently become CHWBL. If the status cannot be read at all, the rule is programmed anyway -- a failed diagnostic should not take down a rule that would have worked.
+
 <b>KV-exact routing needs a staged tokenizer.</b> loxilb reads `/etc/loxilb/tokenizers/<model-slug>/tokenizer.json`, where `<model-slug>` is the model name with each `/` replaced by `__`. kube-loxilb does not manage that file and cannot see it, so whenever a rule enables `kv-exact-mode` it records a Normal `KvExactTokenizerRequired` event on the Service naming the exact path to check -- visible with `kubectl describe svc`.
 
 If the file is missing, loxilb logs `kv-router: tokenizer not available` once and silently falls back to load-based routing: the rule is still created and traffic still flows, just without cache-aware placement. <b>loxilb caches that failure</b>, so staging the tokenizer afterwards does not take effect until loxilb restarts. Stage it before creating the rule.

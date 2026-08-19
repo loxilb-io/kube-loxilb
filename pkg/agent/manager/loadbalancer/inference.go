@@ -370,6 +370,44 @@ func roleName(role int32) string {
 // and report it on the Service.
 var ErrInferenceGatewayRequired = errors.New("loxilb peer is not a loxilb-inference-gateway")
 
+// ErrGPUMonitoringDisabled - the peer would accept a sel=gpuaware rule and then
+// select as CHWBL, because GPU-aware routing is armed instance-wide and is off.
+var ErrGPUMonitoringDisabled = errors.New("GPU monitoring is disabled on the loxilb peer")
+
+// checkGPUAware - refuse a sel=gpuaware rule that the peer would silently
+// downgrade to CHWBL.
+//
+// GPU-aware selection has three stages and kube-loxilb only drives the third.
+// Stage 1 arms the instance-wide routing mode; stage 2 feeds per-endpoint GPU
+// telemetry, which comes from the serving engine or DCGM rather than from the
+// Kubernetes API. Neither belongs to kube-loxilb - but unlike the tokenizer,
+// whose state cannot be observed at all, stage 1 reports itself. A check that is
+// available and not made is a different thing from blindness.
+func (m *Manager) checkGPUAware(ctx context.Context, c *api.LoxiClient) error {
+	status, err := c.GPU().Status(ctx)
+	if err != nil {
+		// A failed diagnostic must not take down a rule that would have worked.
+		klog.Warningf("loxilb-lb(%s): could not read GPU monitoring status, programming sel=gpuaware anyway: %v",
+			c.Host, err)
+		return nil
+	}
+
+	if !status.GPUArmed() {
+		return fmt.Errorf("loxilb-lb(%s) has GPU-aware routing disarmed (enabled=%v, routing_mode=%q), "+
+			"so a %s=gpuaware rule would select as CHWBL instead: %w",
+			c.Host, status.Enabled, status.RoutingMode, endPointSelAnnotation, ErrGPUMonitoringDisabled)
+	}
+
+	if status.WorkerCount == 0 {
+		// Armed, but nothing has reported metrics yet, so the selector has no
+		// telemetry to act on. Not a refusal: the feed may simply not have run.
+		klog.Warningf("loxilb-lb(%s): GPU monitoring is armed but tracking 0 workers - "+
+			"GPU-aware selection has no telemetry until worker metrics are pushed to it", c.Host)
+	}
+
+	return nil
+}
+
 // Event reasons raised against a Service.
 const (
 	// ReasonInvalidInferenceConfig - the inference annotations are malformed or
@@ -381,6 +419,9 @@ const (
 	// ReasonKvExactTokenizerRequired - the rule uses KV-exact routing, which
 	// needs a tokenizer staged inside loxilb that kube-loxilb cannot see.
 	ReasonKvExactTokenizerRequired = "KvExactTokenizerRequired"
+	// ReasonGPUMonitoringDisabled - the rule selects GPU-aware routing on a
+	// loxilb instance where that mode is not armed.
+	ReasonGPUMonitoringDisabled = "GPUMonitoringDisabled"
 )
 
 // recordServiceEvent - surface something on the Service itself, so
