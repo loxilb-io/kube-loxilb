@@ -24,9 +24,13 @@ spec:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
+            # Two terms, not two expressions in one term: expressions inside a
+            # term are ANDed. k3s stopped labelling new nodes as master in
+            # v1.34, so requiring both labels matches nothing there.
             - matchExpressions:
               - key: "node-role.kubernetes.io/master"
                 operator: Exists
+            - matchExpressions:
               - key: "node-role.kubernetes.io/control-plane"
                 operator: Exists
       containers:
