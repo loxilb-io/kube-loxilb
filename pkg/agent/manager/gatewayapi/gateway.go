@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
@@ -54,6 +55,8 @@ type GatewayManager struct {
 	gatewayInformer     sigsinformer.GatewayInformer
 	gatewayLister       sigslister.GatewayLister
 	gatewayListerSynced cache.InformerSynced
+	// httpRouteLister - to see which listeners an InferencePool has claimed.
+	httpRouteLister sigslister.HTTPRouteLister
 
 	queue workqueue.RateLimitingInterface
 }
@@ -66,6 +69,7 @@ func NewGatewayManager(
 	sigsInformerFactory externalversions.SharedInformerFactory) *GatewayManager {
 
 	gatewayInformer := sigsInformerFactory.Gateway().V1().Gateways()
+	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
 	manager := &GatewayManager{
 		kubeClient:          kubeClient,
 		sigsClient:          sigsClient,
@@ -74,9 +78,20 @@ func NewGatewayManager(
 		gatewayInformer:     gatewayInformer,
 		gatewayLister:       gatewayInformer.Lister(),
 		gatewayListerSynced: gatewayInformer.Informer().HasSynced,
+		httpRouteLister:     httpRouteInformer.Lister(),
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gateway"),
 	}
+
+	// A route attaching an InferencePool to a listener changes what this
+	// gateway should expose, and touches no Gateway object.
+	httpRouteInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    func(cur interface{}) { manager.enqueueRouteGateways(cur) },
+			UpdateFunc: func(old, cur interface{}) { manager.enqueueRouteGateways(cur) },
+			DeleteFunc: func(old interface{}) { manager.enqueueRouteGateways(old) },
+		},
+	)
 
 	manager.gatewayInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
@@ -115,6 +130,34 @@ func (gm *GatewayManager) enqueueObject(obj interface{}) {
 	}
 
 	gm.queue.Add(gw)
+}
+
+// enqueueRouteGateways - queue the gateways a route names as parents.
+func (gm *GatewayManager) enqueueRouteGateways(obj interface{}) {
+	route, ok := obj.(*v1.HTTPRoute)
+	if !ok {
+		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		route, ok = deletedState.Obj.(*v1.HTTPRoute)
+		if !ok {
+			return
+		}
+	}
+
+	for _, parentRef := range route.Spec.ParentRefs {
+		namespace := route.Namespace
+		if parentRef.Namespace != nil {
+			namespace = string(*parentRef.Namespace)
+		}
+
+		gateway, err := gm.gatewayLister.Gateways(namespace).Get(string(parentRef.Name))
+		if err != nil {
+			continue
+		}
+		gm.queue.Add(gateway)
+	}
 }
 
 func (gm *GatewayManager) Run(stopCh <-chan struct{}) {
@@ -283,6 +326,67 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 	return nil
 }
 
+// servicePortsEqual - compare on what the gateway decides, ignoring the node
+// port the API server allocated.
+func servicePortsEqual(existing, desired []corev1.ServicePort) bool {
+	if len(existing) != len(desired) {
+		return false
+	}
+
+	for i := range desired {
+		if existing[i].Name != desired[i].Name ||
+			existing[i].Port != desired[i].Port ||
+			existing[i].TargetPort != desired[i].TargetPort ||
+			existing[i].Protocol != desired[i].Protocol {
+			return false
+		}
+	}
+
+	return true
+}
+
+// listenersClaimedByInferencePools - listeners that an InferencePool-backed
+// HTTPRoute attaches to.
+//
+// The ingress service exists to hand a listener's traffic to loxilb-ingress
+// for path routing. An InferencePool wants that same listener pointed at model
+// server pods instead. Both cannot own one address and port, so the pool wins
+// and the ingress service leaves the listener alone.
+func (gm *GatewayManager) listenersClaimedByInferencePools(gateway *v1.Gateway) map[v1.SectionName]bool {
+	claimed := map[v1.SectionName]bool{}
+	if gm.httpRouteLister == nil {
+		return claimed
+	}
+
+	routes, err := gm.httpRouteLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("gateway %s/%s: unable to list HTTPRoutes: %v", gateway.Namespace, gateway.Name, err)
+		return claimed
+	}
+
+	for _, route := range routes {
+		if len(poolsReferencedBy(route)) == 0 {
+			continue
+		}
+
+		for _, parentRef := range route.Spec.ParentRefs {
+			namespace := route.Namespace
+			if parentRef.Namespace != nil {
+				namespace = string(*parentRef.Namespace)
+			}
+			if namespace != gateway.Namespace || string(parentRef.Name) != gateway.Name {
+				continue
+			}
+
+			if listener := findListenerForRoute(gateway, parentRef); listener != nil {
+				claimed[listener.Name] = true
+			}
+		}
+	}
+
+	return claimed
+}
+
 func (gm *GatewayManager) deleteIngressLbService(ctx context.Context, gwNs, gwName string) error {
 	svcList, err := gm.kubeClient.CoreV1().Services(gwNs).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -326,18 +430,25 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	newService.Name = fmt.Sprintf("%s-ingress-service", gateway.Name)
 	newService.Namespace = gateway.Namespace
 
-	svc, err := gm.kubeClient.CoreV1().Services(newService.Namespace).Get(ctx, newService.Name, metav1.GetOptions{})
-	if err == nil {
-		return svc, nil
-	}
+	existing, getErr := gm.kubeClient.CoreV1().Services(newService.Namespace).Get(ctx, newService.Name, metav1.GetOptions{})
 
 	if len(gateway.Spec.Addresses) == 0 {
 		return nil, fmt.Errorf("gateway has no external IP address")
 	}
 
 	// Extract HTTP/HTTPS listeners and their ports
+	claimed := gm.listenersClaimedByInferencePools(gateway)
 	var servicePorts []corev1.ServicePort
 	for _, listener := range gateway.Spec.Listeners {
+		if claimed[listener.Name] {
+			// An InferencePool serves this listener, and its Service already
+			// carries the gateway address and the listener port. Adding this
+			// one would put a second rule on the same address and port, and
+			// which of the two the data plane binds is then a race.
+			klog.Infof("gateway %s/%s: listener %s is served by an InferencePool - no ingress service port for it",
+				gateway.Namespace, gateway.Name, listener.Name)
+			continue
+		}
 		if listener.Protocol == v1.HTTPProtocolType {
 			port := int32(httpPort) // default 80
 			if listener.Port != 0 {
@@ -363,10 +474,34 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 		}
 	}
 
-	// If no HTTP/HTTPS listeners found, don't create service
+	// If no HTTP/HTTPS listeners are left to serve, there is no service to
+	// keep - which is also how an ingress service created before a pool
+	// claimed its listener gets cleaned up.
 	if len(servicePorts) == 0 {
-		klog.Infof("gateway %s/%s has no HTTP/HTTPS listeners, skipping service creation", gateway.Namespace, gateway.Name)
+		if getErr == nil {
+			if err := gm.kubeClient.CoreV1().Services(existing.Namespace).Delete(ctx, existing.Name, metav1.DeleteOptions{}); err != nil {
+				return nil, err
+			}
+			klog.Infof("service %s/%s is deleted - every listener is served elsewhere", existing.Namespace, existing.Name)
+		} else {
+			klog.Infof("gateway %s/%s has no HTTP/HTTPS listeners to serve, skipping service creation", gateway.Namespace, gateway.Name)
+		}
 		return nil, nil
+	}
+
+	if getErr == nil {
+		if servicePortsEqual(existing.Spec.Ports, servicePorts) {
+			return existing, nil
+		}
+
+		updated := existing.DeepCopy()
+		updated.Spec.Ports = servicePorts
+		svc, err := gm.kubeClient.CoreV1().Services(updated.Namespace).Update(ctx, updated, metav1.UpdateOptions{})
+		if err != nil {
+			return nil, err
+		}
+		klog.Infof("service %s/%s ports updated to match the gateway's listeners", svc.Namespace, svc.Name)
+		return svc, nil
 	}
 
 	newService.SetAnnotations(gateway.Annotations)
@@ -393,7 +528,7 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	}
 	newService.Spec.Selector["app"] = "loxilb-ingress"
 
-	svc, err = gm.kubeClient.CoreV1().Services(newService.Namespace).Create(ctx, &newService, metav1.CreateOptions{})
+	svc, err := gm.kubeClient.CoreV1().Services(newService.Namespace).Create(ctx, &newService, metav1.CreateOptions{})
 	if err != nil {
 		return nil, err
 	}

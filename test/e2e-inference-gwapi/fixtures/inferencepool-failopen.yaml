@@ -1,0 +1,20 @@
+# A pool that insists on an Endpoint Picker. loxilb selects endpoints itself,
+# so this must be refused rather than served by a policy nobody asked for.
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: epp-required
+  namespace: llm
+  annotations:
+    loxilb.io/epselect: "chwbl"
+spec:
+  selector:
+    matchLabels:
+      app: vllm-qwen3
+  targetPorts:
+    - number: 8000
+  endpointPickerRef:
+    name: some-epp
+    port:
+      number: 9002
+    failureMode: FailOpen

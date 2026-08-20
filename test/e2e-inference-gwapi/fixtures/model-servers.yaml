@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm
+---
+# Stand-in model servers. socat answers with the pod name, which is what makes
+# a delivered request traceable to the endpoint that served it - the same
+# banner-as-proof convention the loxilb cicd scenarios use.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-qwen3
+  namespace: llm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vllm-qwen3
+  template:
+    metadata:
+      labels:
+        app: vllm-qwen3
+    spec:
+      containers:
+        - name: server
+          image: ghcr.io/loxilb-io/nettest:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # The whole response is built once at startup and replayed per
+              # connection: socat's system: runs under /bin/sh, where building
+              # it inline turns the header lines into commands.
+              printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+                "${#POD_NAME}" "$POD_NAME" > /tmp/resp
+              exec socat -T5 tcp-l:8000,fork,reuseaddr system:'cat /tmp/resp'
+          ports:
+            - containerPort: 8000

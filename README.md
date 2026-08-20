@@ -471,6 +471,11 @@ pool's `endpointPickerRef` is not called. A pool that sets it with `failureMode:
 accepted and the picker ignored; with `FailClose` - the API default - the pool is refused, and
 `status.parents[].conditions` says why rather than routing by a policy you did not ask for.
 
+**The pool takes the listener.** A Gateway with HTTP/HTTPS listeners normally also gets a
+`<gateway>-ingress-service` pointing at the loxilb-ingress pods. A listener that an InferencePool
+is attached to is left out of that Service - both would otherwise claim the same address and port,
+and which rule the data plane binds would be a race.
+
 **CRDs.** Install the Inference Extension CRDs separately; kube-loxilb waits for
 `inferencepools.inference.networking.k8s.io` and does nothing until it exists. Pools that omit
 `endpointPickerRef` need the **v1.6.0** CRDs or later - v1.5.0 and earlier make the field required.
