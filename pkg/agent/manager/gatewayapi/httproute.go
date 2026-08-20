@@ -328,6 +328,24 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 		var paths []netv1.HTTPIngressPath
 		for _, match := range rule.Matches {
 			for _, backref := range rule.BackendRefs {
+				// An Ingress backend is always a Service. A backendRef that
+				// names something else has to be skipped rather than read as
+				// one, or the Ingress ends up pointing at a Service that was
+				// never created and the route silently forwards nowhere.
+				switch classifyBackendRef(backref.BackendObjectReference) {
+				case backendService:
+				case backendInferencePool:
+					// Handled by the InferencePool controller, which programs
+					// the loxilb rule directly instead of going through an
+					// Ingress.
+					klog.V(4).Infof("HTTPRoute %s/%s: backendRef %s is an InferencePool, not an Ingress backend",
+						httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
+					continue
+				default:
+					klog.Warningf("HTTPRoute %s/%s: backendRef %s is not supported - skipping",
+						httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
+					continue
+				}
 
 				if backref.Namespace != nil {
 					if newIngress.Namespace != string(*backref.Namespace) {

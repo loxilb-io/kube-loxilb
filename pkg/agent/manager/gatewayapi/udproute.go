@@ -271,6 +271,16 @@ func (u *UDPRouteManager) findListener(gateway *v1.Gateway, parentRef v1.ParentR
 }
 
 func (u *UDPRouteManager) reconcileService(ctx context.Context, backendRef v1.BackendRef, udpRoute *v1alpha2.UDPRoute, gateway *v1.Gateway, listener *v1.Listener) error {
+	// The backend of an L4 route is a Service. Anything else - an
+	// InferencePool included, since inference routing is HTTP - would be
+	// turned into a Service reference that names an object of a different
+	// kind, so refuse instead of guessing.
+	if kind := classifyBackendRef(backendRef.BackendObjectReference); kind != backendService {
+		klog.Warningf("UDPRoute %s/%s: backendRef %s is not a Service - skipping",
+			udpRoute.Namespace, udpRoute.Name, backendRefDescription(backendRef.BackendObjectReference))
+		return nil
+	}
+
 	serviceBehaviour := udpRoute.Labels["serviceBehaviour"]
 	if serviceBehaviour == "" {
 		serviceBehaviour = udpRouteRuleServiceCreate
