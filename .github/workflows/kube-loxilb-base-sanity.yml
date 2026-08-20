@@ -21,7 +21,17 @@ jobs:
           go-version: '>=1.25.0'
 
       - name: build kube-loxilb's new image
-        run: make docker 
+        run: make docker
+
+      # Without this the cluster pulls ghcr.io/loxilb-io/kube-loxilb:latest and
+      # the image built above is never run - the job would report on whatever
+      # was last published rather than on this commit. k3d runs its own
+      # containerd, so the image has to be imported, and the manifest's
+      # imagePullPolicy: Always would replace it again.
+      - name: load the built image into the cluster
+        run: |
+          k3d image import ghcr.io/loxilb-io/kube-loxilb:latest -c test-cluster
+          sed -i 's|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|' manifest/gateway-api/kube-loxilb.yaml
 
       - name: install gateway api
         run: kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/experimental-install.yaml
@@ -47,6 +57,9 @@ jobs:
           kubectl -n kube-system get pods
           exit 1
           
+      - name: show which build is running
+        run: kubectl -n kube-system logs "${{ steps.deploy_kube_loxilb.outputs.KUBE_LOXILB }}" | head -5
+
       - name: Sleep for 60 seconds for kube-loxilb
         run: sleep 60s
         
