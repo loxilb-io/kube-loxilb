@@ -402,6 +402,26 @@ kube-system       loxilb-lb-5m85p                             1/1     Running   
 
 Thereafter, the process of service creation remains the same as explained in previous sections.   
 
+## Gateway API support
+
+kube-loxilb implements Gateway API when started with `--gatewayAPI`. Routes are translated into
+Kubernetes objects that the regular kube-loxilb paths already program:
+
+| Resource | API version | Translated into |
+|---|---|---|
+| GatewayClass | `gateway.networking.k8s.io/v1` | status conditions only |
+| Gateway | `gateway.networking.k8s.io/v1` | external IP from the pool + a LoadBalancer Service for HTTP/HTTPS listeners |
+| HTTPRoute | `gateway.networking.k8s.io/v1` | Ingress (`ingressClassName: loxilb`) |
+| TCPRoute / UDPRoute | `gateway.networking.k8s.io/v1alpha2` | LoadBalancer Service |
+
+**Cluster CRD versions.** The client is built against Gateway API v1.5.1, and the resources above use
+API versions that have not changed since v1.0.0, so any Gateway API CRD release from **v1.0.0 onwards**
+works. TCPRoute and UDPRoute are only shipped in the Gateway API **experimental channel** - install
+that channel if you use them.
+
+Annotations on a route are copied onto the object it generates, so every `loxilb.io/*` annotation
+documented above can be set on a Gateway, HTTPRoute, TCPRoute or UDPRoute.
+
 ## How to use kube-loxilb CRDs ?   
 
 Kube-loxilb provides various Custom Resource Definition (CRD) to facilicate its operations:

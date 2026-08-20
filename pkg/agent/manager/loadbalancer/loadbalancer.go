@@ -1544,7 +1544,7 @@ func (m *Manager) getNodeEndpointsWithLabel(addrType string, matchLabel string) 
 	for _, node := range nodes {
 		addr, err := m.getNodeAddress(*node, addrType)
 		if err != nil {
-			klog.Errorf(err.Error())
+			klog.Error(err)
 			continue
 		}
 		klog.V(4).Infof("getNodeEndpointsWithLabel: found node %s with label %s", addr, matchLabel)
@@ -1573,7 +1573,7 @@ func (m *Manager) getNodeEndpointsWithLabelWithKey(addrType string, key, matchLa
 	for _, node := range nodes {
 		addr, err := m.getNodeAddress(*node, addrType)
 		if err != nil {
-			klog.Errorf(err.Error())
+			klog.Error(err)
 			continue
 		}
 		klog.V(4).Infof("getNodeEndpointsWithLabelWithKey: found node %s with label %s:%s", addr, key, matchLabel)
@@ -1691,7 +1691,7 @@ func (m *Manager) getEndpointsForLB(nodes []*corev1.Node, addrType string, nodeM
 	for _, node := range nodes {
 		addr, err := m.getNodeAddress(*node, addrType)
 		if err != nil {
-			klog.Errorf(err.Error())
+			klog.Error(err)
 			continue
 		}
 		if len(nodeMatchList) > 0 && !k8s.MatchNodeinNodeList(addr, nodeMatchList) {
@@ -2057,7 +2057,7 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 				newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 				if newIP == nil {
 					errMsg := fmt.Sprintf("failed to generate external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
-					klog.Errorf(errMsg)
+					klog.Error(errMsg)
 					klog.Exit("kube-loxilb cant run optimally anymore")
 					return nil, errors.New(errMsg), hasExtIPAllocated
 				}
@@ -2127,7 +2127,7 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 						rpool.ReturnIPAddr(sPairs[j].IPString, sPairs[j].IdentIPAM)
 					}
 					errMsg := fmt.Sprintf("failed to generate secondary external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
-					klog.Errorf(errMsg)
+					klog.Error(errMsg)
 					klog.Exit("kube-loxilb cant run optimally anymore")
 					return nil, errors.New(errMsg)
 				}

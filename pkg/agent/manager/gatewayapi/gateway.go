@@ -212,7 +212,7 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 		}
 
 		// update Gateway spec. If fail, return error
-		gw.Spec.Addresses = append(gw.Spec.Addresses, v1.GatewayAddress{Value: newIP.String()})
+		gw.Spec.Addresses = append(gw.Spec.Addresses, v1.GatewaySpecAddress{Value: newIP.String()})
 		if gw.Labels == nil {
 			gw.Labels = make(map[string]string)
 		}
