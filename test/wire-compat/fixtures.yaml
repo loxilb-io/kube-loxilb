@@ -1,0 +1,379 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: l1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: ep, namespace: l1}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: ep}}
+  template:
+    metadata: {labels: {app: ep}}
+    spec:
+      containers:
+      - name: ep
+        image: ghcr.io/loxilb-io/nettest:latest
+        imagePullPolicy: IfNotPresent
+        command: ["sleep", "infinity"]
+        ports: [{containerPort: 80}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f1-plain
+  namespace: l1
+  annotations:
+    fixture: "f1"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8001
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f2-udp
+  namespace: l1
+  annotations:
+    fixture: "f2a"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8002
+    targetPort: 80
+    protocol: UDP
+    nodePort: 30002
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f2-sctp
+  namespace: l1
+  annotations:
+    fixture: "f2b"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8003
+    targetPort: 80
+    protocol: SCTP
+    nodePort: 30003
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f3-fullnat
+  namespace: l1
+  annotations:
+    loxilb.io/lbmode: "fullnat"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8004
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30004
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f3-dsr
+  namespace: l1
+  annotations:
+    loxilb.io/lbmode: "dsr"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8005
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30005
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f3-onearm
+  namespace: l1
+  annotations:
+    loxilb.io/lbmode: "onearm"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8006
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30006
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f3-fullproxy
+  namespace: l1
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8007
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30007
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f4-rr
+  namespace: l1
+  annotations:
+    loxilb.io/epselect: "rr"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8010
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30010
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f4-hash
+  namespace: l1
+  annotations:
+    loxilb.io/epselect: "hash"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8011
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30011
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f4-persist
+  namespace: l1
+  annotations:
+    loxilb.io/epselect: "persist"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8012
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30012
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f4-lc
+  namespace: l1
+  annotations:
+    loxilb.io/epselect: "lc"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8013
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30013
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f4-n2
+  namespace: l1
+  annotations:
+    loxilb.io/epselect: "n2"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8014
+    targetPort: 80
+    protocol: SCTP
+    nodePort: 30014
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f4-n3
+  namespace: l1
+  annotations:
+    loxilb.io/epselect: "n3"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8015
+    targetPort: 80
+    protocol: UDP
+    nodePort: 30015
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f5-n2det
+  namespace: l1
+  annotations:
+    loxilb.io/epselect: "n2det"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8016
+    targetPort: 80
+    protocol: UDP
+    nodePort: 30016
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f6-probe
+  namespace: l1
+  annotations:
+    loxilb.io/probetype: "http"
+    loxilb.io/probeport: "8080"
+    loxilb.io/probereq: "/healthz"
+    loxilb.io/proberesp: "ok"
+    loxilb.io/probetimeout: "5"
+    loxilb.io/proberetries: "3"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8020
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30020
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f7-misc
+  namespace: l1
+  annotations:
+    loxilb.io/liveness: "yes"
+    loxilb.io/timeout: "60"
+    loxilb.io/prefLocalPod: "yes"
+    loxilb.io/useproxyprotov2: "yes"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8021
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30021
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f8-static
+  namespace: l1
+  annotations:
+    loxilb.io/staticIP: "123.123.123.200"
+    loxilb.io/poolSelect: "defaultPool"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8022
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30022
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f9-mtls
+  namespace: l1
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+    loxilb.io/mtls-frontend-mode: "required"
+    loxilb.io/mtls-frontend-secret: "mtls-front"
+    loxilb.io/mtls-frontend-require-cn: "true"
+    loxilb.io/mtls-frontend-cn-pattern: "*.example.com"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8023
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30023
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f10-scale
+  namespace: l1
+  annotations:
+    fixture: "f10"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8030
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30030
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: mtls-front, namespace: l1}
+type: Opaque
+data:
+  client-ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURCVENDQWUyZ0F3SUJBZ0lVTDNQRGoxOG5BV0NvSDdDRTNjQ1NEWUlzQ044d0RRWUpLb1pJaHZjTkFRRUwKQlFBd0VqRVFNQTRHQTFVRUF3d0hkR1Z6ZEMxallUQWVGdzB5TmpBNE1qQXdNalV4TWpaYUZ3MHlOakE0TWpFdwpNalV4TWpaYU1CSXhFREFPQmdOVkJBTU1CM1JsYzNRdFkyRXdnZ0VpTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCCkR3QXdnZ0VLQW9JQkFRRExxREVJWVZLSmZGMEtoZVZVS0RUVjBsYzhEV0QzazZwQmdJSktUUk5CNG52c2xxejMKZDNIN2JJVEhwbTkwWDk5Z2d2dTRJZlpKREg0cWNqajFMQzA5UjNseDJRZHNQVnliMFIvVmQ4eWpSWTlqMHVNNgpFcjBQb2NWNEk3N3VDRnpLN1NUL1YzMzNrUjNXb2kySFlSWmRQbndNVTdjclBIelpFRkRZQlk4bWNrbHh5NTRPCkNpTUZKYVliZXBIVXZ0YlN1YU00c0xRcWV3cC9EQmQzbUc2QmhFSVVIdmdSVDJzQWV1ZEdGWmlXRlBtWFN3WVgKTytpYzNnVWhrV1JOT2sydmdLUHhXYlFLY24xMFdSVkF1aFBzMXg5UEkweW03VWlEUThYL1hLMTlaUFpTMjgzUgptcjFpRnZlbitpbCsxeXphY0Z3YkxKZFFzSDc3YzAwTUNZUWxBZ01CQUFHalV6QlJNQjBHQTFVZERnUVdCQlRWCkxCTjI4eTdOSVE2Nkg1emxnaDVpOWFYUVVqQWZCZ05WSFNNRUdEQVdnQlRWTEJOMjh5N05JUTY2SDV6bGdoNWkKOWFYUVVqQVBCZ05WSFJNQkFmOEVCVEFEQVFIL01BMEdDU3FHU0liM0RRRUJDd1VBQTRJQkFRQ3JuU0NKbTZWLwpzazl4R1lhK2M3WjIxQ1FpMk9xak9YbWVTaVowNkF1UEQrZ2xVb1Fqdmh0ZEFSSFNZbFFGbGQ4a3o4VlFOTmEvCjFsL0J5RVdzWkQ5TVFzRXV2TFp1dnFUMUw4RG5OOGNtYjlqcFBWUm9lbkc3T3JXVWoyckRJS0lsaCtRZEtTVkIKQlJFVHBLbk1vQmZNUWdHblVLSjlpZW9uUG5nRW5wVU9ncGtDR1IxYUFUd1FaTlhsZkRvZ0ljblVDRlFaTmJaTgpRaEN5QnFIaWVYNUpVYUJWb2VWN2VJTnM2SjU2YzFNajRMZ1ovYTJGek4wY2YrV09ZTm9jTFlLMkF1WTVYa09ECnN5VCtjQ0dpbWlDT2o3QlNUNEkxOGFkUUJWUVlKQUpLNlpROEcrVFlRTE9JWU9UTWZ5L0Z6UTE2a2JrRWdaY0EKWWNxeEhSa1FETUttCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f11-podnet
+  namespace: l1
+  annotations:
+    loxilb.io/usepodnetwork: "yes"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8031
+    targetPort: 80
+    protocol: TCP
