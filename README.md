@@ -422,6 +422,59 @@ that channel if you use them.
 Annotations on a route are copied onto the object it generates, so every `loxilb.io/*` annotation
 documented above can be set on a Gateway, HTTPRoute, TCPRoute or UDPRoute.
 
+### Inference Extension (InferencePool)
+
+Start with `--inferenceExtension` (which needs `--gatewayAPI`) to serve
+[Gateway API Inference Extension](https://gateway-api-inference-extension.sigs.k8s.io/) pools.
+An `InferencePool` referenced from an HTTPRoute becomes a LoadBalancer Service selecting the pool's
+pods, which loxilb then programs as an inference rule:
+
+```yaml
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: vllm-qwen3
+  namespace: llm
+  annotations:
+    loxilb.io/epselect: "chwbl"           # prefix-cache aware endpoint selection
+    loxilb.io/model-name: "qwen3-32b"
+spec:
+  selector:
+    matchLabels:
+      app: vllm-qwen3
+  targetPorts:
+    - number: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: llm-route
+  namespace: llm
+spec:
+  parentRefs:
+    - name: inference-gw
+  rules:
+    - backendRefs:
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: vllm-qwen3
+```
+
+The generated Service is named `<pool>-inference`, carries the pool's and the route's `loxilb.io/*`
+annotations, and always gets `loxilb.io/lbmode: fullproxy` (unless the pool sets a mode itself) and
+`loxilb.io/usepodnetwork: "yes"` - inference routing chooses between individual model server pods,
+which node-address endpoints cannot express.
+
+**Endpoint selection is loxilb's.** The extension's reference design delegates it to an Endpoint
+Picker over ext-proc; loxilb-inference-gateway selects endpoints in the data plane instead, so a
+pool's `endpointPickerRef` is not called. A pool that sets it with `failureMode: FailOpen` is
+accepted and the picker ignored; with `FailClose` - the API default - the pool is refused, and
+`status.parents[].conditions` says why rather than routing by a policy you did not ask for.
+
+**CRDs.** Install the Inference Extension CRDs separately; kube-loxilb waits for
+`inferencepools.inference.networking.k8s.io` and does nothing until it exists. Pools that omit
+`endpointPickerRef` need the **v1.6.0** CRDs or later - v1.5.0 and earlier make the field required.
+
 ## How to use kube-loxilb CRDs ?   
 
 Kube-loxilb provides various Custom Resource Definition (CRD) to facilicate its operations:

@@ -62,6 +62,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&cidrPools, "cidrPools", cidrPools, "CIDR Pools")
 	fs.StringVar(&cidr6Pools, "cidr6Pools", cidr6Pools, "CIDR6 Pools")
 	fs.BoolVar(&o.config.EnableGatewayAPI, "gatewayAPI", false, "Enable gateway API managers")
+	fs.BoolVar(&o.config.EnableInferenceExtension, "inferenceExtension", false, "Enable the Gateway API Inference Extension (InferencePool). Requires --gatewayAPI")
 	fs.BoolVar(&o.config.EnableBGPCRDs, "enableBGPCRDs", false, "Enable BGP CRDs")
 	fs.BoolVar(&o.config.EnableK8sMetadata, "enableK8sMetadata", false, "Enable K8s metadata sync to loxilb")
 	fs.StringVar(&o.config.LoxilbGatewayClass, "loxilbGatewayClass", o.config.LoxilbGatewayClass, "GatewayClass manager Name")
@@ -212,6 +213,13 @@ func (o *Options) validate(args []string) error {
 				return fmt.Errorf("LoxilbGatewayClass must be a label-style identifier")
 			}
 		}
+	}
+
+	// An InferencePool is only reachable through an HTTPRoute attached to a
+	// Gateway, so the Inference Extension has nothing to act on without the
+	// Gateway API managers running.
+	if o.config.EnableInferenceExtension && !o.config.EnableGatewayAPI {
+		return fmt.Errorf("inferenceExtension requires gatewayAPI to be enabled")
 	}
 
 	if o.config.SetRoles != "" {

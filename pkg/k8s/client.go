@@ -29,11 +29,15 @@ import (
 	aggregatorclientset "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
 
 	sigsclientset "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
+	infclientset "sigs.k8s.io/gateway-api-inference-extension/client-go/clientset/versioned"
 )
 
-// CreateClients creates kube clients from the given config.
-func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kubeAPIServerOverride string) (
-	clientset.Interface, aggregatorclientset.Interface, bpgcrdclientset.Interface, klbcrdclientset.Interface, egresscrdclientset.Interface, apiextensionclientset.Interface, sigsclientset.Interface, error) {
+// BuildKubeConfig - resolve the rest config the clients are built from.
+//
+// Split out of CreateClients so a client that only some deployments need - the
+// Inference Extension one - can be built later without widening the already
+// overloaded CreateClients signature or duplicating this resolution.
+func BuildKubeConfig(config componentbaseconfig.ClientConnectionConfiguration, kubeAPIServerOverride string) (*rest.Config, error) {
 	var kubeConfig *rest.Config
 	var err error
 
@@ -45,19 +49,40 @@ func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kub
 			&clientcmd.ClientConfigLoadingRules{ExplicitPath: config.Kubeconfig},
 			&clientcmd.ConfigOverrides{}).ClientConfig()
 	}
+	if err != nil {
+		return nil, err
+	}
 
 	if len(kubeAPIServerOverride) != 0 {
 		kubeConfig.Host = kubeAPIServerOverride
-	}
-
-	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	kubeConfig.AcceptContentTypes = config.AcceptContentTypes
 	kubeConfig.ContentType = config.ContentType
 	kubeConfig.QPS = config.QPS
 	kubeConfig.Burst = int(config.Burst)
+
+	return kubeConfig, nil
+}
+
+// CreateInferenceClient - client for inference.networking.k8s.io, used only
+// when the Inference Extension is enabled.
+func CreateInferenceClient(config componentbaseconfig.ClientConnectionConfiguration, kubeAPIServerOverride string) (infclientset.Interface, error) {
+	kubeConfig, err := BuildKubeConfig(config, kubeAPIServerOverride)
+	if err != nil {
+		return nil, err
+	}
+
+	return infclientset.NewForConfig(kubeConfig)
+}
+
+// CreateClients creates kube clients from the given config.
+func CreateClients(config componentbaseconfig.ClientConnectionConfiguration, kubeAPIServerOverride string) (
+	clientset.Interface, aggregatorclientset.Interface, bpgcrdclientset.Interface, klbcrdclientset.Interface, egresscrdclientset.Interface, apiextensionclientset.Interface, sigsclientset.Interface, error) {
+	kubeConfig, err := BuildKubeConfig(config, kubeAPIServerOverride)
+	if err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, err
+	}
 
 	client, err := clientset.NewForConfig(kubeConfig)
 	if err != nil {

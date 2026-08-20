@@ -47,6 +47,7 @@ import (
 	"k8s.io/klog/v2"
 
 	sigsInformer "sigs.k8s.io/gateway-api/pkg/client/informers/externalversions"
+	infinformer "sigs.k8s.io/gateway-api-inference-extension/client-go/informers/externalversions"
 
 	tk "github.com/loxilb-io/loxilib"
 )
@@ -340,6 +341,22 @@ func run(o *Options) error {
 		httpRouteManager := gatewayapi.NewHTTPRouteManager(
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
 
+		// Built before the shared factory starts, because it registers an
+		// HTTPRoute handler on it: an InferencePool only learns which Gateway
+		// serves it from the route that references it.
+		var inferencePoolManager *gatewayapi.InferencePoolManager
+		var infInformerFactory infinformer.SharedInformerFactory
+		if o.config.EnableInferenceExtension {
+			infClient, err := k8s.CreateInferenceClient(o.config.ClientConnection, "")
+			if err != nil {
+				return fmt.Errorf("error creating inference extension client: %v", err)
+			}
+
+			infInformerFactory = infinformer.NewSharedInformerFactory(infClient, informerDefaultResync)
+			inferencePoolManager = gatewayapi.NewInferencePoolManager(
+				k8sClient, k8sExtClient, sigsClient, infClient, networkConfig, sigsInformerFactory, infInformerFactory)
+		}
+
 		sigsInformerFactory.Start(stopCh)
 
 		go gatewayClassManager.Run(stopCh)
@@ -347,6 +364,18 @@ func run(o *Options) error {
 		go tcpRouteManager.Run(stopCh)
 		go udpRouteManager.Run(stopCh)
 		go httpRouteManager.Run(stopCh)
+
+		if inferencePoolManager != nil {
+			go func() {
+				// The extension's CRDs are installed separately, so start
+				// watching only once they exist.
+				if !inferencePoolManager.WaitForInferencePoolCRD(stopCh) {
+					return
+				}
+				infInformerFactory.Start(stopCh)
+				inferencePoolManager.Run(stopCh)
+			}()
+		}
 	}
 
 	<-stopCh

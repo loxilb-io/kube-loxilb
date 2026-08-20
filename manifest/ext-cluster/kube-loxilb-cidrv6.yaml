@@ -66,6 +66,12 @@ rules:
       - udproutes
     verbs: ["get", "watch", "list", "patch", "update"]
   - apiGroups:
+      - inference.networking.k8s.io
+    resources:
+      - inferencepools
+      - inferencepools/status
+    verbs: ["get", "watch", "list", "patch", "update"]
+  - apiGroups:
       - discovery.k8s.io
     resources:
       - endpointslices

@@ -69,6 +69,12 @@ rules:
       - httproutes
     verbs: ["get", "watch", "list", "patch", "update"]
   - apiGroups:
+      - inference.networking.k8s.io
+    resources:
+      - inferencepools
+      - inferencepools/status
+    verbs: ["get", "watch", "list", "patch", "update"]
+  - apiGroups:
       - networking.k8s.io
     resources:
       - ingresses
