@@ -2237,9 +2237,14 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 		return api.LoadBalancerModel{}, err
 	}
 
+	host, pathPrefix, pathMatchMode := inferenceRoutingKey(lbArgs.externalIP, lbArgs.aiArgs, lbArgs.sel)
+
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
 			ExternalIP:      lbArgs.externalIP,
+			Host:            host,
+			PathPrefix:      pathPrefix,
+			PathMatchMode:   pathMatchMode,
 			PrivateIP:       lbArgs.privateIP,
 			Port:            uint16(port.Port),
 			Protocol:        strings.ToLower(string(port.Protocol)),

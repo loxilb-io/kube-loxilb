@@ -74,6 +74,12 @@ else
   EPS=$(jq -r '[.endpoints[]?.endpointIP] | sort | join(",")' <<<"$RULE")
   PODS=$(kubectl -n llm get pods -l app=vllm-qwen3 -o json | jq -r '[.items[].status.podIP] | sort | join(",")')
   check "endpoints are the pool's pods" "$EPS" "$PODS"
+  # The proxy looks a pool up by host + path prefix + match mode. Leaving them
+  # empty still produces a rule that reads back correctly and answers every
+  # request with model_unavailable.
+  check "routing key host"       "$(jq -r '.serviceArguments.host' <<<"$RULE")"            "$VIP"
+  check "routing key path"       "$(jq -r '.serviceArguments.path_prefix' <<<"$RULE")"     "/"
+  check "routing key match mode" "$(jq -r '.serviceArguments.path_match_mode' <<<"$RULE")" "prefix"
 fi
 
 echo "=== 3b. the pool owns the listener alone ==="
@@ -138,18 +144,32 @@ else
   bad "service removed with its route" "still present after 90s"
 fi
 
-echo "=== 8. traffic through the VIP (reported, not gated) ==="
-# Soft on purpose. Everything above is kube-loxilb's to get right; whether a
-# request is then routed depends on the gateway's own model-pool registry,
-# which nothing in the Kubernetes API populates today. Left visible so the day
-# it starts working - or stops - is not a surprise.
+echo "=== 8. traffic reaches a model server through the VIP ==="
+# The banner is the pod name, so this says which endpoint served - a 200 with
+# no name would not distinguish "routed" from "answered by the proxy".
 BODY='{"model":"qwen3-32b","messages":[{"role":"user","content":"ping"}]}'
-ANSWER=$(curl -s --max-time 8 -X POST "http://$VIP:$GW_PORT/v1/chat/completions" \
-           -H 'Content-Type: application/json' -d "$BODY" 2>/dev/null)
-if kubectl -n llm get pods -l app=vllm-qwen3 -o jsonpath='{.items[*].metadata.name}' | grep -qw "${ANSWER:-__none__}"; then
-  ok "served by pod $ANSWER"
+PODS=$(kubectl -n llm get pods -l app=vllm-qwen3 -o jsonpath='{.items[*].metadata.name}')
+served=""
+for attempt in 1 2 3 4 5; do
+  ANSWER=$(curl -s --max-time 8 -X POST "http://$VIP:$GW_PORT/v1/chat/completions" \
+             -H 'Content-Type: application/json' -d "$BODY" 2>/dev/null)
+  if grep -qw "${ANSWER:-__none__}" <<<"$PODS"; then served="$ANSWER"; break; fi
+  sleep 5
+done
+if [[ -n "$served" ]]; then
+  ok "served by pod $served"
 else
-  echo "  [INFO] gateway answered: ${ANSWER:-<empty>}"
+  bad "traffic reaches a model server" "gateway answered '${ANSWER:-<empty>}'"
+fi
+
+# The same request with a model the rule does not carry must not be served by
+# this pool - otherwise model_name is decoration.
+OTHER=$(curl -s --max-time 8 -X POST "http://$VIP:$GW_PORT/v1/chat/completions" \
+          -H 'Content-Type: application/json' -d '{"model":"not-this-one","messages":[]}' 2>/dev/null)
+if grep -qw "${OTHER:-__none__}" <<<"$PODS"; then
+  bad "an unknown model is refused" "served by $OTHER"
+else
+  ok "an unknown model is refused"
 fi
 
 echo

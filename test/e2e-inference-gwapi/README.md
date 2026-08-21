@@ -49,16 +49,17 @@ Useful variables: `SKIP_BUILD=1` (reuse the image), `IGW_IMAGE`, `KLB_TAG`, `GIE
 | 1 | `vllm-qwen3-inference` Service exists with the expected annotations, selector and ports | the pool was translated, and `lbmode: fullproxy` / `usepodnetwork: yes` were imposed |
 | 2 | it carries the gateway's address | the pool was attached to the Gateway the HTTPRoute names |
 | 3 | loxilb has a rule on the VIP with `sel=8`, `mode=4`, `model_name`, endpoints = pod IPs | **the flavor was detected and the gateway-only fields were not stripped** — 8 (CHWBL) and 4 (fullproxy) exist only on the inference gateway |
+| 3a | the rule carries `host`, `path_prefix`, `path_match_mode` | the proxy looks a pool up by that key; a rule without it reads back correctly and answers `model_unavailable` to everything |
 | 3b | exactly one rule on the VIP:port, and no `<gw>-ingress-service` for that listener | the Gateway's own ingress service yields a listener an InferencePool claims — two rules on one address and port is a race over which the data plane binds |
 | 3c | a socket is bound on the VIP:port inside the gateway | `mode=4` is only real if fullproxy bound. A rule that failed to bind reads back over REST exactly like one that worked |
 | 4 | `status.parents[]` carries Accepted / ResolvedRefs under the Gateway | the controller reports, and under the right parent |
 | 5 | a pool with `endpointPickerRef` + `FailClose` is refused, with no Service | the picker is not silently ignored |
 | 6 | switching it to `FailOpen` accepts it and the Service appears | the refusal is policy, not a parse failure |
 | 7 | deleting the route deletes the Service | ownership is tracked and cleaned up |
-| 8 | a request to the VIP is answered by one of the pool's pods | **reported, not gated** — see below |
+| 8 | a request naming the model is answered by one of the pool's pods, and one naming another model is not | the rule carries traffic, and `model_name` selects rather than decorates |
 
 Check 3 is the one that would have caught a payload regression on a real peer, and check 5 the one
-that would catch a silent policy downgrade. 3b and 3c both exist because of failures this scenario
+that would catch a silent policy downgrade. 3a, 3b and 3c all exist because of failures this scenario
 found the first time it ran.
 
 ## Notes
@@ -67,10 +68,9 @@ found the first time it ran.
   owns only as a `/32` rule device cannot be bound - `bind failed Cannot assign requested address`,
   after which the rule exists, reads back correctly, and nothing listens. `VIP_POOL` defaults
   accordingly.
-- **Check 8 is soft.** The rule is programmed, the socket is bound, and the gateway answers - with
-  `model_unavailable`. Populating the gateway's model-pool registry is not something the Kubernetes
-  API does today, so gating on it would fail the scenario for a reason outside kube-loxilb. The
-  answer is printed on every run so the day it changes is visible.
+- **The banner is the proof.** Model servers answer with their own pod name, so check 8 can say
+  which endpoint served. A 200 alone would not separate "routed to a pod" from "answered by the
+  proxy".
 - The Inference Extension CRDs are installed at **v1.6.0**: `endpointPickerRef` is required in
   v1.5.0 and earlier, so the pools here - which omit it - would be rejected by the API server.
 - `sel` and `mode` are asserted numerically on purpose. Names are a client-side convenience;

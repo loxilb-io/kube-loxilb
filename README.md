@@ -471,6 +471,11 @@ pool's `endpointPickerRef` is not called. A pool that sets it with `failureMode:
 accepted and the picker ignored; with `FailClose` - the API default - the pool is refused, and
 `status.parents[].conditions` says why rather than routing by a policy you did not ask for.
 
+**Model routing needs a lookup key.** The gateway's userspace proxy finds an endpoint pool by
+host, path prefix and match mode, so a rule carrying inference settings is given `host` = its
+external IP, `path_prefix` = `/` and `path_match_mode` = `prefix`. Without them the rule is
+accepted, reads back correctly, and answers every request with `model_unavailable`.
+
 **The pool takes the listener.** A Gateway with HTTP/HTTPS listeners normally also gets a
 `<gateway>-ingress-service` pointing at the loxilb-ingress pods. A listener that an InferencePool
 is attached to is left out of that Service - both would otherwise claim the same address and port,

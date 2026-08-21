@@ -316,6 +316,24 @@ type pdPool struct {
 	nixlPort int32
 }
 
+// inferenceRoutingKey - host, path prefix and match mode for an inference rule.
+//
+// The gateway's userspace proxy looks an endpoint pool up by a key built from
+// these three. A rule that leaves them empty is accepted, reads back over REST
+// exactly like a working one, and then answers every request with
+// model_unavailable, because the lookup key never matches. Nothing else in
+// kube-loxilb sets them, so an inference rule fills them in itself.
+//
+// Empty for every other service: adding a host and a path to a plain L4 rule
+// would change what it matches.
+func inferenceRoutingKey(externalIP string, aiArgs api.AIArgs, sel api.EpSelect) (host, pathPrefix string, matchMode api.PathMatchModeType) {
+	if !aiArgs.IsSet() && !sel.IsInferenceGatewayOnly() {
+		return "", "", ""
+	}
+
+	return externalIP, "/", api.PathMatchModePrefix
+}
+
 // parsePDPools - read the prefill and decode pool definitions from annotations.
 func parsePDPools(svc *corev1.Service) ([]pdPool, error) {
 	pools := []pdPool{

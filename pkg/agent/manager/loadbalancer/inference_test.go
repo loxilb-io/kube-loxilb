@@ -288,3 +288,48 @@ func TestInstallLBAllowsGatewaySelectorOnGateway(t *testing.T) {
 		t.Errorf("gateway body missing chwbl level\n%s", body)
 	}
 }
+
+func TestInferenceRoutingKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		aiArgs    api.AIArgs
+		sel       api.EpSelect
+		wantHost  string
+		wantPath  string
+		wantMatch api.PathMatchModeType
+	}{
+		{
+			// A plain L4 rule must not grow a host and a path: that would
+			// change what it matches.
+			name: "plain service gets no routing key",
+			sel:  api.LbSelRr,
+		},
+		{
+			name:      "a model name needs the key the proxy looks up by",
+			aiArgs:    api.AIArgs{ModelName: "qwen3-32b"},
+			sel:       api.LbSelRr,
+			wantHost:  "1.2.3.4",
+			wantPath:  "/",
+			wantMatch: api.PathMatchModePrefix,
+		},
+		{
+			// Gateway-only selection runs in the same userspace proxy, so the
+			// lookup applies even with no AI arguments set.
+			name:      "gateway-only selector alone is enough",
+			sel:       api.LbSelCHWBL,
+			wantHost:  "1.2.3.4",
+			wantPath:  "/",
+			wantMatch: api.PathMatchModePrefix,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, path, match := inferenceRoutingKey("1.2.3.4", tt.aiArgs, tt.sel)
+			if host != tt.wantHost || path != tt.wantPath || match != tt.wantMatch {
+				t.Errorf("got (%q, %q, %q), want (%q, %q, %q)",
+					host, path, match, tt.wantHost, tt.wantPath, tt.wantMatch)
+			}
+		})
+	}
+}
