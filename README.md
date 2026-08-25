@@ -72,6 +72,7 @@ The arguments have the following meaning :
 
 Many of the above flags and arguments can be overriden on a per-service basis based on loxilb specific annotation as mentioned below.   
 
+<a name="kube-loxilb-supported-annotations"></a>
 * kube-loxilb supported annotations:   
   
 | Annotations | Description |
@@ -91,10 +92,11 @@ Many of the above flags and arguments can be overriden on a per-service basis ba
 | <b>loxilb.io/proberesp</b> | Specifies the response to the probe request. It is not applied if the loxilb.io/probetype annotation is not used or if it is of type icmp or none.<br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetype : "tcp"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probeport : "3000"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probereq : "health"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberesp : "ok"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
 | <b>loxilb.io/probetimeout</b> | Specifies the timeout for starting a probe request (in seconds). The default value is 60 seconds <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
 | <b>loxilb.io/proberetries</b> | Specifies the number of probe request retries before considering an endpoint as inoperative. The default value is 2 <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberetries : "3"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
-| <b>loxilb.io/epselect</b> | Specifies the algorithm for end-point slection e.g "rr", "hash", "persist", "lc" etc. The default value is roundrobin. The values "chwbl", "gpuaware" and "wrr-hash" additionally require <b>loxilb.io/lbmode: "fullproxy"</b> and a loxilb-inference-gateway backend - see [Inference gateway annotations](#inference-gateway-annotations). <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberetries : "3"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/epselect : "hash"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
+| <b>loxilb.io/epselect</b> | Specifies the algorithm for end-point slection e.g "rr", "hash", "persist", "lc" etc. The default value is roundrobin. The values "chwbl", "gpuaware" and "wrr-hash" additionally require <b>loxilb.io/lbmode: "fullproxy"</b> and a loxilb-inference-gateway backend - see the [Inference gateway guide](INFERENCE_GATEWAY.md). <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberetries : "3"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/epselect : "hash"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
 | <b>loxilb.io/usepodnetwork</b> | Whether to select PodIP and targetPort as EndPoints <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: sctp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/liveness : "yes"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/probetimeout : "10"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/proberetries : "3"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/usepodnetwork : "yes"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: sctp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 56004<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: SCTP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 9999<br>&nbsp;&nbsp;type: LoadBalancer   |
 | <b>loxilb.io/useproxyprotov2</b> | Whether to enable proxy protocol v2 <br><br><b>Example:</b><br>apiVersion: v1<br>kind: Service<br>metadata:<br>&nbsp;&nbsp;name: tcp-lb<br>&nbsp;&nbsp;annotations:<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/lbmode : "fullnat"<br>&nbsp;&nbsp;&nbsp;&nbsp;loxilb.io/useproxyprotov2 : "yes"<br>spec:<br>&nbsp;&nbsp;loadBalancerClass: loxilb.io/loxilb<br>&nbsp;&nbsp;externalTrafficPolicy: Local<br>&nbsp;&nbsp;selector:<br>&nbsp;&nbsp;&nbsp;&nbsp;what: tcp-lb<br>&nbsp;&nbsp;ports:<br>&nbsp;&nbsp;&nbsp;- port: 80<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;protocol: TCP<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;targetPort: 8080<br>&nbsp;&nbsp;type: LoadBalancer   |
 
+<a name="endpoint-health-monitor-annotations"></a>
 * Endpoint health-monitor annotations:
 
 These configure the gateway's per-endpoint health monitor directly, instead of through the `probereq` / `proberesp` escape hatch. The values apply uniformly to every endpoint of the service, which is the normal case for a health check.
@@ -126,6 +128,7 @@ metadata:
     loxilb.io/probe-domain: "api.example.com"
 ```
 
+<a name="gateway-only-service-annotations"></a>
 * Gateway-only service annotations:
 
 Per-service limits, member timeouts, and TLS/HSTS policy. All twelve exist only in loxilb-inference-gateway. A plain upstream peer in the pool simply does not get them -- the rule is still programmed there without them, with a `GatewayArgsDowngraded` event naming which. They are additive hardening on a rule that works without them, so refusing would be worse than reporting.
@@ -160,6 +163,7 @@ metadata:
     loxilb.io/hsts-include-subdomains: "true"
 ```
 
+<a name="rule-health-on-the-service"></a>
 * Rule health on the Service:
 
 Against a loxilb-inference-gateway, kube-loxilb reads what loxilb says about each rule it programmed and records it on the Service, so a rule loxilb has marked down is visible from Kubernetes instead of only from loxilb's own logs.
@@ -173,121 +177,9 @@ A rule fanned out to several instances is reported at its worst: if one instance
 <a name="inference-gateway-annotations"></a>
 * Inference gateway annotations:
 
-These are served by [loxilb-inference-gateway](https://github.com/loxilb-io/loxilb-inference-gateway), a superset of upstream loxilb aimed at LLM serving fleets. kube-loxilb detects the flavor at runtime from the `product` field of `GET /netlox/v1/version`, so the same kube-loxilb drives both. A service that asks for any of the annotations below while its loxilb is plain upstream loxilb is rejected with a Warning event on the Service rather than being silently downgraded.
+A further set of annotations drives [loxilb-inference-gateway](https://github.com/loxilb-io/loxilb-inference-gateway) as an LLM-serving load balancer: model-name routing, SSE-aware streaming, prefix-cache aware and GPU-aware endpoint selection, KV-cache exact routing, and prefill/decode disaggregation. They are the `loxilb.io/model-name`, `sse-mode`, `max-stream-duration`, `backend-keepalive-interval`, `session-header-name`, `trace-type`, `cb-enable`, `chwbl-*`, `kv-*` and `pd-*` annotations, plus the `chwbl`, `gpuaware` and `wrr-hash` values of `loxilb.io/epselect`.
 
-All of these require <b>loxilb.io/lbmode: "fullproxy"</b> in practice; the selection and KV-exact paths run in the userspace proxy, which only fullproxy traffic reaches. Omitting an annotation leaves the field out of the request entirely, so loxilb applies its own default.
-
-| Annotation | Description |
-| ---------- | ----------- |
-| <b>loxilb.io/model-name</b> | Route by the `model` field of the request body. Several services can share one VIP:port, each claiming a model name; a service with no model name is the catch-all. |
-| <b>loxilb.io/sse-mode</b> | Server-sent-events awareness: suppresses the idle timeout during token streaming. Also arms AI key and rate-limit enforcement. `"true"`/`"yes"`. |
-| <b>loxilb.io/max-stream-duration</b> | Ceiling in seconds for a single streamed response. Default 0 (unbounded). |
-| <b>loxilb.io/backend-keepalive-interval</b> | Backend keepalive interval in seconds. Default 0. |
-| <b>loxilb.io/session-header-name</b> | Pin a session to one endpoint by an HTTP header, e.g. `"mcp-session-id"` for an MCP gateway. |
-| <b>loxilb.io/trace-type</b> | Protocol-aware tracing, e.g. `"mcp"`. |
-| <b>loxilb.io/cb-enable</b> | Per-endpoint circuit breaker. `"true"`/`"yes"`. |
-| <b>loxilb.io/chwbl-prefix-hash-level</b> | Prefix-hash depth for consistent hashing with bounded loads: `1`, `2` or `3`. Default 1. Used by `epselect: chwbl` and `epselect: wrr-hash`. |
-| <b>loxilb.io/chwbl-prefix-hash-flags</b> | Prefix-hash flags, 0..255. Default 0. |
-| <b>loxilb.io/chwbl-mean-load-factor</b> | Bounded-load factor as a percentage, 100..300. Default 125. Lower values spread load more evenly at the cost of cache locality. |
-| <b>loxilb.io/chwbl-replication</b> | Virtual nodes per endpoint on the hash ring, 1..1024. Default 100. |
-| <b>loxilb.io/chwbl-enable-cache-salt</b> | Salt the cache key. `"true"`/`"yes"`. Default false. |
-| <b>loxilb.io/kv-exact-mode</b> | KV-cache exact routing. Use `"3"` for a single role-less serving pool, or `"1"` alongside prefill/decode disaggregation (see below). |
-| <b>loxilb.io/kv-engine-type</b> | `"vllm"` (default) or `"sglang"`. Immutable once the rule exists: changing it needs a delete and recreate. |
-| <b>loxilb.io/kv-dp-rank-count</b> | SGLang `--dp-size`, 1..8. Default 1. |
-| <b>loxilb.io/kv-block-size</b> | KV block size in tokens. Default 16. Must match the engine. |
-| <b>loxilb.io/kv-zmq-port</b> | Engine event socket port. Default 5557. |
-| <b>loxilb.io/kv-warmup-sec</b> | Warmup window in seconds. The gateway's swagger documents a default of 30 but no code applies it, so set this explicitly if warmup matters. |
-| <b>loxilb.io/kv-hash-algo</b> | `"sha256_cbor"`, `"xxhash_cbor"` or `"sha256_sglang"`. Best omitted: loxilb then derives it from the engine type and the pair can never be incoherent. |
-
-* Prefill/decode disaggregation:
-
-Disaggregation needs a role per endpoint, which a Service cannot state directly. kube-loxilb derives it: two label selectors name the prefill and the decode pods, and each endpoint is stamped with the role of the pod it belongs to.
-
-Because the role is per pod, the endpoints have to <b>be</b> pods. Set <b>loxilb.io/usepodnetwork: "yes"</b> (or use a multus network). In the default mode the endpoints are node addresses, every pod on a node collapses into one entry, and the split cannot be represented - kube-loxilb rejects that combination rather than programming a rule that cannot work.
-
-| Annotation | Description |
-| ---------- | ----------- |
-| <b>loxilb.io/pd-disagg</b> | Turn on prefill/decode disaggregation. `"true"`/`"yes"`. Requires fullproxy, pod endpoints, and both selectors below. |
-| <b>loxilb.io/pd-prefill-selector</b> | Label selector for the prefill pods, e.g. `"llm-role=prefill"`. |
-| <b>loxilb.io/pd-decode-selector</b> | Label selector for the decode pods. A pod may not match both. |
-| <b>loxilb.io/pd-prefill-nixl-port</b> | NIXL side-channel port the prefill pods listen on, matching their `VLLM_NIXL_SIDE_CHANNEL_PORT`. 0 or unset reuses the target port. |
-| <b>loxilb.io/pd-decode-nixl-port</b> | The same for the decode pods. |
-| <b>loxilb.io/pd-cache-aware</b> | Cache-aware prefill placement. Requires `pd-disagg`. |
-| <b>loxilb.io/pd-cache-threshold</b> | Cache-hit percentage above which the cached prefill endpoint is preferred, 0..100. Default 20. |
-| <b>loxilb.io/pd-session-ttl</b> | Session lifetime in seconds. Default 0. |
-| <b>loxilb.io/pd-balance-abs-threshold</b> | Absolute load gap before rebalancing. Default 3. |
-
-With disaggregation on, <b>loxilb.io/kv-exact-mode: "1"</b> becomes available; mode `3` is for a single role-less pool and loxilb rejects it here.
-
-The port is uniform per pool, not per pod: all prefill pods are assumed to share one NIXL port and all decode pods another, which is how one Deployment per role deploys. Per-pod ports would need a pod annotation and are not supported.
-
-Example - a prefill pool and a decode pool behind one Service:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: vllm-pd
-  annotations:
-    loxilb.io/lbmode: "fullproxy"
-    loxilb.io/usepodnetwork: "yes"
-    loxilb.io/pd-disagg: "true"
-    loxilb.io/pd-prefill-selector: "llm-role=prefill"
-    loxilb.io/pd-decode-selector: "llm-role=decode"
-    loxilb.io/pd-prefill-nixl-port: "9001"
-    loxilb.io/pd-decode-nixl-port: "9002"
-    loxilb.io/kv-exact-mode: "1"
-    loxilb.io/sse-mode: "true"
-spec:
-  loadBalancerClass: loxilb.io/loxilb
-  selector:
-    app: vllm          # selects both pools
-  ports:
-    - port: 8000
-      targetPort: 8000
-      protocol: TCP
-  type: LoadBalancer
-```
-
-The Service selector must cover both pools, since one rule carries both. The two role selectors then partition what it found.
-
-<b>GPU-aware routing has to be armed outside Kubernetes.</b> `loxilb.io/epselect: "gpuaware"` sets the rule's selector, but whether that selector actually runs is decided by a process-global routing mode on each loxilb instance, and it is off by default. A rule created against a loxilb with it off is accepted and then routes as plain CHWBL, indistinguishable from `epselect: "chwbl"`.
-
-Two things have to happen on the loxilb side, and neither is something kube-loxilb can do:
-
-1. `POST /netlox/v1/config/gpu/enable` on each instance, which arms the routing mode.
-2. Per-endpoint GPU telemetry pushed to `POST /netlox/v1/config/worker/metrics`. This comes from the serving engine or DCGM; without it the selector is armed but has no data.
-
-kube-loxilb does not drive either: the first is one instance-wide switch with no reference counting, and the second needs metrics the Kubernetes API does not have. What it does do is check. Before programming a `gpuaware` rule it reads `GET /netlox/v1/config/gpu/status`, and if the mode is disarmed it refuses the rule on that instance with a `GPUMonitoringDisabled` warning event rather than letting it silently become CHWBL. The same check repeats on every reconcile of a `gpuaware` service, so disarming the mode after the rule exists is reported too. If the status cannot be read at all, the rule is programmed anyway -- a failed diagnostic should not take down a rule that would have worked.
-
-<b>KV-exact routing needs a staged tokenizer.</b> loxilb reads `/etc/loxilb/tokenizers/<model-slug>/tokenizer.json`, where `<model-slug>` is the model name with each `/` replaced by `__`. kube-loxilb does not manage that file and cannot see it, so whenever a rule enables `kv-exact-mode` it records a Normal `KvExactTokenizerRequired` event on the Service naming the exact path to check -- visible with `kubectl describe svc`.
-
-If the file is missing, loxilb logs `kv-router: tokenizer not available` once and silently falls back to load-based routing: the rule is still created and traffic still flows, just without cache-aware placement. <b>loxilb caches that failure</b>, so staging the tokenizer afterwards does not take effect until loxilb restarts. Stage it before creating the rule.
-
-Example - prefix-cache aware routing across a vLLM pool:
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: vllm-llama70b
-  annotations:
-    loxilb.io/lbmode: "fullproxy"
-    loxilb.io/epselect: "chwbl"
-    loxilb.io/chwbl-prefix-hash-level: "2"
-    loxilb.io/chwbl-mean-load-factor: "125"
-    loxilb.io/sse-mode: "true"
-    loxilb.io/model-name: "meta-llama/Llama-3.1-70B-Instruct"
-spec:
-  loadBalancerClass: loxilb.io/loxilb
-  selector:
-    app: vllm
-  ports:
-    - port: 8000
-      targetPort: 8000
-      protocol: TCP
-  type: LoadBalancer
-```
+All of them are documented, with examples for both the Service and the Gateway API way of using them, in the <b>[Inference gateway guide](INFERENCE_GATEWAY.md)</b>.
 
 * Apply the yaml after making necessary changes :
 
@@ -465,25 +357,13 @@ annotations, and always gets `loxilb.io/lbmode: fullproxy` (unless the pool sets
 `loxilb.io/usepodnetwork: "yes"` - inference routing chooses between individual model server pods,
 which node-address endpoints cannot express.
 
-**Endpoint selection is loxilb's.** The extension's reference design delegates it to an Endpoint
-Picker over ext-proc; loxilb-inference-gateway selects endpoints in the data plane instead, so a
-pool's `endpointPickerRef` is not called. A pool that sets it with `failureMode: FailOpen` is
-accepted and the picker ignored; with `FailClose` - the API default - the pool is refused, and
-`status.parents[].conditions` says why rather than routing by a policy you did not ask for.
-
-**Model routing needs a lookup key.** The gateway's userspace proxy finds an endpoint pool by
-host, path prefix and match mode, so a rule carrying inference settings is given `host` = its
-external IP, `path_prefix` = `/` and `path_match_mode` = `prefix`. Without them the rule is
-accepted, reads back correctly, and answers every request with `model_unavailable`.
-
-**The pool takes the listener.** A Gateway with HTTP/HTTPS listeners normally also gets a
-`<gateway>-ingress-service` pointing at the loxilb-ingress pods. A listener that an InferencePool
-is attached to is left out of that Service - both would otherwise claim the same address and port,
-and which rule the data plane binds would be a race.
-
-**CRDs.** Install the Inference Extension CRDs separately; kube-loxilb waits for
+Install the Inference Extension CRDs separately; kube-loxilb waits for
 `inferencepools.inference.networking.k8s.io` and does nothing until it exists. Pools that omit
 `endpointPickerRef` need the **v1.6.0** CRDs or later - v1.5.0 and earlier make the field required.
+
+**For the full picture - what happens to `endpointPickerRef`, how the pool interacts with the
+Gateway's own listener, every annotation a pool can carry, and the same setup written as a plain
+Kubernetes Service - see the [Inference gateway guide](INFERENCE_GATEWAY.md).**
 
 ## How to use kube-loxilb CRDs ?   
 
