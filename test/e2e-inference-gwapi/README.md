@@ -55,12 +55,14 @@ Useful variables: `SKIP_BUILD=1` (reuse the image), `IGW_IMAGE`, `KLB_TAG`, `GIE
 | 4 | `status.parents[]` carries Accepted / ResolvedRefs under the Gateway | the controller reports, and under the right parent |
 | 5 | a pool with `endpointPickerRef` + `FailClose` is refused, with no Service | the picker is not silently ignored |
 | 6 | switching it to `FailOpen` accepts it and the Service appears | the refusal is policy, not a parse failure |
-| 7 | deleting the route deletes the Service | ownership is tracked and cleaned up |
+| 7 | deleting the route deletes the Service **and its loxilb rule** | ownership is tracked and cleaned up; a rule keyed by host and path is not reachable by the L4 tuple alone |
 | 8 | a request naming the model is answered by one of the pool's pods, and one naming another model is not | the rule carries traffic, and `model_name` selects rather than decorates |
+| 9 | deleting the pool's route leaves no rule on the VIP:port | `model_name` is part of loxilb's rule key and has to be sent on the delete — get it wrong and the rule outlives its Service, still bound and still answering |
 
 Check 3 is the one that would have caught a payload regression on a real peer, and check 5 the one
 that would catch a silent policy downgrade. 3a, 3b and 3c all exist because of failures this scenario
-found the first time it ran.
+found the first time it ran; 7's rule assertion and 9 exist because creating the routing key in 3a
+made every inference rule undeletable, and nothing here noticed.
 
 ## Notes
 

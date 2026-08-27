@@ -144,6 +144,17 @@ else
   bad "service removed with its route" "still present after 90s"
 fi
 
+# The Service going is only half of it. loxilb keys a rule by its host and
+# path as well as the L4 tuple, so a delete addressed by the tuple alone is
+# answered 404 no-rule: the rule stays, still bound, and kube-loxilb retries
+# it forever. This pool names no model, so it is the plain /hosturl/ case.
+if poll 60 bash -c "! curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+                      jq -e '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))' >/dev/null"; then
+  ok "its loxilb rule went with it"
+else
+  bad "its loxilb rule went with it" "$(rules | jq -c '.lbAttr[]?.serviceArguments|{name,host,model_name}' 2>/dev/null | tr '\n' ' ')"
+fi
+
 echo "=== 8. traffic reaches a model server through the VIP ==="
 # The banner is the pod name, so this says which endpoint served - a 200 with
 # no name would not distinguish "routed" from "answered by the proxy".
@@ -170,6 +181,24 @@ if grep -qw "${OTHER:-__none__}" <<<"$PODS"; then
   bad "an unknown model is refused" "served by $OTHER"
 else
   ok "an unknown model is refused"
+fi
+
+echo "=== 9. removing the pool's route removes the rule carrying traffic ==="
+# The model_name case, and the worst one: model_name is part of loxilb's rule
+# key too, and has to ride along on the delete as a query param. Get it wrong
+# and the rule outlives its Service, still bound to the VIP and still
+# answering.
+kubectl -n llm delete httproute llm-route >/dev/null 2>&1
+if poll 90 bash -c "! kubectl -n llm get svc $POOL_SVC >/dev/null 2>&1"; then
+  ok "service removed with its route"
+else
+  bad "service removed with its route" "still present after 90s"
+fi
+if poll 60 bash -c "[ \"\$(curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+                          jq '[.lbAttr[]? | select(.serviceArguments.externalIP==\"$VIP\" and .serviceArguments.port==$GW_PORT)] | length')\" = 0 ]"; then
+  ok "no rule left on $VIP:$GW_PORT"
+else
+  bad "no rule left on $VIP:$GW_PORT" "$(rules | jq -c '.lbAttr[]?.serviceArguments|{name,model_name}' 2>/dev/null | tr '\n' ' ')"
 fi
 
 echo

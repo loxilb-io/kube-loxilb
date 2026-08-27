@@ -171,7 +171,7 @@ type LoadBalancerService struct {
 	Security        int32               `json:"security,omitempty"`
 	Name            string              `json:"name,omitempty"`
 	Oper            LbOP                `json:"oper,omitempty"`
-	Host            string              `json:"host,omitempty"`
+	Host            string              `json:"host,omitempty" key:"hosturl"`
 	PpV2            bool                `json:"proxyprotocolv2,omitempty"`
 	Egress          bool                `json:"egress,omitempty"`
 	Snat            bool                `json:"snat,omitempty"`
@@ -284,13 +284,38 @@ func (l *LoadBalancerAPI) Create(ctx context.Context, lbModel LoxiModel) error {
 	return nil
 }
 
+// Delete - remove a rule from loxilb.
+//
+// The URL has to name every field loxilb keys the rule by, and that is more
+// than the L4 tuple. AddLbRule and DeleteLbRule build the key as
+// <hostUrl><port><l3><l4>, and loxilb-inference-gateway folds path_prefix,
+// path_match_mode and model_name into it as well. A URL that leaves any of
+// them out looks up a key that was never inserted, which comes back as 404
+// "no-rule error": the rule stays programmed and the caller retries forever.
+//
+// A rule with no host keeps the plain L4 URL, which is every ordinary service.
+// One with a host goes through the /hosturl/ form, which carries the rest as
+// query params, model_name among them. That is what separates two rules
+// sharing a VIP and port under different model names: a delete that omits
+// model_name matches only the rule naming no model, so sending it is what
+// stops one pool's teardown from taking the other pool's rule with it.
 func (l *LoadBalancerAPI) Delete(ctx context.Context, lbModel LoxiModel) error {
-	subresources, err := l.MakeDeletedSubResource(l.deleteKey, lbModel)
+	queryParam, err := l.MakeQueryParam(lbModel)
 	if err != nil {
 		return err
 	}
 
-	queryParam, err := l.MakeQueryParam(lbModel)
+	deleteKey := l.deleteKey
+	if service, ok := lbModel.GetKeyStruct().(*LoadBalancerService); ok && service.Host != "" {
+		deleteKey = append([]string{"hosturl"}, deleteKey...)
+		queryParam["path_prefix"] = service.PathPrefix
+		queryParam["path_match_mode"] = string(service.PathMatchMode)
+		if service.ModelName != "" {
+			queryParam["model_name"] = service.ModelName
+		}
+	}
+
+	subresources, err := l.MakeDeletedSubResource(deleteKey, lbModel)
 	if err != nil {
 		return err
 	}
