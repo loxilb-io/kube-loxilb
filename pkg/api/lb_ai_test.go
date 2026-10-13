@@ -17,6 +17,7 @@ var aiWireKeys = []string{
 	"sse_mode", "max_stream_duration_sec", "backend_keepalive_interval_sec",
 	"session_header_name", "model_name", "trace_type", "cb_enable",
 	"ep_role", "nixl_port",
+	"eppEndpoint", "eppFailureMode", "eppTimeoutMs", "eppPlaintext",
 }
 
 func mustMarshal(t *testing.T, v any) string {
@@ -135,7 +136,8 @@ func TestStripGatewayFieldsLeavesSourceIntact(t *testing.T) {
 		Service: LoadBalancerService{
 			ExternalIP: "10.0.0.1",
 			Port:       8080,
-			AIArgs:     AIArgs{KvExactMode: KvExactModeZmq, PDDisaggMode: true},
+			AIArgs: AIArgs{KvExactMode: KvExactModeZmq, PDDisaggMode: true,
+				EppEndpoint: "10.43.0.9:9002", EppFailureMode: EppFailureModeFailOpen, EppTimeoutMs: 5000, EppPlaintext: true},
 		},
 		Endpoints: []LoadBalancerEndpoint{
 			{EndpointIP: "31.31.31.1", TargetPort: 8000, EpRole: EpRolePrefill, NixlPort: 9001},
@@ -164,6 +166,83 @@ func TestStripGatewayFieldsNilEndpoints(t *testing.T) {
 	}
 	if m.Service.AIArgs.IsSet() {
 		t.Error("AIArgs survived stripping")
+	}
+}
+
+func TestEndpointPickerWireFields(t *testing.T) {
+	svc := LoadBalancerService{
+		ExternalIP: "10.0.0.1",
+		Port:       8080,
+		AIArgs: AIArgs{
+			EppEndpoint:    "10.43.0.9:9002",
+			EppFailureMode: EppFailureModeFailClose,
+			EppTimeoutMs:   5000,
+			EppPlaintext:   true,
+		},
+	}
+
+	payload := mustMarshal(t, &svc)
+	for _, want := range []string{
+		`"eppEndpoint":"10.43.0.9:9002"`, `"eppFailureMode":"FailClose"`,
+		`"eppTimeoutMs":5000`, `"eppPlaintext":true`,
+	} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("payload missing %s\n%s", want, payload)
+		}
+	}
+}
+
+// A gateway peer without EPP support gets the rule without the four fields;
+// the payload of every other peer in the same fan-out keeps them.
+func TestStripEndpointPickerLeavesSourceIntact(t *testing.T) {
+	src := LoadBalancerModel{
+		Service: LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			AIArgs: AIArgs{
+				ChwblReplication: 100,
+				EppEndpoint:      "10.43.0.9:9002",
+				EppFailureMode:   EppFailureModeFailOpen,
+				EppTimeoutMs:     5000,
+				EppPlaintext:     true,
+			},
+		},
+	}
+	before := mustMarshal(t, &src)
+
+	stripped := src
+	StripEndpointPicker(&stripped)
+
+	payload := mustMarshal(t, &stripped)
+	for _, k := range []string{"eppEndpoint", "eppFailureMode", "eppTimeoutMs", "eppPlaintext"} {
+		if strings.Contains(payload, k) {
+			t.Errorf("stripped payload still carries %q\n%s", k, payload)
+		}
+	}
+	if !strings.Contains(payload, `"chwbl_replication":100`) {
+		t.Errorf("StripEndpointPicker removed a non-EPP field\n%s", payload)
+	}
+	if after := mustMarshal(t, &src); after != before {
+		t.Errorf("StripEndpointPicker mutated the source model\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+func TestEndpointPickerFailsClosed(t *testing.T) {
+	tests := []struct {
+		args AIArgs
+		want bool
+	}{
+		{AIArgs{}, false},
+		{AIArgs{EppFailureMode: EppFailureModeFailClose}, false}, // no EPP named
+		{AIArgs{EppEndpoint: "10.43.0.9:9002"}, true},            // empty resolves to FailClose
+		{AIArgs{EppEndpoint: "10.43.0.9:9002", EppFailureMode: EppFailureModeFailClose}, true},
+		{AIArgs{EppEndpoint: "10.43.0.9:9002", EppFailureMode: EppFailureModeFailOpen}, false},
+	}
+
+	for _, tt := range tests {
+		if got := tt.args.EndpointPickerFailsClosed(); got != tt.want {
+			t.Errorf("%+v: EndpointPickerFailsClosed() = %v, want %v", tt.args, got, tt.want)
+		}
 	}
 }
 
@@ -289,6 +368,76 @@ func TestAIArgsValidate(t *testing.T) {
 			mode:    LBModeFullProxy,
 			eps:     []LoadBalancerEndpoint{{EndpointIP: "31.31.31.1", EpRole: 5}},
 			wantErr: "ep_role must be 0 (normal), 1 (prefill) or 2 (decode)",
+		},
+		{
+			name: "epp happy path",
+			args: AIArgs{EppEndpoint: "10.43.0.9:9002", EppFailureMode: EppFailureModeFailClose, EppTimeoutMs: 5000},
+			mode: LBModeFullProxy,
+		},
+		{
+			name: "epp with a DNS host",
+			args: AIArgs{EppEndpoint: "qwen3-epp.llm.svc:9002"},
+			mode: LBModeFullProxy,
+		},
+		{
+			name: "epp with an IPv6 host",
+			args: AIArgs{EppEndpoint: "[fd00::9]:9002"},
+			mode: LBModeFullProxy,
+		},
+		{
+			name:    "epp outside fullproxy",
+			args:    AIArgs{EppEndpoint: "10.43.0.9:9002"},
+			mode:    LBModeFullNat,
+			wantErr: "eppEndpoint requires mode=fullproxy",
+		},
+		{
+			name:    "epp with pd-disagg",
+			args:    AIArgs{EppEndpoint: "10.43.0.9:9002", PDDisaggMode: true},
+			mode:    LBModeFullProxy,
+			eps:     pdEndpoints(),
+			wantErr: "eppEndpoint is incompatible with pd_disagg_mode=true",
+		},
+		{
+			name:    "epp without a port",
+			args:    AIArgs{EppEndpoint: "10.43.0.9"},
+			mode:    LBModeFullProxy,
+			wantErr: "eppEndpoint must be host:port",
+		},
+		{
+			name:    "epp without a host",
+			args:    AIArgs{EppEndpoint: ":9002"},
+			mode:    LBModeFullProxy,
+			wantErr: "eppEndpoint must be host:port",
+		},
+		{
+			name:    "epp endpoint too long",
+			args:    AIArgs{EppEndpoint: strings.Repeat("a", 251) + ".svc:9002"},
+			mode:    LBModeFullProxy,
+			wantErr: "eppEndpoint must be at most 255 bytes",
+		},
+		{
+			name:    "epp unknown failure mode",
+			args:    AIArgs{EppEndpoint: "10.43.0.9:9002", EppFailureMode: "failopen"},
+			mode:    LBModeFullProxy,
+			wantErr: "eppFailureMode must be FailOpen or FailClose",
+		},
+		{
+			name:    "epp timeout above the bound",
+			args:    AIArgs{EppEndpoint: "10.43.0.9:9002", EppTimeoutMs: 600001},
+			mode:    LBModeFullProxy,
+			wantErr: "eppTimeoutMs must be within 0..600000",
+		},
+		{
+			name: "epp timeout at the bound",
+			args: AIArgs{EppEndpoint: "10.43.0.9:9002", EppTimeoutMs: 600000},
+			mode: LBModeFullProxy,
+		},
+		{
+			// The gateway checks the mode even without an endpoint.
+			name:    "unknown failure mode without an endpoint",
+			args:    AIArgs{EppFailureMode: "Maybe"},
+			mode:    LBModeFullProxy,
+			wantErr: "eppFailureMode must be FailOpen or FailClose",
 		},
 	}
 

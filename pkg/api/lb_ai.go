@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"net"
 	"slices"
 )
 
@@ -87,6 +88,26 @@ type AIArgs struct {
 	TraceType string `json:"trace_type,omitempty"`
 	// CbEnable - per-endpoint circuit breaker.
 	CbEnable bool `json:"cb_enable,omitempty"`
+
+	// --- Endpoint Picker (EPP, Gateway API Inference Extension) ---
+	//
+	// The gateway asks the EPP over ext_proc which endpoint serves each
+	// request; kube-loxilb only says where the EPP is and what to do when it
+	// cannot answer. The other three fields mean nothing without EppEndpoint.
+
+	// EppEndpoint - gRPC host:port of the EPP. Empty keeps the rule's own
+	// selection.
+	EppEndpoint string `json:"eppEndpoint,omitempty"`
+	// EppFailureMode - "FailOpen" | "FailClose"; empty resolves to FailClose
+	// on the gateway.
+	EppFailureMode string `json:"eppFailureMode,omitempty"`
+	// EppTimeoutMs - request-phase decision deadline, 0..600000; 0 resolves
+	// to 3000 on the gateway.
+	EppTimeoutMs int64 `json:"eppTimeoutMs,omitempty"`
+	// EppPlaintext - connect to the EPP without TLS. The default is TLS
+	// without certificate verification, matching what the llm-d charts set
+	// up for the EPP's self-signed certificate.
+	EppPlaintext bool `json:"eppPlaintext,omitempty"`
 }
 
 // IsSet - whether any gateway-only field carries a value.
@@ -109,6 +130,29 @@ const (
 	// KvExactModeSingleRole - single role-less pool.
 	KvExactModeSingleRole int64 = 3
 )
+
+// Endpoint Picker failure modes and bounds, mirroring loxilb-inference-gateway
+// common/common.go.
+const (
+	// EppFailureModeFailOpen - fall back to the rule's own selection when the
+	// EPP cannot answer.
+	EppFailureModeFailOpen = "FailOpen"
+	// EppFailureModeFailClose - answer 503 when the EPP cannot answer.
+	EppFailureModeFailClose = "FailClose"
+	// EppTimeoutMsMax - upper bound of EppTimeoutMs.
+	EppTimeoutMsMax int64 = 600000
+	// EppEndpointMaxBytes - upper bound of the UTF-8 length of EppEndpoint.
+	EppEndpointMaxBytes = 255
+)
+
+// UsesEndpointPicker - whether the rule hands endpoint selection to an EPP.
+func (a AIArgs) UsesEndpointPicker() bool { return a.EppEndpoint != "" }
+
+// EndpointPickerFailsClosed - whether requests are refused when the EPP cannot
+// answer. An empty mode is FailClose, which is what the gateway resolves it to.
+func (a AIArgs) EndpointPickerFailsClosed() bool {
+	return a.UsesEndpointPicker() && a.EppFailureMode != EppFailureModeFailOpen
+}
 
 // Endpoint roles for P/D disaggregation.
 const (
@@ -225,6 +269,40 @@ func (a AIArgs) ValidateServiceArgs(mode LbMode) error {
 		return fmt.Errorf("backend_keepalive_interval_sec must be >= 0, got %d", a.BackendKeepaliveIntervalSec)
 	}
 
+	return a.validateEndpointPicker(mode)
+}
+
+// validateEndpointPicker - the gateway's eppArgsValidate, client side.
+//
+// The failure mode and the timeout are checked even without an endpoint, as
+// the gateway does; the topology rules only apply once an EPP is named.
+func (a AIArgs) validateEndpointPicker(mode LbMode) error {
+	switch a.EppFailureMode {
+	case "", EppFailureModeFailOpen, EppFailureModeFailClose:
+	default:
+		return fmt.Errorf("eppFailureMode must be %s or %s, got %q",
+			EppFailureModeFailOpen, EppFailureModeFailClose, a.EppFailureMode)
+	}
+	if a.EppTimeoutMs < 0 || a.EppTimeoutMs > EppTimeoutMsMax {
+		return fmt.Errorf("eppTimeoutMs must be within 0..%d, got %d", EppTimeoutMsMax, a.EppTimeoutMs)
+	}
+
+	if !a.UsesEndpointPicker() {
+		return nil
+	}
+	if len(a.EppEndpoint) > EppEndpointMaxBytes {
+		return fmt.Errorf("eppEndpoint must be at most %d bytes, got %d", EppEndpointMaxBytes, len(a.EppEndpoint))
+	}
+	if host, port, err := net.SplitHostPort(a.EppEndpoint); err != nil || host == "" || port == "" {
+		return fmt.Errorf("eppEndpoint must be host:port, got %q", a.EppEndpoint)
+	}
+	if mode != LBModeFullProxy {
+		return fmt.Errorf("eppEndpoint requires mode=fullproxy (the EPP decides per HTTP request)")
+	}
+	if a.PDDisaggMode {
+		return fmt.Errorf("eppEndpoint is incompatible with pd_disagg_mode=true (the EPP orchestrates P/D itself)")
+	}
+
 	return nil
 }
 
@@ -339,6 +417,19 @@ func StripGatewayFields(m *LoadBalancerModel) {
 	m.Service.GatewayTLSLists = GatewayTLSLists{}
 	translateProbeForPlainPeer(m)
 	m.Endpoints = stripGatewayEndpointFields(m.Endpoints)
+}
+
+// StripEndpointPicker - remove the EPP fields from a payload bound for a
+// gateway peer that does not support them.
+//
+// Same shallow-copy contract as StripGatewayFields: Service is a value field,
+// already independent of the caller's model after installLB's struct copy, so
+// reassigning its fields leaves the other peers' payloads alone.
+func StripEndpointPicker(m *LoadBalancerModel) {
+	m.Service.EppEndpoint = ""
+	m.Service.EppFailureMode = ""
+	m.Service.EppTimeoutMs = 0
+	m.Service.EppPlaintext = false
 }
 
 // translateProbeForPlainPeer - carry the probe path across to the name upstream
