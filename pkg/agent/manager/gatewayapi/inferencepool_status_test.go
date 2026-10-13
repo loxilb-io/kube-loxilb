@@ -12,6 +12,7 @@ import (
 	infv1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 	inffake "sigs.k8s.io/gateway-api-inference-extension/client-go/clientset/versioned/fake"
 	infv1lister "sigs.k8s.io/gateway-api-inference-extension/client-go/listers/api/v1"
+	sigsv1lister "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1"
 )
 
 // statusWrites - the UpdateStatus calls the manager made on pools.
@@ -288,5 +289,22 @@ func TestApplyServiceKeepsForeignAnnotations(t *testing.T) {
 	}
 	if got.Spec.Type != corev1.ServiceTypeLoadBalancer {
 		t.Errorf("type = %v", got.Spec.Type)
+	}
+}
+
+// A pool no route references has no parents. That reads back as nil while
+// the merge builds an empty slice, which compared as a change and wrote the
+// same empty status on every reconcile.
+func TestReconcileUnreferencedPoolWritesNothing(t *testing.T) {
+	m := reconcileManager(testPool(nil))
+	m.httpRouteLister = sigsv1lister.NewHTTPRouteLister(newIndexer())
+
+	for i := 0; i < 2; i++ {
+		if err := m.reconcile("llm", "vllm-qwen3"); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	if got := statusWrites(m); got != 0 {
+		t.Errorf("an unreferenced pool with no status was written %d times", got)
 	}
 }

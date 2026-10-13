@@ -122,7 +122,9 @@ func (m *InferencePoolManager) clearStatus(ctx context.Context, pool *infv1.Infe
 
 func (m *InferencePoolManager) writeParents(ctx context.Context, pool *infv1.InferencePool, ours []infv1.ParentStatus) error {
 	merged := mergeParents(pool.Status.Parents, ours)
-	if reflect.DeepEqual(pool.Status.Parents, merged) {
+	// No parents at all reads back as nil - the field is omitempty - while
+	// mergeParents builds an empty slice; both mean the same status.
+	if reflect.DeepEqual(pool.Status.Parents, merged) || (len(pool.Status.Parents) == 0 && len(merged) == 0) {
 		return nil
 	}
 
