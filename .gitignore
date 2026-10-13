@@ -19,3 +19,9 @@ docker-build.sh
 
 # Agent binary built outside of bin/
 /loxilb-agent
+
+# PRIVATE BOUNDARY: company-only plans, analytics systems, campaign data,
+# execution/audit logs, and maintainer runbooks must never be published to the
+# public OSS repository. Keep them here only as a local quarantine and relocate
+# durable work to a separately access-controlled private repository or wiki.
+docs/internal/
