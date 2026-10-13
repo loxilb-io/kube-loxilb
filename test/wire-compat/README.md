@@ -83,6 +83,19 @@ main: 19 rules   igw: 19 rules
 | `f4-n3` (8015/udp) | `sel: 7 → 6` | upstream loxilb `common/common.go` 의 실제 enum 은 `n3=6`. main 은 존재하지 않는 `n2det` 를 끼워 넣어 7 을 보내고 있었다 |
 | `f5-n2det` (8016/udp) | `sel: 6 → 0` | `n2det` 값 제거. 알 수 없는 값이므로 rr 로 폴백하고 경고 로그를 남긴다 |
 
+### Endpoint Picker 픽스처의 기대 diff
+
+`f12-*`는 EPP 지원 이전 빌드(A)와 비교하면 **의도된 diff**가 난다. A는 `epp-*` 어노테이션을
+모르므로 평범한 fullproxy 룰을 보낸다.
+
+| `FAKE_VERSION` | `f12-epp-failclose` (B) | `f12-epp-failopen` (B) |
+|---|---|---|
+| `plain`, `missing` | 요청 없음 (게이트웨이 전용 필드라 plain 피어에서 거부) | 요청 없음 (같은 이유) |
+| `gateway` | 요청 없음 (`epp` 기능이 없는 게이트웨이에서 FailClose 거부) | EPP 키 없이 전송 (FailOpen 강등) |
+| `gateway-epp` | `eppEndpoint`만 (failureMode·timeout은 게이트웨이 기본값 FailClose·3000ms) | `eppEndpoint`, `eppFailureMode`, `eppTimeoutMs` |
+
+`f12-*` 외의 픽스처는 어느 모드에서든 바이트 동일해야 한다.
+
 ## 픽스처 (`fixtures.yaml`)
 
 Service 하나당 **포트 하나**를 배정해 두 실행 사이에서 룰을 짝지을 수 있게 했고,
@@ -101,6 +114,7 @@ Service 하나당 **포트 하나**를 배정해 두 실행 사이에서 룰을 
 | `f9-mtls` | 8023 | mTLS frontend (Secret `mtls-front` 사용) |
 | `f10-scale` | 8030 | 예비 |
 | `f11-podnet` | 8031 | `usepodnetwork` — 엔드포인트 증감 시나리오용 |
+| `f12-epp-failclose` / `f12-epp-failopen` | 8032 / 8033 | Endpoint Picker 어노테이션(`epp-*`) — 피어 종류별 처리 |
 
 새 어노테이션을 추가하면 **여기에 픽스처를 한 줄 늘리는 것이 이 하네스를 유지하는 방법**이다.
 
@@ -116,6 +130,7 @@ Service 하나당 **포트 하나**를 배정해 두 실행 사이에서 룰을 
 | `FAKE_VERSION` | `plain` | `product` 없는 `/version` = upstream loxilb |
 | | `missing` | `/version` 404 = 구형 피어 |
 | | `gateway` | `product: loxilb-inference-gateway` |
+| | `gateway-epp` | 위와 같고 `features: ["epp"]` 추가 = Endpoint Picker 지원 게이트웨이 |
 
 ## 한계
 

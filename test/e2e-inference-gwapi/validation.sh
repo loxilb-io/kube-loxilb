@@ -25,10 +25,28 @@ pool_cond() { # <pool> <conditionType> -> status
     jq -r --arg t "$2" '.status.parents[]? | select(.controllerName=="loxilb.io/kube-loxilb")
                         | .conditions[]? | select(.type==$t) | .status' | head -1
 }
-pool_reason() {
+pool_reason() { # <pool> [conditionType] -> reason
   kubectl -n llm get inferencepool "$1" -o json 2>/dev/null |
-    jq -r '.status.parents[]? | select(.controllerName=="loxilb.io/kube-loxilb")
-           | .conditions[]? | select(.type=="Accepted") | .reason' | head -1
+    jq -r --arg t "${2:-Accepted}" '.status.parents[]? | select(.controllerName=="loxilb.io/kube-loxilb")
+           | .conditions[]? | select(.type==$t) | .reason' | head -1
+}
+rule_of() { # <service> -> the loxilb rule kube-loxilb programmed for it
+  rules | jq -c --arg n "llm_$1" '.lbAttr[]? | select(.serviceArguments.name|startswith($n))' | head -1
+}
+rule_epp() { rule_of "$1" | jq -r '.serviceArguments.eppEndpoint // ""'; }
+svc_ip() { kubectl -n llm get svc "$1" -o jsonpath='{.spec.clusterIP}' 2>/dev/null; }
+# ask <model> - one chat request through the VIP; prints the body, which the
+# stand-in model servers make the name of the pod that answered.
+ask() {
+  curl -s --max-time 8 -X POST "http://$VIP:$GW_PORT/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" 2>/dev/null
+}
+# The Endpoint Picker checks need a gateway that applies the EPP fields and
+# the stand-in picker config.sh deploys when EPP_SRC is given.
+epp_ready() {
+  curl -s --max-time 5 "http://$IGW_ADDR:11111/netlox/v1/version" | jq -e '.features // [] | index("epp")' >/dev/null &&
+    kubectl -n llm get deploy epp >/dev/null 2>&1
 }
 
 echo "=== 1. the pool became a Service ==="
@@ -80,6 +98,7 @@ else
   check "routing key host"       "$(jq -r '.serviceArguments.host' <<<"$RULE")"            "$VIP"
   check "routing key path"       "$(jq -r '.serviceArguments.path_prefix' <<<"$RULE")"     "/"
   check "routing key match mode" "$(jq -r '.serviceArguments.path_match_mode' <<<"$RULE")" "prefix"
+  check "no picker on a pool that names none" "$(jq -r '.serviceArguments.eppEndpoint // ""' <<<"$RULE")" ""
 fi
 
 echo "=== 3b. the pool owns the listener alone ==="
@@ -112,28 +131,201 @@ else
   bad "status written" "no parents after 60s"
 fi
 
-echo "=== 5. an Endpoint Picker with FailClose is refused ==="
-kubectl apply -f "$HERE/fixtures/inferencepool-failclose.yaml" >/dev/null
-kubectl apply -f "$HERE/fixtures/httproute-failclose.yaml" >/dev/null
-if poll 60 bash -c "[[ \"\$(kubectl -n llm get inferencepool epp-required -o json | jq -r '.status.parents | length')\" != '0' ]]"; then
-  check "Accepted is False"   "$(pool_cond epp-required Accepted)" "False"
-  check "reason"              "$(pool_reason epp-required)"        "NotSupportedByParent"
-  if kubectl -n llm get svc epp-required-inference >/dev/null 2>&1; then
-    bad "no service for a refused pool" "epp-required-inference exists"
-  else
-    ok "no service for a refused pool"
-  fi
+echo "=== 4b. a picker annotation cannot stand in for endpointPickerRef ==="
+# The address and failure mode belong to the pool's spec. Written by hand on a
+# pool that names no picker, they must not reach the Service or the rule.
+kubectl -n llm annotate inferencepool vllm-qwen3 loxilb.io/epp-endpoint=10.99.99.99:9002 --overwrite >/dev/null
+sleep 10
+check "not copied to the Service" \
+  "$(svc_json "$POOL_SVC" | jq -r '.metadata.annotations["loxilb.io/epp-endpoint"] // ""')" ""
+# An absent rule would also read as "no picker", so the rule has to be there.
+R=$(rule_of "$POOL_SVC")
+if [[ -z "$R" ]]; then
+  bad "not on the rule" "no rule for $POOL_SVC"
 else
-  bad "refused pool reports status" "no parents after 60s"
+  check "not on the rule" "$(jq -r '.serviceArguments.eppEndpoint // ""' <<<"$R")" ""
 fi
+kubectl -n llm annotate inferencepool vllm-qwen3 loxilb.io/epp-endpoint- >/dev/null
 
-echo "=== 6. switching that pool to FailOpen accepts it ==="
-kubectl apply -f "$HERE/fixtures/inferencepool-failopen.yaml" >/dev/null
-if poll 90 kubectl -n llm get svc epp-required-inference; then
-  ok "service appears once FailOpen is set"
-  check "Accepted is True" "$(pool_cond epp-required Accepted)" "True"
+if ! epp_ready; then
+  echo "=== 5-6. Endpoint Picker checks [SKIPPED] ==="
+  echo "  needs a gateway listing \"epp\" in /version features and EPP_SRC at config time"
+  # Check 7 still needs a pool without a model name to delete.
+  kubectl apply -f "$HERE/fixtures/inferencepool-failopen.yaml" -f "$HERE/fixtures/httproute-failclose.yaml" >/dev/null
+  poll 90 kubectl -n llm get svc epp-required-inference || bad "FailOpen pool served" "not found after 90s"
 else
-  bad "service appears once FailOpen is set" "not found after 90s"
+  EPP_ADDR="$(svc_ip epp):9002"
+  EPP_DEST_IP=$(kubectl -n llm get deploy epp -o json | jq -r '.spec.template.spec.containers[0].args as $a
+                  | $a[($a | index("-dest")) + 1]' | cut -d: -f1)
+  EPP_POD=$(kubectl -n llm get pods -o json | jq -r --arg ip "$EPP_DEST_IP" '.items[] | select(.status.podIP==$ip) | .metadata.name')
+
+  echo "=== 5. a FailClose pool is routed by its Endpoint Picker ==="
+  kubectl apply -f "$HERE/fixtures/inferencepool-failclose.yaml" -f "$HERE/fixtures/httproute-failclose.yaml" >/dev/null
+  if poll 90 bash -c "[[ \"\$(curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+                           jq -r '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))
+                                  | .serviceArguments.eppEndpoint')\" == '$EPP_ADDR' ]]"; then
+    ok "rule carries eppEndpoint $EPP_ADDR"
+  else
+    bad "rule carries eppEndpoint $EPP_ADDR" "got '$(rule_epp epp-required-inference)'"
+  fi
+  check "Accepted"     "$(pool_cond epp-required Accepted)"     "True"
+  check "ResolvedRefs" "$(pool_cond epp-required ResolvedRefs)" "True"
+  check "Service names the picker" \
+    "$(svc_json epp-required-inference | jq -r '.metadata.annotations["loxilb.io/epp-endpoint"]')" "$EPP_ADDR"
+  check "rule failure mode" "$(rule_of epp-required-inference | jq -r '.serviceArguments.eppFailureMode')" "FailClose"
+  # Any model but the main pool's lands on this catch-all rule. Every answer
+  # has to come from the one pod the picker names; the pool's own round-robin
+  # would spread them over both. The prompt varies so that nothing keyed on
+  # the request body could pin them to one pod either.
+  if [[ -z "$EPP_POD" ]]; then
+    bad "the pod the picker names exists" "no pod has $EPP_DEST_IP any more; rerun config.sh"
+  else
+    answers=""
+    for i in 1 2 3 4 5 6; do answers+="$(ask "epp-check-$i") "; done
+    check "every request served by the pod the picker named" "$(tr ' ' '\n' <<<"$answers" | sort -u | grep -v '^$')" "$EPP_POD"
+  fi
+
+  echo "=== 5b. FailClose with the picker down answers 503 ==="
+  kubectl -n llm scale deploy epp --replicas=0 >/dev/null
+  if poll 60 bash -c "curl -s --max-time 8 -X POST http://$VIP:$GW_PORT/v1/chat/completions \
+                        -H 'Content-Type: application/json' -d '{\"model\":\"epp-check\",\"messages\":[]}' |
+                      grep -q epp_unavailable"; then
+    ok "503 epp_unavailable while the picker is down"
+  else
+    bad "503 epp_unavailable while the picker is down" "got '$(ask epp-check)'"
+  fi
+  kubectl -n llm scale deploy epp --replicas=1 >/dev/null
+  kubectl -n llm rollout status deploy/epp --timeout=120s >/dev/null
+  if poll 60 bash -c "[[ \"\$(curl -s --max-time 8 -X POST http://$VIP:$GW_PORT/v1/chat/completions \
+                              -H 'Content-Type: application/json' -d '{\"model\":\"epp-check\",\"messages\":[]}')\" == '$EPP_POD' ]]"; then
+    ok "routed by the picker again once it is back"
+  else
+    bad "routed by the picker again once it is back" "got '$(ask epp-check)'"
+  fi
+
+  echo "=== 5c. a picker that never answers is cut off at epp-timeout-ms ==="
+  # The deadline has no field in the API and travels as a pool annotation. A
+  # picker that hangs shows whether it reached the gateway: at 1000 ms the 503
+  # comes back well before the 3000 ms default.
+  EPP_ARGS=$(kubectl -n llm get deploy epp -o json | jq -c '.spec.template.spec.containers[0].args')
+  kubectl -n llm annotate inferencepool epp-required loxilb.io/epp-timeout-ms=1000 --overwrite >/dev/null
+  if poll 60 bash -c "[[ \"\$(curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+                           jq -r '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))
+                                  | .serviceArguments.eppTimeoutMs // \"\"')\" == '1000' ]]"; then
+    ok "rule carries eppTimeoutMs 1000"
+  else
+    bad "rule carries eppTimeoutMs 1000" "got '$(rule_of epp-required-inference | jq -r '.serviceArguments.eppTimeoutMs')'"
+  fi
+  kubectl -n llm patch deploy epp --type json -p \
+    "[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/args\",\"value\":$(jq -c '. + ["-mode","hang"]' <<<"$EPP_ARGS")}]" >/dev/null
+  kubectl -n llm rollout status deploy/epp --timeout=120s >/dev/null
+  if poll 30 bash -c "curl -s --max-time 8 -X POST http://$VIP:$GW_PORT/v1/chat/completions \
+                        -H 'Content-Type: application/json' -d '{\"model\":\"epp-check\",\"messages\":[]}' | grep -q epp_unavailable"; then
+    T=$(curl -s -o /dev/null -w '%{time_total}' --max-time 8 -X POST "http://$VIP:$GW_PORT/v1/chat/completions" \
+          -H 'Content-Type: application/json' -d '{"model":"epp-check","messages":[]}')
+    # At least the deadline (a refused dial would answer at once), and well
+    # under the default it replaced.
+    if awk -v t="$T" 'BEGIN { exit !(t >= 0.9 && t < 2.5) }'; then
+      ok "503 at the 1000 ms deadline (${T}s)"
+    else
+      bad "503 at the 1000 ms deadline" "took ${T}s"
+    fi
+  else
+    bad "503 epp_unavailable from a hanging picker" "got '$(ask epp-check)'"
+  fi
+  kubectl -n llm patch deploy epp --type json -p \
+    "[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/args\",\"value\":$EPP_ARGS}]" >/dev/null
+  kubectl -n llm rollout status deploy/epp --timeout=120s >/dev/null
+  kubectl -n llm annotate inferencepool epp-required loxilb.io/epp-timeout-ms- >/dev/null
+  poll 60 bash -c "[[ \"\$(curl -s --max-time 8 -X POST http://$VIP:$GW_PORT/v1/chat/completions \
+                        -H 'Content-Type: application/json' -d '{\"model\":\"epp-check\",\"messages\":[]}')\" == '$EPP_POD' ]]" ||
+    bad "routed by the picker after the hang" "got '$(ask epp-check)'"
+
+  echo "=== 6. a FailOpen pool whose picker Service is missing is served without it ==="
+  kubectl apply -f "$HERE/fixtures/inferencepool-failopen.yaml" >/dev/null
+  if poll 60 bash -c "[[ \"\$(kubectl -n llm get inferencepool epp-required -o json |
+                           jq -r '.status.parents[]? | .conditions[]? | select(.type==\"ResolvedRefs\") | .status')\" == 'False' ]]"; then
+    ok "ResolvedRefs is False"
+  else
+    bad "ResolvedRefs is False" "got '$(pool_cond epp-required ResolvedRefs)'"
+  fi
+  check "ResolvedRefs reason" "$(pool_reason epp-required ResolvedRefs)" "InvalidExtensionRef"
+  check "Accepted"            "$(pool_cond epp-required Accepted)"       "True"
+  # The rule has to exist and carry no picker; an absent rule is not "no picker".
+  if poll 60 bash -c "curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+                      jq -e '[.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))]
+                             | length == 1 and ((.[0].serviceArguments.eppEndpoint // \"\") == \"\")' >/dev/null"; then
+    ok "rule carries no picker"
+  else
+    bad "rule carries no picker" "got '$(rule_epp epp-required-inference)'"
+  fi
+  PODS=$(kubectl -n llm get pods -l app=vllm-qwen3 -o jsonpath='{.items[*].metadata.name}')
+  ANSWER=$(ask epp-check)
+  if grep -qw "${ANSWER:-__none__}" <<<"$PODS"; then ok "served by pod $ANSWER"; else bad "served without the picker" "got '$ANSWER'"; fi
+
+  echo "=== 6b. the picker Service arriving is noticed ==="
+  kubectl apply -f "$HERE/fixtures/epp-some-service.yaml" >/dev/null
+  poll 30 bash -c "[[ -n \"\$(kubectl -n llm get svc some-epp -o jsonpath='{.spec.clusterIP}')\" ]]"
+  SOME_ADDR="$(svc_ip some-epp):9002"
+  if poll 60 bash -c "[[ \"\$(curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+                           jq -r '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))
+                                  | .serviceArguments.eppEndpoint')\" == '$SOME_ADDR' ]]"; then
+    ok "rule picks up $SOME_ADDR"
+  else
+    bad "rule picks up $SOME_ADDR" "got '$(rule_epp epp-required-inference)'"
+  fi
+  check "ResolvedRefs" "$(pool_cond epp-required ResolvedRefs)" "True"
+
+  echo "=== 6c. the picker Service recreated at a new address is followed ==="
+  OLD_IP=$(svc_ip some-epp)
+  kubectl -n llm delete svc some-epp >/dev/null
+  kubectl apply -f "$HERE/fixtures/epp-some-service.yaml" >/dev/null
+  poll 30 bash -c "[[ -n \"\$(kubectl -n llm get svc some-epp -o jsonpath='{.spec.clusterIP}')\" ]]"
+  NEW_ADDR="$(svc_ip some-epp):9002"
+  if [[ "$(svc_ip some-epp)" == "$OLD_IP" ]]; then
+    echo "  [SKIP] the API server handed back the same cluster IP; nothing to follow"
+  elif poll 60 bash -c "[[ \"\$(curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+                             jq -r '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))
+                                    | .serviceArguments.eppEndpoint')\" == '$NEW_ADDR' ]]"; then
+    ok "rule follows to $NEW_ADDR"
+  else
+    bad "rule follows to $NEW_ADDR" "got '$(rule_epp epp-required-inference)'"
+  fi
+
+  echo "=== 6d. a FailClose pool whose picker Service goes away is answered 503 ==="
+  kubectl -n llm patch inferencepool epp-required --type merge \
+    -p '{"spec":{"endpointPickerRef":{"failureMode":"FailClose"}}}' >/dev/null
+  poll 60 bash -c "[[ \"\$(kubectl -n llm get svc epp-required-inference -o json |
+                       jq -r '.metadata.annotations[\"loxilb.io/epp-failure-mode\"]')\" == 'FailClose' ]]" ||
+    bad "pool switched to FailClose" "Service still says $(svc_json epp-required-inference | jq -r '.metadata.annotations["loxilb.io/epp-failure-mode"]')"
+  kubectl -n llm delete svc some-epp >/dev/null
+  # The rule stays, pointed at an address that always refuses, so clients get
+  # a 503 from the gateway instead of a refused connection - what the Inference
+  # Extension's conformance expects of a pool whose picker Service is missing.
+  if poll 60 bash -c "[[ \"\$(curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+                           jq -r '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))
+                                  | .serviceArguments.eppEndpoint // \"\"')\" == '127.0.0.1:1' ]]"; then
+    ok "rule points at the refusing address"
+  else
+    bad "rule points at the refusing address" "got '$(rule_epp epp-required-inference)'"
+  fi
+  check "Service kept"  "$(kubectl -n llm get svc epp-required-inference -o name 2>/dev/null)" "service/epp-required-inference"
+  check "ResolvedRefs"  "$(pool_cond epp-required ResolvedRefs)" "False"
+  if poll 30 bash -c "curl -s --max-time 8 -X POST http://$VIP:$GW_PORT/v1/chat/completions \
+                        -H 'Content-Type: application/json' -d '{\"model\":\"epp-check\",\"messages\":[]}' | grep -q epp_unavailable"; then
+    ok "503 epp_unavailable without the picker Service"
+  else
+    bad "503 epp_unavailable without the picker Service" "got '$(ask epp-check)'"
+  fi
+
+  # Back to FailOpen, so check 7 has a pool without a model name to delete,
+  # served by loxilb's own selection.
+  kubectl -n llm patch inferencepool epp-required --type merge \
+    -p '{"spec":{"endpointPickerRef":{"failureMode":"FailOpen"}}}' >/dev/null
+  poll 60 bash -c "[[ -z \"\$(curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+                           jq -r '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))
+                                  | .serviceArguments.eppEndpoint // \"\"')\" ]]" ||
+    bad "FailOpen pool served without the picker again" "got '$(rule_epp epp-required-inference)'"
 fi
 
 echo "=== 7. removing the route removes the Service ==="
