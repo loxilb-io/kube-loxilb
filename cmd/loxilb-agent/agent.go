@@ -332,12 +332,6 @@ func run(o *Options) error {
 		gatewayManager := gatewayapi.NewGatewayManager(
 			k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
 
-		tcpRouteManager := gatewayapi.NewTCPRouteManager(
-			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
-
-		udpRouteManager := gatewayapi.NewUDPRouteManager(
-			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
-
 		httpRouteManager := gatewayapi.NewHTTPRouteManager(
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
 
@@ -361,8 +355,35 @@ func run(o *Options) error {
 
 		go gatewayClassManager.Run(stopCh)
 		go gatewayManager.Run(stopCh)
-		go tcpRouteManager.Run(stopCh)
-		go udpRouteManager.Run(stopCh)
+
+		// TCPRoute and UDPRoute are watched at v1alpha2, the only version the
+		// gateway-api module of this build has for them. Gateway API v1.6 CRDs
+		// serve them at v1 only, where that watch fails on every retry; such a
+		// cluster gets one log line instead and no route manager. The manager
+		// is built only once the version is known to be served, so its
+		// informer is registered late and the factory is started again for it.
+		startRouteManager := func(crdName string, newManager func() interface{ Run(<-chan struct{}) }) {
+			go func() {
+				served, ok := gatewayapi.WaitForServedVersion(stopCh, k8sExtClient, crdName, gatewayapi.RouteWatchVersion)
+				if !ok {
+					return
+				}
+				if !served {
+					klog.Infof("%s does not serve %s, the only version this build watches; its routes are not handled",
+						crdName, gatewayapi.RouteWatchVersion)
+					return
+				}
+				manager := newManager()
+				sigsInformerFactory.Start(stopCh)
+				manager.Run(stopCh)
+			}()
+		}
+		startRouteManager(gatewayapi.TCPRouteCRDName, func() interface{ Run(<-chan struct{}) } {
+			return gatewayapi.NewTCPRouteManager(k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+		})
+		startRouteManager(gatewayapi.UDPRouteCRDName, func() interface{ Run(<-chan struct{}) } {
+			return gatewayapi.NewUDPRouteManager(k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+		})
 		go httpRouteManager.Run(stopCh)
 
 		if inferencePoolManager != nil {
