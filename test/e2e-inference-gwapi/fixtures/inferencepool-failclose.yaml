@@ -1,12 +1,21 @@
-# A pool that insists on an Endpoint Picker. loxilb selects endpoints itself,
-# so this must be refused rather than served by a policy nobody asked for.
+# A pool that hands endpoint selection to an Endpoint Picker and forbids
+# serving without it. The picker is the `epp` Service from epp.yaml.
+#
+# No model name on purpose: this is the catch-all rule on the listener, so a
+# request for any model other than the main pool's lands here, and its delete
+# is the plain /hosturl/ case check 7 needs.
+#
+# Round-robin rather than chwbl on purpose: check 5 proves the picker is
+# followed by every answer coming from the one pod it names, and loxilb's own
+# round-robin would spread requests over both pods. chwbl can send identical
+# prompts to one pod by itself and pass the check without the picker.
 apiVersion: inference.networking.k8s.io/v1
 kind: InferencePool
 metadata:
   name: epp-required
   namespace: llm
   annotations:
-    loxilb.io/epselect: "chwbl"
+    loxilb.io/epselect: "rr"
 spec:
   selector:
     matchLabels:
@@ -14,7 +23,7 @@ spec:
   targetPorts:
     - number: 8000
   endpointPickerRef:
-    name: some-epp
+    name: epp
     port:
       number: 9002
     failureMode: FailClose

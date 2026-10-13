@@ -6,6 +6,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 kubectl delete -f "$HERE/fixtures/httproute.yaml" -f "$HERE/fixtures/inferencepool.yaml" >/dev/null 2>&1
 kubectl -n llm delete inferencepool epp-required >/dev/null 2>&1
 kubectl -n llm delete httproute epp-route >/dev/null 2>&1
+kubectl -n llm delete deploy epp >/dev/null 2>&1
+kubectl -n llm delete svc epp some-epp >/dev/null 2>&1
 kubectl delete -f "$HERE/fixtures/gateway.yaml" -f "$HERE/fixtures/gatewayclass.yaml" >/dev/null 2>&1
 kubectl delete -f "$HERE/fixtures/model-servers.yaml" >/dev/null 2>&1
 kubectl -n kube-system delete deploy kube-loxilb >/dev/null 2>&1

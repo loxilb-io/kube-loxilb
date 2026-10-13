@@ -3,6 +3,11 @@
 #
 #   ./config.sh            # build the image, wire the testbed, deploy
 #   SKIP_BUILD=1 ./config.sh
+#   EPP_SRC=~/src/loxilb-inference-gateway IGW_IMAGE=<gateway with "epp"> ./config.sh
+#
+# EPP_SRC points at a loxilb-inference-gateway checkout; its cmd/epp-fake is
+# built into the stand-in Endpoint Picker. Without it the Endpoint Picker
+# checks are skipped.
 #
 # Topology - the gateway runs as a container beside the cluster, reached over a
 # host bridge, which is how the loxilb cicd scenarios model an external LB:
@@ -27,6 +32,9 @@ HOST_ADDR="${HOST_ADDR:-12.12.12.254}"
 # ("bind failed Cannot assign requested address"), so the rule is programmed
 # and nothing ever listens.
 VIP_POOL="${VIP_POOL:-defaultPool=12.12.12.1/32}"
+SVC_CIDR="${SVC_CIDR:-10.43.0.0/16}"
+EPP_SRC="${EPP_SRC:-}"
+EPP_IMAGE="${EPP_IMAGE:-e2e-epp-fake:latest}"
 
 mkdir -p "$WORK"
 say() { echo "### $*"; }
@@ -51,6 +59,9 @@ sudo ip netns exec igw1 ip addr add "$IGW_ADDR/24" dev eigw1
 # the cluster network; without this the rule is programmed and every endpoint
 # is unreachable.
 sudo ip netns exec igw1 ip route add 10.42.0.0/16 via "$HOST_ADDR"
+# The Endpoint Picker is reached at its Service's cluster IP, which kube-proxy
+# DNATs on the node - the same requirement any loxilb outside the cluster has.
+sudo ip netns exec igw1 ip route add "$SVC_CIDR" via "$HOST_ADDR"
 sudo sysctl -qw net.ipv4.ip_forward=1
 
 say "3. k3s"
@@ -76,12 +87,34 @@ KLB_TAG="$KLB_TAG" LOXIURL="http://$IGW_ADDR:11111" VIP_POOL="$VIP_POOL" \
   python3 "$HERE/gen-kube-loxilb.py" "$REPO/manifest/gateway-api/kube-loxilb.yaml" > "$WORK/kube-loxilb.yaml" || exit 1
 kubectl apply -f "$WORK/kube-loxilb.yaml" >/dev/null || exit 1
 
+if [[ -n "$EPP_SRC" ]]; then
+  say "5b. stand-in Endpoint Picker image from $EPP_SRC"
+  command -v go >/dev/null 2>&1 || { echo "go is needed to build cmd/epp-fake"; exit 1; }
+  mkdir -p "$WORK/epp"
+  ( cd "$EPP_SRC" && CGO_ENABLED=0 go build -o "$WORK/epp/epp-fake" ./cmd/epp-fake/ ) || exit 1
+  printf 'FROM scratch\nCOPY epp-fake /epp-fake\nENTRYPOINT ["/epp-fake"]\n' > "$WORK/epp/Dockerfile"
+  sudo docker build -t "$EPP_IMAGE" "$WORK/epp" > "$WORK/epp-build.log" 2>&1 || {
+    echo "epp-fake image build failed - see $WORK/epp-build.log"; exit 1; }
+  sudo docker save "$EPP_IMAGE" | sudo k3s ctr images import - >/dev/null || exit 1
+fi
+
 say "6. workloads and gateway resources"
 kubectl apply -f "$HERE/fixtures/model-servers.yaml" >/dev/null
 kubectl apply -f "$HERE/fixtures/gatewayclass.yaml" -f "$HERE/fixtures/gateway.yaml" >/dev/null
 kubectl -n llm rollout status deploy/vllm-qwen3 --timeout=180s >/dev/null || exit 1
 kubectl -n kube-system rollout status deploy/kube-loxilb --timeout=180s >/dev/null || exit 1
 kubectl apply -f "$HERE/fixtures/inferencepool.yaml" -f "$HERE/fixtures/httproute.yaml" >/dev/null
+
+if [[ -n "$EPP_SRC" ]]; then
+  # The picker names one model server for every request, so which pod
+  # answered tells whether the request went where the picker said.
+  EPP_DEST="$(kubectl -n llm get pods -l app=vllm-qwen3 -o jsonpath='{.items[0].status.podIP}'):8000"
+  sed -e "s|__EPP_IMAGE__|$EPP_IMAGE|" -e "s|__EPP_DEST__|$EPP_DEST|" \
+    "$HERE/fixtures/epp.yaml" > "$WORK/epp.yaml"
+  kubectl apply -f "$WORK/epp.yaml" >/dev/null || exit 1
+  kubectl -n llm rollout status deploy/epp --timeout=120s >/dev/null || exit 1
+  say "Endpoint Picker names $EPP_DEST"
+fi
 
 say "testbed is up"
 kubectl -n kube-system logs deploy/kube-loxilb 2>/dev/null | grep -m1 "Build:"

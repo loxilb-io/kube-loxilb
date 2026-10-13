@@ -1,5 +1,6 @@
-# A pool that insists on an Endpoint Picker. loxilb selects endpoints itself,
-# so this must be refused rather than served by a policy nobody asked for.
+# The same pool, now naming a picker Service that does not exist yet and
+# allowing service without it. It must be served by loxilb's own selection and
+# report ResolvedRefs=False until some-epp appears.
 apiVersion: inference.networking.k8s.io/v1
 kind: InferencePool
 metadata:

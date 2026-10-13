@@ -13,6 +13,7 @@ env:
   FAKE_VERSION  plain   - 200, no `product` field (upstream loxilb)  (default)
                 missing - 404 (loxilb too old to have /version)
                 gateway - 200 with product=loxilb-inference-gateway
+                gateway-epp - the same, plus features=["epp"] (Endpoint Picker support)
 """
 import json, os, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,8 +48,10 @@ class H(BaseHTTPRequestHandler):
             if VMODE == "missing":
                 return self._send(404, {"result": "not found"})
             v = {"version": "0.9.9", "buildInfo": "fake"}
-            if VMODE == "gateway":
+            if VMODE in ("gateway", "gateway-epp"):
                 v["product"] = "loxilb-inference-gateway"
+            if VMODE == "gateway-epp":
+                v["features"] = ["epp"]
             return self._send(200, v)
         if p.endswith("/config/loadbalancer/all"):
             return self._send(200, {"lbAttr": []})
