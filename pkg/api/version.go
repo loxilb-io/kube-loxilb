@@ -12,12 +12,22 @@ import (
 // MUST treat its absence as plain upstream loxilb.
 const ProductInferenceGateway = "loxilb-inference-gateway"
 
+// FeatureEndpointPicker - the `features` entry of a gateway build that accepts
+// and applies the eppEndpoint/eppFailureMode/eppTimeoutMs/eppPlaintext rule
+// fields. Builds without it drop those fields silently, so it is checked before
+// a rule naming an Endpoint Picker is sent.
+const FeatureEndpointPicker = "epp"
+
 // VersionModel - response of GET /netlox/v1/version.
 type VersionModel struct {
 	Version   string `json:"version,omitempty"`
 	BuildInfo string `json:"buildInfo,omitempty"`
 	// Product - API flavor identifier. Empty for upstream loxilb.
 	Product string `json:"product,omitempty"`
+	// Features - gateway-only capabilities this build implements. Absent on
+	// upstream loxilb and on gateway builds that predate the field, which
+	// therefore support none of them.
+	Features []string `json:"features,omitempty"`
 }
 
 func (v *VersionModel) GetKeyStruct() LoxiModel {

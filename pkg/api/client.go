@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -54,27 +55,52 @@ type LoxiClient struct {
 	NoRole      bool
 	Name        string
 
-	// product - API flavor of the loxilb instance behind this client, learned
-	// once from GET /netlox/v1/version. nil means "not yet detected"; a non-nil
-	// empty string means "detected, and it is plain upstream loxilb".
+	// flavor - what the loxilb instance behind this client reported in
+	// GET /netlox/v1/version. nil means "not yet detected"; a non-nil value
+	// with an empty product means "detected, and it is plain upstream loxilb".
 	//
 	// Written by the health-check goroutine and read by the load-balancer
-	// fan-out goroutines, hence atomic rather than a plain field.
-	product atomic.Pointer[string]
+	// fan-out goroutines, hence atomic rather than a plain field. Product and
+	// features come from one answer, so they are swapped together.
+	flavor atomic.Pointer[peerFlavor]
+	// flavorRefreshPending - the version query that should follow the peer
+	// coming up has not succeeded yet. Only the health-check goroutine
+	// touches it.
+	flavorRefreshPending bool
+}
+
+// flavorQueryTimeout - the version query gets its own budget rather than what
+// is left of the health check's.
+const flavorQueryTimeout = 2 * time.Second
+
+// peerFlavor - one version answer. Never mutated after it is stored.
+type peerFlavor struct {
+	product  string
+	features []string
 }
 
 // Product - detected product identifier, or "" when the peer is plain upstream
 // loxilb or has not answered a version query yet.
 func (l *LoxiClient) Product() string {
-	if p := l.product.Load(); p != nil {
-		return *p
+	if f := l.flavor.Load(); f != nil {
+		return f.product
 	}
 	return ""
 }
 
 // FlavorDetected - whether a version query has successfully completed.
 func (l *LoxiClient) FlavorDetected() bool {
-	return l.product.Load() != nil
+	return l.flavor.Load() != nil
+}
+
+// SupportsFeature - whether the peer listed name in the `features` of its
+// version answer. An undetected peer, and any peer that predates the field,
+// supports nothing.
+func (l *LoxiClient) SupportsFeature(name string) bool {
+	if f := l.flavor.Load(); f != nil {
+		return slices.Contains(f.features, name)
+	}
+	return false
 }
 
 // IsInferenceGateway - whether this peer is a loxilb-inference-gateway.
@@ -94,22 +120,87 @@ func (l *LoxiClient) DetectFlavor(ctx context.Context) {
 		return
 	}
 
+	l.RefreshFlavor(ctx)
+}
+
+// RefreshFlavor - query GET /netlox/v1/version again even if an answer is
+// cached, and replace it on success.
+//
+// Called when a peer comes back up: the binary behind it may have been
+// replaced while it was down, typically by an upgrade that adds a feature. A
+// failed query keeps the previous answer rather than forgetting it. The
+// fan-out still installs rules on a peer whose health check is failing, and a
+// forgotten flavor would make that peer read as plain loxilb, refusing every
+// gateway rule with a warning that blames the Service for the peer's outage.
+//
+// Reports whether the query succeeded.
+func (l *LoxiClient) RefreshFlavor(ctx context.Context) bool {
 	versionModel, err := l.Version().Get(ctx, "")
 	if err != nil {
-		klog.V(4).Infof("loxilb-lb(%s): version query failed, flavor still unknown: %v", l.Host, err)
-		return
+		klog.V(4).Infof("loxilb-lb(%s): version query failed, keeping the previous answer: %v", l.Host, err)
+		return false
 	}
 
-	product := versionModel.Product
-	l.product.Store(&product)
+	l.flavor.Store(&peerFlavor{
+		product:  versionModel.Product,
+		features: slices.Clone(versionModel.Features),
+	})
 
-	if product == ProductInferenceGateway {
-		klog.Infof("loxilb-lb(%s): detected loxilb-inference-gateway (version %s, build %s)",
-			l.Host, versionModel.Version, versionModel.BuildInfo)
+	if versionModel.Product == ProductInferenceGateway {
+		klog.Infof("loxilb-lb(%s): detected loxilb-inference-gateway (version %s, build %s, features %v)",
+			l.Host, versionModel.Version, versionModel.BuildInfo, versionModel.Features)
 	} else {
 		klog.Infof("loxilb-lb(%s): detected plain loxilb (version %s, build %s)",
 			l.Host, versionModel.Version, versionModel.BuildInfo)
 	}
+
+	return true
+}
+
+// flavorEqual - whether two version answers would make any install decision
+// differently.
+func flavorEqual(a, b *peerFlavor) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.product == b.product && slices.Equal(a.features, b.features)
+}
+
+// onHealthy - the flavor bookkeeping of one successful health check. Returns
+// whether the peer has to be announced on the alive channel, which re-syncs
+// every rule to it.
+//
+// Flavor is a property of the peer binary, so it only has to be asked again
+// when the binary may have changed: when the peer comes back after being seen
+// down. It is asked before the announcement, because the re-sync has to see
+// the new answer. A query that fails then is retried on every later tick, and
+// if the answer it eventually brings differs from the one the re-sync used,
+// the peer is announced again so the rules are re-sent under it.
+func (l *LoxiClient) onHealthy() bool {
+	refresh := func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), flavorQueryTimeout)
+		defer cancel()
+		return l.RefreshFlavor(ctx)
+	}
+
+	if !l.IsAlive {
+		l.flavorRefreshPending = !refresh()
+		klog.Infof("LoxiHealthCheckChan: loxilb-lb(%s) is alive", l.Host)
+		l.IsAlive = true
+		return true
+	}
+
+	if !l.flavorRefreshPending {
+		return false
+	}
+
+	before := l.flavor.Load()
+	if !refresh() {
+		return false
+	}
+	l.flavorRefreshPending = false
+
+	return !flavorEqual(before, l.flavor.Load())
 }
 
 // GenZoneInstName generate zone instance name
@@ -241,15 +332,8 @@ func (l *LoxiClient) StartLoxiHealthCheckChan(aliveCh chan *LoxiClient, deadCh c
 					l.DeadSigTs = time.Now()
 				}
 			}
-		} else {
-			// Flavor is a property of the peer binary, so one successful query
-			// is enough; detectFlavor() short-circuits once it has an answer.
-			l.DetectFlavor(ctx)
-			if !l.IsAlive {
-				klog.Infof("LoxiHealthCheckChan: loxilb-lb(%s) is alive", l.Host)
-				l.IsAlive = true
-				aliveCh <- l
-			}
+		} else if l.onHealthy() {
+			aliveCh <- l
 		}
 		cancel()
 	}, time.Second*2, l.Stop)
