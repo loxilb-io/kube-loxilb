@@ -6,8 +6,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	infv1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 	inffake "sigs.k8s.io/gateway-api-inference-extension/client-go/clientset/versioned/fake"
@@ -307,4 +311,71 @@ func TestReconcileUnreferencedPoolWritesNothing(t *testing.T) {
 	if got := statusWrites(m); got != 0 {
 		t.Errorf("an unreferenced pool with no status was written %d times", got)
 	}
+}
+
+// conflictOnStatusWrites - make the next n status writes fail with 409, as
+// they do when the informer cache is behind the API server.
+func conflictOnStatusWrites(c *inffake.Clientset, n int) {
+	c.PrependReactor("update", "inferencepools", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "status" || n == 0 {
+			return false, nil, nil
+		}
+		n--
+		return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "inferencepools"}, "vllm-qwen3", nil)
+	})
+}
+
+func TestUpdateStatusRetriesAConflictOnce(t *testing.T) {
+	ctx := context.Background()
+	report := resolvedReport("resolved to 10.43.12.7:9002")
+
+	t.Run("one conflict, then the write goes through", func(t *testing.T) {
+		pool := testPool(nil)
+		m := testManager()
+		client := inffake.NewSimpleClientset(pool)
+		conflictOnStatusWrites(client, 1)
+		m.infClient = client
+
+		if err := m.updateStatus(ctx, pool, []poolTarget{testTarget(nil)}, report); err != nil {
+			t.Fatalf("updateStatus = %v, want the retry to succeed", err)
+		}
+		if got := statusWrites(m); got != 2 {
+			t.Errorf("status writes = %d, want the conflicted one and one retry", got)
+		}
+		if got := poolConditions(t, m)[string(infv1.InferencePoolConditionResolvedRefs)]; got.Status != metav1.ConditionTrue {
+			t.Errorf("ResolvedRefs = %v after the retry", got.Status)
+		}
+	})
+
+	t.Run("the API server already has it", func(t *testing.T) {
+		// What the cache missed was an identical write a moment ago.
+		past := metav1.NewTime(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+		current := statusPool(past, metav1.ConditionTrue, string(infv1.InferencePoolReasonResolvedRefs), "resolved to 10.43.12.7:9002")
+		m := testManager()
+		client := inffake.NewSimpleClientset(current)
+		conflictOnStatusWrites(client, 1)
+		m.infClient = client
+
+		if err := m.updateStatus(ctx, testPool(nil), []poolTarget{testTarget(nil)}, report); err != nil {
+			t.Fatalf("updateStatus: %v", err)
+		}
+		if got := statusWrites(m); got != 1 {
+			t.Errorf("status writes = %d, want only the conflicted one", got)
+		}
+	})
+
+	t.Run("a second conflict goes back to the queue", func(t *testing.T) {
+		pool := testPool(nil)
+		m := testManager()
+		client := inffake.NewSimpleClientset(pool)
+		conflictOnStatusWrites(client, 5)
+		m.infClient = client
+
+		if err := m.updateStatus(ctx, pool, []poolTarget{testTarget(nil)}, report); !apierrors.IsConflict(err) {
+			t.Fatalf("updateStatus = %v, want the conflict back for a requeue", err)
+		}
+		if got := statusWrites(m); got != 2 {
+			t.Errorf("status writes = %d, want exactly one retry", got)
+		}
+	})
 }
