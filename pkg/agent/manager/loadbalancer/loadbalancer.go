@@ -1243,14 +1243,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				errCount++
 			}
 		}
-		if errors.Is(loxilbAPIErr, ErrInferenceGatewayRequired) {
-			m.recordServiceWarning(svc, ReasonInferenceGatewayRequired, loxilbAPIErr.Error())
-		}
-		if errors.Is(loxilbAPIErr, ErrGPUMonitoringDisabled) {
-			m.recordServiceWarning(svc, ReasonGPUMonitoringDisabled, loxilbAPIErr.Error())
-		}
-		if errors.Is(loxilbAPIErr, ErrEndpointPickerUnsupported) {
-			m.recordServiceWarning(svc, ReasonEndpointPickerUnsupported, loxilbAPIErr.Error())
+		if reason := refusalReason(loxilbAPIErr); reason != "" {
+			m.recordServiceWarning(svc, reason, loxilbAPIErr.Error())
 		}
 		// loxilb rejected the request itself. Retrying it unchanged will fail
 		// the same way, so the person who wrote the Service has to see the
@@ -2825,43 +2819,55 @@ loop:
 			}
 
 			if !aliveClient.PeeringOnly {
-				isSuccess := false
-				for _, value := range m.lbCache {
-					for _, sp := range value.LbServicePairs {
-						for _, lb := range sp.LbModelList {
-							refused := false
-							for retry := 0; retry < 5; retry++ {
-								err := m.installLB(aliveClient, lb, value.PrefLocal)
-								if err == nil {
-									klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lb)
-									isSuccess = true
-									break
-								} else if isPeerRefusal(err) {
-									klog.Infof("reinstallLoxiLbRules: lbModel: %v not installed on loxilb-lb(%s): %v",
-										lb, aliveClient.Host, err)
-									refused = true
-									break
-								} else {
-									if !strings.Contains(err.Error(), "exist") {
-										klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lb, retry)
-										time.Sleep(1 * time.Second)
-									} else {
-										isSuccess = true
-										break
-									}
-								}
-							}
-							// A rule this peer cannot serve says nothing about
-							// whether the peer works, so it must not count
-							// towards the restart below.
-							if refused {
-								continue
-							}
-							if !isSuccess && aliveClient.IsAlive {
-								klog.Exit("restart kube-loxilb")
-							}
+				m.reinstallLoxiLbRules(aliveClient)
+			}
+		}
+	}
+}
+
+// reinstallLoxiLbRules - put every cached rule back on a peer that has come
+// (back) up.
+//
+// What the peer refuses or downgrades is reported on the Service, as it is
+// when the rule is first programmed: a peer restarted on an older build - one
+// without Endpoint Picker support, say - otherwise changes what a Service gets
+// with nothing but a log line to show for it.
+func (m *Manager) reinstallLoxiLbRules(aliveClient *api.LoxiClient) {
+	isSuccess := false
+	for cacheKey, value := range m.lbCache {
+		for _, sp := range value.LbServicePairs {
+			for _, lb := range sp.LbModelList {
+				refused := false
+				for retry := 0; retry < 5; retry++ {
+					err := m.installLB(aliveClient, lb, value.PrefLocal)
+					if err == nil {
+						klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lb)
+						m.reportResyncDowngrade(cacheKey, aliveClient, lb)
+						isSuccess = true
+						break
+					} else if isPeerRefusal(err) {
+						klog.Infof("reinstallLoxiLbRules: lbModel: %v not installed on loxilb-lb(%s): %v",
+							lb, aliveClient.Host, err)
+						m.reportResyncRefusal(cacheKey, err)
+						refused = true
+						break
+					} else {
+						if !strings.Contains(err.Error(), "exist") {
+							klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lb, retry)
+							time.Sleep(1 * time.Second)
+						} else {
+							isSuccess = true
+							break
 						}
 					}
+				}
+				// A rule this peer cannot serve says nothing about whether the
+				// peer works, so it must not count towards the restart below.
+				if refused {
+					continue
+				}
+				if !isSuccess && aliveClient.IsAlive {
+					klog.Exit("restart kube-loxilb")
 				}
 			}
 		}

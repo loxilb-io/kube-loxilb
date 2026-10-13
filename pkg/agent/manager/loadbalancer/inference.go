@@ -27,6 +27,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -486,9 +487,65 @@ var ErrEndpointPickerUnsupported = errors.New("loxilb peer does not support an E
 // the peer is, before sending anything. Retrying cannot change the answer, and
 // the peer may be perfectly healthy.
 func isPeerRefusal(err error) bool {
-	return errors.Is(err, ErrInferenceGatewayRequired) ||
-		errors.Is(err, ErrGPUMonitoringDisabled) ||
-		errors.Is(err, ErrEndpointPickerUnsupported)
+	return refusalReason(err) != ""
+}
+
+// refusalReason - the event reason for a rule installLB declined because of
+// what the peer is, or "" for any other error.
+func refusalReason(err error) string {
+	switch {
+	case errors.Is(err, ErrEndpointPickerUnsupported):
+		return ReasonEndpointPickerUnsupported
+	case errors.Is(err, ErrGPUMonitoringDisabled):
+		return ReasonGPUMonitoringDisabled
+	case errors.Is(err, ErrInferenceGatewayRequired):
+		return ReasonInferenceGatewayRequired
+	}
+	return ""
+}
+
+// serviceForCacheKey - the Service a load-balancer cache entry belongs to, or
+// nil when it is gone. Cache keys are GenKey(namespace, name).
+func (m *Manager) serviceForCacheKey(cacheKey string) *corev1.Service {
+	if m.serviceLister == nil {
+		return nil
+	}
+	namespace, name, err := cache.SplitMetaNamespaceKey(cacheKey)
+	if err != nil {
+		return nil
+	}
+	svc, err := m.serviceLister.Services(namespace).Get(name)
+	if err != nil {
+		return nil
+	}
+	return svc
+}
+
+// reportResyncRefusal - the re-sync's counterpart of the warning the fan-out
+// in addLoadBalancer raises for a refused rule. The event recorder folds the
+// repeats - one per port, one per peer coming up - into a single event.
+func (m *Manager) reportResyncRefusal(cacheKey string, err error) {
+	reason := refusalReason(err)
+	if reason == "" {
+		return
+	}
+	if svc := m.serviceForCacheKey(cacheKey); svc != nil {
+		m.recordServiceWarning(svc, reason, err.Error())
+	}
+}
+
+// reportResyncDowngrade - a FailOpen rule the re-sync installed on this peer
+// without its Endpoint Picker. installLB strips the fields and succeeds, so
+// nothing else would say so.
+func (m *Manager) reportResyncDowngrade(cacheKey string, c *api.LoxiClient, lb api.LoadBalancerModel) {
+	aiArgs := lb.Service.AIArgs
+	if !c.IsInferenceGateway() || !aiArgs.UsesEndpointPicker() || aiArgs.EndpointPickerFailsClosed() ||
+		c.SupportsFeature(api.FeatureEndpointPicker) {
+		return
+	}
+	if svc := m.serviceForCacheKey(cacheKey); svc != nil {
+		m.recordEndpointPickerNotices(svc, aiArgs)
+	}
 }
 
 // checkEndpointPicker - decide what a gateway peer gets for a rule that names
