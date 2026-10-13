@@ -187,6 +187,69 @@ func TestGetAIArgsRejections(t *testing.T) {
 			sel:         api.LbSelRr,
 			wantErr:     "kv-engine-type must be one of",
 		},
+		{
+			name:        "epp outside fullproxy",
+			annotations: map[string]string{eppEndpointAnnotation: "10.43.0.9:9002"},
+			lbMode:      int(api.LBModeDefault),
+			sel:         api.LbSelRr,
+			wantErr:     "eppEndpoint requires mode=fullproxy",
+		},
+		{
+			name:        "epp inherits a fullproxy agent default",
+			annotations: map[string]string{eppEndpointAnnotation: "10.43.0.9:9002"},
+			lbMode:      -1,
+			sel:         api.LbSelRr,
+			defaultMode: uint16(api.LBModeFullProxy),
+		},
+		{
+			name:        "epp without a port",
+			annotations: map[string]string{eppEndpointAnnotation: "qwen3-epp"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "eppEndpoint must be host:port",
+		},
+		{
+			name: "epp unknown failure mode",
+			annotations: map[string]string{
+				eppEndpointAnnotation:    "10.43.0.9:9002",
+				eppFailureModeAnnotation: "open",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: "eppFailureMode must be FailOpen or FailClose",
+		},
+		{
+			name: "epp non-integer timeout",
+			annotations: map[string]string{
+				eppEndpointAnnotation:  "10.43.0.9:9002",
+				eppTimeoutMsAnnotation: "5s",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: `loxilb.io/epp-timeout-ms: "5s" is not an integer`,
+		},
+		{
+			name: "epp timeout above the bound",
+			annotations: map[string]string{
+				eppEndpointAnnotation:  "10.43.0.9:9002",
+				eppTimeoutMsAnnotation: "600001",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: "eppTimeoutMs must be within 0..600000",
+		},
+		{
+			name: "epp with pd-disagg",
+			annotations: map[string]string{
+				eppEndpointAnnotation:       "10.43.0.9:9002",
+				pdDisaggAnnotation:          "true",
+				pdPrefillSelectorAnnotation: "role=prefill",
+				pdDecodeSelectorAnnotation:  "role=decode",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: "eppEndpoint is incompatible with pd_disagg_mode=true",
+		},
 	}
 
 	for _, tt := range tests {
@@ -331,5 +394,187 @@ func TestInferenceRoutingKey(t *testing.T) {
 					host, path, match, tt.wantHost, tt.wantPath, tt.wantMatch)
 			}
 		})
+	}
+}
+
+// An Endpoint Picker declared on a Service reaches the payload as is. This is
+// also the shape the InferencePool manager writes onto the Services it makes.
+func TestGetAIArgsEndpointPicker(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		eppEndpointAnnotation:    "10.43.12.7:9002",
+		eppFailureModeAnnotation: api.EppFailureModeFailOpen,
+		eppTimeoutMsAnnotation:   "5000",
+		eppPlaintextAnnotation:   "true",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+
+	want := api.AIArgs{
+		EppEndpoint:    "10.43.12.7:9002",
+		EppFailureMode: api.EppFailureModeFailOpen,
+		EppTimeoutMs:   5000,
+		EppPlaintext:   true,
+	}
+	if got != want {
+		t.Errorf("AIArgs = %+v, want %+v", got, want)
+	}
+}
+
+// The endpoint alone is enough: the failure mode and the timeout resolve to
+// FailClose and 3000 ms on the gateway.
+func TestGetAIArgsEndpointPickerDefaults(t *testing.T) {
+	m := managerWithMode(0)
+
+	got, err := m.getAIArgs(aiSvc(map[string]string{eppEndpointAnnotation: "10.43.12.7:9002"}),
+		int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if got != (api.AIArgs{EppEndpoint: "10.43.12.7:9002"}) {
+		t.Errorf("AIArgs = %+v, want only the endpoint", got)
+	}
+	if !got.EndpointPickerFailsClosed() {
+		t.Error("an unset failure mode must read as FailClose")
+	}
+}
+
+// Without an endpoint the other settings are dropped, so a Service that names
+// no picker stays a plain Service and is not refused by plain peers.
+func TestGetAIArgsEndpointPickerSettingsWithoutEndpoint(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		eppFailureModeAnnotation: api.EppFailureModeFailOpen,
+		eppTimeoutMsAnnotation:   "5000",
+		eppPlaintextAnnotation:   "true",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeDefault), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if got.IsSet() {
+		t.Errorf("AIArgs = %+v, want zero", got)
+	}
+}
+
+func eppLoadBalancerModel(failureMode string) api.LoadBalancerModel {
+	return api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			Protocol:   "tcp",
+			Mode:       api.LBModeFullProxy,
+			Sel:        api.LbSelCHWBL,
+			AIArgs: api.AIArgs{
+				ChwblReplication: 100,
+				EppEndpoint:      "10.43.12.7:9002",
+				EppFailureMode:   failureMode,
+				EppTimeoutMs:     5000,
+			},
+		},
+		Endpoints: []api.LoadBalancerEndpoint{{EndpointIP: "10.42.0.7", TargetPort: 8000, Weight: 1}},
+	}
+}
+
+func TestInstallLBSendsEndpointPickerToSupportingGateway(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.features = []string{api.FeatureEndpointPicker}
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), eppLoadBalancerModel(api.EppFailureModeFailClose), false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+
+	body := gw.lastBody(t)
+	for _, want := range []string{`"eppEndpoint":"10.43.12.7:9002"`, `"eppFailureMode":"FailClose"`, `"eppTimeoutMs":5000`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %s\n%s", want, body)
+		}
+	}
+}
+
+// A gateway build without the feature would drop the fields and serve the rule
+// on its own selection, which FailClose forbids: nothing may be sent.
+func TestInstallLBRefusesFailCloseOnGatewayWithoutEndpointPicker(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+
+	m := &Manager{}
+	err := m.installLB(gw.client(t), eppLoadBalancerModel(api.EppFailureModeFailClose), false)
+	if !errors.Is(err, ErrEndpointPickerUnsupported) {
+		t.Fatalf("installLB = %v, want ErrEndpointPickerUnsupported", err)
+	}
+
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	if len(gw.bodies) != 0 {
+		t.Errorf("a refused rule was still POSTed:\n%s", gw.bodies[0])
+	}
+}
+
+// FailOpen means "serve without the picker when it cannot be used". The peer
+// gets the rule without the EPP fields; the caller's model keeps them for the
+// peers that do support it.
+func TestInstallLBStripsFailOpenOnGatewayWithoutEndpointPicker(t *testing.T) {
+	old := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	cur := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	cur.features = []string{api.FeatureEndpointPicker}
+
+	m := &Manager{}
+	lb := eppLoadBalancerModel(api.EppFailureModeFailOpen)
+
+	if err := m.installLB(old.client(t), lb, false); err != nil {
+		t.Fatalf("installLB on the old gateway: %v", err)
+	}
+	if err := m.installLB(cur.client(t), lb, false); err != nil {
+		t.Fatalf("installLB on the current gateway: %v", err)
+	}
+
+	oldBody := old.lastBody(t)
+	if strings.Contains(oldBody, "epp") {
+		t.Errorf("old gateway got EPP fields\n%s", oldBody)
+	}
+	if !strings.Contains(oldBody, `"chwbl_replication":100`) {
+		t.Errorf("stripping removed a non-EPP field\n%s", oldBody)
+	}
+	if body := cur.lastBody(t); !strings.Contains(body, `"eppFailureMode":"FailOpen"`) {
+		t.Errorf("current gateway lost the EPP fields after the old one was served\n%s", body)
+	}
+	if lb.Service.EppEndpoint == "" {
+		t.Error("installLB stripped the caller's model")
+	}
+}
+
+func TestEndpointPickerDowngradeNotice(t *testing.T) {
+	failOpen := eppLoadBalancerModel(api.EppFailureModeFailOpen).Service.AIArgs
+	failClose := eppLoadBalancerModel(api.EppFailureModeFailClose).Service.AIArgs
+
+	if got := endpointPickerDowngradeNotice(failOpen, []string{"10.0.0.11"}); !strings.Contains(got, "10.0.0.11") {
+		t.Errorf("FailOpen downgrade not reported: %q", got)
+	}
+	if got := endpointPickerDowngradeNotice(failOpen, nil); got != "" {
+		t.Errorf("reported a downgrade with every peer supporting the picker: %q", got)
+	}
+	if got := endpointPickerDowngradeNotice(failClose, []string{"10.0.0.11"}); got != "" {
+		t.Errorf("FailClose is refused, not downgraded, yet a notice was produced: %q", got)
+	}
+	if got := endpointPickerDowngradeNotice(api.AIArgs{}, []string{"10.0.0.11"}); got != "" {
+		t.Errorf("a rule without a picker produced a notice: %q", got)
+	}
+}
+
+// The re-sync after a peer comes back must not mistake a rule the peer cannot
+// serve for a broken peer.
+func TestIsPeerRefusal(t *testing.T) {
+	for _, err := range []error{ErrInferenceGatewayRequired, ErrGPUMonitoringDisabled, ErrEndpointPickerUnsupported} {
+		if wrapped := errors.Wrap(err, "loxilb-lb(10.0.0.11)"); !isPeerRefusal(wrapped) {
+			t.Errorf("isPeerRefusal(%v) = false", wrapped)
+		}
+	}
+	if isPeerRefusal(errors.New("connection refused")) {
+		t.Error("a transport error is not a refusal")
 	}
 }

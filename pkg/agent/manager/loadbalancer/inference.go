@@ -80,6 +80,16 @@ const (
 	kvEngineTypeAnnotation  = "loxilb.io/kv-engine-type"
 	kvDpRankCountAnnotation = "loxilb.io/kv-dp-rank-count"
 	kvWarmupSecAnnotation   = "loxilb.io/kv-warmup-sec"
+
+	// --- Endpoint Picker (Gateway API Inference Extension EPP) ---
+	//
+	// On a Service generated from an InferencePool, the endpoint and the
+	// failure mode come from the pool's endpointPickerRef and the pool manager
+	// owns them. On any other Service they are whatever the user wrote.
+	eppEndpointAnnotation    = "loxilb.io/epp-endpoint"
+	eppFailureModeAnnotation = "loxilb.io/epp-failure-mode"
+	eppTimeoutMsAnnotation   = "loxilb.io/epp-timeout-ms"
+	eppPlaintextAnnotation   = "loxilb.io/epp-plaintext"
 )
 
 // Endpoint health-monitor annotations.
@@ -153,6 +163,8 @@ var aiAnnotations = []string{
 	pdPrefillNixlPortAnnotation, pdDecodeNixlPortAnnotation,
 	pdCacheAwareAnnotation, pdCacheThresholdAnnotation, pdSessionTTLAnnotation,
 	pdBalanceAbsThresholdAnnotation,
+	eppEndpointAnnotation, eppFailureModeAnnotation, eppTimeoutMsAnnotation,
+	eppPlaintextAnnotation,
 }
 
 // hasAIAnnotation - whether the service asks for anything gateway-specific,
@@ -274,8 +286,26 @@ func (m *Manager) getAIArgs(svc *corev1.Service, lbMode int, sel api.EpSelect) (
 	aiArgs.KvWarmupSec = intVal(kvWarmupSecAnnotation)
 	aiArgs.KvDpRankCount = int32(intVal(kvDpRankCountAnnotation))
 
+	aiArgs.EppEndpoint = svc.Annotations[eppEndpointAnnotation]
+	aiArgs.EppFailureMode = svc.Annotations[eppFailureModeAnnotation]
+	aiArgs.EppTimeoutMs = intVal(eppTimeoutMsAnnotation)
+	aiArgs.EppPlaintext = boolVal(eppPlaintextAnnotation)
+
 	if len(errs) > 0 {
 		return api.AIArgs{}, errs[0]
+	}
+
+	// Without an endpoint the other three do nothing on the gateway either.
+	// Kept, they would turn an otherwise plain Service into a gateway-only one
+	// and get it refused on every plain peer for settings that change nothing.
+	if !aiArgs.UsesEndpointPicker() {
+		if aiArgs.EppFailureMode != "" || aiArgs.EppTimeoutMs != 0 || aiArgs.EppPlaintext {
+			klog.V(2).Infof("service %s/%s: Endpoint Picker settings ignored without %s",
+				svc.Namespace, svc.Name, eppEndpointAnnotation)
+		}
+		aiArgs.EppFailureMode = ""
+		aiArgs.EppTimeoutMs = 0
+		aiArgs.EppPlaintext = false
 	}
 
 	mode := m.effectiveLbMode(lbMode)
@@ -448,6 +478,91 @@ var ErrInferenceGatewayRequired = errors.New("loxilb peer is not a loxilb-infere
 // select as CHWBL, because GPU-aware routing is armed instance-wide and is off.
 var ErrGPUMonitoringDisabled = errors.New("GPU monitoring is disabled on the loxilb peer")
 
+// ErrEndpointPickerUnsupported - the gateway peer does not apply the Endpoint
+// Picker fields and the rule is FailClose, so it must not be served without one.
+var ErrEndpointPickerUnsupported = errors.New("loxilb peer does not support an Endpoint Picker")
+
+// isPeerRefusal - whether installLB declined the rule itself because of what
+// the peer is, before sending anything. Retrying cannot change the answer, and
+// the peer may be perfectly healthy.
+func isPeerRefusal(err error) bool {
+	return errors.Is(err, ErrInferenceGatewayRequired) ||
+		errors.Is(err, ErrGPUMonitoringDisabled) ||
+		errors.Is(err, ErrEndpointPickerUnsupported)
+}
+
+// checkEndpointPicker - decide what a gateway peer gets for a rule that names
+// an Endpoint Picker.
+//
+// Gateway builds that do not list the feature accept the rule and drop the
+// EPP fields without a word, then serve it with the rule's own selection. For
+// FailOpen that is exactly what the user declared for "the picker cannot be
+// used", so the fields are stripped and the rule goes ahead; the downgrade is
+// reported by recordEndpointPickerNotices. For FailClose it would serve a
+// policy the user forbade, so the rule is refused before anything is sent.
+//
+// model is the per-peer copy installLB builds; stripping it does not reach the
+// other peers of the fan-out.
+func checkEndpointPicker(c *api.LoxiClient, model *api.LoadBalancerModel) error {
+	if !model.Service.UsesEndpointPicker() || c.SupportsFeature(api.FeatureEndpointPicker) {
+		return nil
+	}
+
+	if model.Service.EndpointPickerFailsClosed() {
+		return fmt.Errorf("loxilb-lb(%s) does not list %q in its version features, so it would drop %s "+
+			"and serve the rule without the Endpoint Picker, which failureMode FailClose forbids: %w",
+			c.Host, api.FeatureEndpointPicker, eppEndpointAnnotation, ErrEndpointPickerUnsupported)
+	}
+
+	klog.V(2).Infof("loxilb-lb(%s): no Endpoint Picker support, sending the FailOpen rule without it", c.Host)
+	api.StripEndpointPicker(model)
+
+	return nil
+}
+
+// eppUnsupportedPeers - gateway peers that do not list the Endpoint Picker
+// feature. Plain and undetected peers are left out: they refuse the whole rule
+// on their own, with their own warning.
+func (m *Manager) eppUnsupportedPeers() []string {
+	var peers []string
+
+	for _, c := range m.LoxiClients.Clients {
+		if c.IsInferenceGateway() && !c.SupportsFeature(api.FeatureEndpointPicker) {
+			peers = append(peers, c.Host)
+		}
+	}
+
+	return peers
+}
+
+// endpointPickerDowngradeNotice - what a FailOpen rule loses on peers without
+// Endpoint Picker support, or "" when nothing is lost.
+//
+// FailClose is not reported here: those peers refuse the rule, and the refusal
+// carries its own warning out of the fan-out.
+func endpointPickerDowngradeNotice(aiArgs api.AIArgs, peers []string) string {
+	if !aiArgs.UsesEndpointPicker() || aiArgs.EndpointPickerFailsClosed() || len(peers) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("%s does not list %q in its version features, so this FailOpen rule is served there "+
+		"by loxilb's own endpoint selection instead of the Endpoint Picker at %s. Upgrade the gateway to use the picker",
+		strings.Join(peers, ", "), api.FeatureEndpointPicker, aiArgs.EppEndpoint)
+}
+
+// recordEndpointPickerNotices - report the FailOpen downgrade when a rule is
+// programmed. Warning rather than Normal: the user named a picker and is not
+// getting it, which lasts until the gateway is upgraded.
+func (m *Manager) recordEndpointPickerNotices(svc *corev1.Service, aiArgs api.AIArgs) {
+	notice := endpointPickerDowngradeNotice(aiArgs, m.eppUnsupportedPeers())
+	if notice == "" {
+		return
+	}
+
+	klog.Warningf("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+	m.recordServiceWarning(svc, ReasonEndpointPickerUnsupported, notice)
+}
+
 // checkGPUAware - refuse a sel=gpuaware rule that the peer would silently
 // downgrade to CHWBL.
 //
@@ -562,6 +677,10 @@ const (
 	// ReasonGPUMonitoringDisabled - the rule selects GPU-aware routing on a
 	// loxilb instance where that mode is not armed.
 	ReasonGPUMonitoringDisabled = "GPUMonitoringDisabled"
+	// ReasonEndpointPickerUnsupported - the rule names an Endpoint Picker and a
+	// gateway peer does not support it: refused there (FailClose) or served
+	// without it (FailOpen).
+	ReasonEndpointPickerUnsupported = "EndpointPickerUnsupported"
 	// ReasonInvalidProbeConfig - the health-monitor annotations are malformed.
 	ReasonInvalidProbeConfig = "InvalidProbeConfig"
 	// ReasonProbeModeChanged - the probe annotations retire a proberesp check

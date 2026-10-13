@@ -34,6 +34,9 @@ type fakeLoxiLB struct {
 	// statusQueries counts the per-rule status reads this peer received.
 	statusQueries int
 
+	// features is reported on /version; set it before client() detects it.
+	features []string
+
 	mu     sync.Mutex
 	bodies []string
 }
@@ -45,7 +48,7 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/netlox/v1/version":
-			v := api.VersionModel{Version: "test", Product: product}
+			v := api.VersionModel{Version: "test", Product: product, Features: f.features}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(&v)
 
