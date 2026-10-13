@@ -128,6 +128,7 @@ type InferencePoolManager struct {
 	poolSynced      cache.InformerSynced
 	httpRouteLister sigsv1lister.HTTPRouteLister
 	httpRouteSynced cache.InformerSynced
+	gatewaySynced   cache.InformerSynced
 	serviceLister   corev1lister.ServiceLister
 	serviceSynced   cache.InformerSynced
 
@@ -165,6 +166,7 @@ func NewInferencePoolManager(
 
 	poolInformer := infInformerFactory.Inference().V1().InferencePools()
 	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
+	gatewayInformer := sigsInformerFactory.Gateway().V1().Gateways()
 	// Shared with the loadbalancer manager, which has already started it.
 	serviceInformer := kubeInformerFactory.Core().V1().Services()
 
@@ -179,6 +181,7 @@ func NewInferencePoolManager(
 		poolSynced:      poolInformer.Informer().HasSynced,
 		httpRouteLister: httpRouteInformer.Lister(),
 		httpRouteSynced: httpRouteInformer.Informer().HasSynced,
+		gatewaySynced:   gatewayInformer.Informer().HasSynced,
 		serviceLister:   serviceInformer.Lister(),
 		serviceSynced:   serviceInformer.Informer().HasSynced,
 
@@ -212,15 +215,38 @@ func NewInferencePoolManager(
 	// come back with another cluster IP, and none of that touches the pool.
 	// Without this a pool that named a picker before its Service existed
 	// would report it unresolved until the next resync.
+	//
+	// The Services this manager makes are watched too, for the changes it has
+	// to undo: one deleted by hand comes back, one edited by hand is put back.
 	serviceInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(cur interface{}) { manager.enqueuePickerPools(cur) },
 		UpdateFunc: func(old, cur interface{}) {
-			if !pickerAddressChanged(old, cur) {
+			if pickerAddressChanged(old, cur) {
+				manager.enqueuePickerPools(cur)
+			}
+			if ownedServiceEdited(old, cur) {
+				manager.enqueueOwnerPool(cur)
+			}
+		},
+		DeleteFunc: func(old interface{}) {
+			manager.enqueuePickerPools(old)
+			manager.enqueueOwnerPool(old)
+		},
+	})
+
+	// A pool's Services take the Gateway's address and its listener's port,
+	// so a Gateway that is readdressed, changes its listeners or goes away
+	// has to reach the pools served through it. Nothing about the pool or its
+	// route changes then.
+	gatewayInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(cur interface{}) { manager.enqueueGatewayPools(cur) },
+		UpdateFunc: func(old, cur interface{}) {
+			if !gatewayChanged(old, cur) {
 				return
 			}
-			manager.enqueuePickerPools(cur)
+			manager.enqueueGatewayPools(cur)
 		},
-		DeleteFunc: func(old interface{}) { manager.enqueuePickerPools(old) },
+		DeleteFunc: func(old interface{}) { manager.enqueueGatewayPools(old) },
 	})
 
 	return manager
@@ -251,22 +277,126 @@ func poolChanged(old, cur interface{}) bool {
 		!reflect.DeepEqual(o.Labels, c.Labels)
 }
 
-// enqueuePickerPools - every pool whose endpointPickerRef names this Service.
-func (m *InferencePoolManager) enqueuePickerPools(obj interface{}) {
-	svc, ok := obj.(*corev1.Service)
+// serviceOf - the Service an informer event carries, tombstones included.
+func serviceOf(obj interface{}) (*corev1.Service, bool) {
+	if svc, ok := obj.(*corev1.Service); ok {
+		return svc, true
+	}
+	deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
+	if !ok {
+		return nil, false
+	}
+	svc, ok := deletedState.Obj.(*corev1.Service)
+	return svc, ok
+}
+
+// enqueueOwnerPool - the pool that made this Service, if one did.
+func (m *InferencePoolManager) enqueueOwnerPool(obj interface{}) {
+	svc, ok := serviceOf(obj)
+	if !ok {
+		return
+	}
+	if owner := svc.Labels[poolOwnerLabel]; owner != "" {
+		m.queue.Add(InferencePoolQueueEntry{Namespace: svc.Namespace, Name: owner})
+	}
+}
+
+// ownedServiceEdited - whether an update touched what this manager wrote on
+// one of its Services. Status writes - the external IP, rule health - and
+// other controllers' annotations do not count. The manager's own update shows
+// up here too; the reconcile it queues finds nothing to change and writes
+// nothing.
+func ownedServiceEdited(old, cur interface{}) bool {
+	o, ok := old.(*corev1.Service)
+	if !ok {
+		return false
+	}
+	c, ok := cur.(*corev1.Service)
+	if !ok || c.Labels[poolOwnerLabel] == "" {
+		return false
+	}
+
+	return !reflect.DeepEqual(o.Spec, c.Spec) ||
+		!reflect.DeepEqual(ownedOnly(o.Annotations, poolOwnedAnnotation), ownedOnly(c.Annotations, poolOwnedAnnotation)) ||
+		!reflect.DeepEqual(ownedOnly(o.Labels, poolOwnedLabel), ownedOnly(c.Labels, poolOwnedLabel))
+}
+
+// enqueueGatewayPools - every pool an HTTPRoute attached to this Gateway sends
+// traffic to.
+func (m *InferencePoolManager) enqueueGatewayPools(obj interface{}) {
+	gateway, ok := obj.(*v1.Gateway)
 	if !ok {
 		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			return
 		}
-		svc, ok = deletedState.Obj.(*corev1.Service)
-		if !ok {
+		if gateway, ok = deletedState.Obj.(*v1.Gateway); !ok {
 			return
 		}
 	}
 
-	// The Services this manager makes are never a picker, and they change on
-	// every reconcile; skipping them keeps a pool from waking itself.
+	routes, err := m.httpRouteLister.List(labels.Everything())
+	if err != nil {
+		return
+	}
+	for _, route := range routes {
+		if !routeAttachesTo(route, gateway) {
+			continue
+		}
+		for _, entry := range poolsReferencedBy(route) {
+			m.queue.Add(entry)
+		}
+	}
+}
+
+// routeAttachesTo - whether one of the route's parentRefs names the Gateway.
+func routeAttachesTo(route *v1.HTTPRoute, gateway *v1.Gateway) bool {
+	for _, ref := range route.Spec.ParentRefs {
+		if ref.Group != nil && *ref.Group != v1.GroupName {
+			continue
+		}
+		if ref.Kind != nil && *ref.Kind != "Gateway" {
+			continue
+		}
+		namespace := route.Namespace
+		if ref.Namespace != nil {
+			namespace = string(*ref.Namespace)
+		}
+		if string(ref.Name) == gateway.Name && namespace == gateway.Namespace {
+			return true
+		}
+	}
+	return false
+}
+
+// gatewayChanged - whether a Gateway update can change a pool's Services:
+// its spec (listeners) bumps the generation, and its address lives in the
+// status. The rest of its status, written by the Gateway manager, cannot. A
+// resync redelivers the same resourceVersion and goes through.
+func gatewayChanged(old, cur interface{}) bool {
+	o, ok := old.(*v1.Gateway)
+	if !ok {
+		return true
+	}
+	c, ok := cur.(*v1.Gateway)
+	if !ok {
+		return true
+	}
+
+	return o.ResourceVersion == c.ResourceVersion ||
+		o.Generation != c.Generation ||
+		!reflect.DeepEqual(o.Status.Addresses, c.Status.Addresses)
+}
+
+// enqueuePickerPools - every pool whose endpointPickerRef names this Service.
+func (m *InferencePoolManager) enqueuePickerPools(obj interface{}) {
+	svc, ok := serviceOf(obj)
+	if !ok {
+		return
+	}
+
+	// The Services this manager makes are never a picker; their own events
+	// go to enqueueOwnerPool.
 	if svc.Labels[poolOwnerLabel] != "" {
 		return
 	}
@@ -396,7 +526,7 @@ func (m *InferencePoolManager) Run(stopCh <-chan struct{}) {
 	klog.Infof("Starting %s", inferencePoolMgrName)
 	defer klog.Infof("Shutting down %s", inferencePoolMgrName)
 
-	if !cache.WaitForNamedCacheSync(inferencePoolMgrName, stopCh, m.poolSynced, m.httpRouteSynced, m.serviceSynced) {
+	if !cache.WaitForNamedCacheSync(inferencePoolMgrName, stopCh, m.poolSynced, m.httpRouteSynced, m.gatewaySynced, m.serviceSynced) {
 		return
 	}
 
