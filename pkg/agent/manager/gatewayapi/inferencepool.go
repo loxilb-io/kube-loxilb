@@ -21,8 +21,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,7 +35,9 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
+	corev1lister "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -76,8 +80,19 @@ const (
 	lbModeAnnotation        = "loxilb.io/lbmode"
 	epSelectAnnotation      = "loxilb.io/epselect"
 	usePodNetworkAnnotation = "loxilb.io/usepodnetwork"
+	pdDisaggAnnotation      = "loxilb.io/pd-disagg"
+
+	// eppEndpointAnnotation, eppFailureModeAnnotation - the Endpoint Picker
+	// settings the loadbalancer manager reads. On a Service made here they
+	// come from the pool's endpointPickerRef and nowhere else.
+	eppEndpointAnnotation    = "loxilb.io/epp-endpoint"
+	eppFailureModeAnnotation = "loxilb.io/epp-failure-mode"
 
 	lbModeFullProxy = "fullproxy"
+
+	// The gateway's eppFailureMode values, which are also the API's.
+	eppFailOpen  = string(infv1.EndpointPickerFailOpen)
+	eppFailClose = string(infv1.EndpointPickerFailClose)
 )
 
 // gatewayOnlySelectors - endpoint selection algorithms that exist only in
@@ -95,11 +110,12 @@ var gatewayOnlySelectors = map[string]bool{
 // InferencePoolManager - translates InferencePool into the LoadBalancer
 // Service that the load-balancer manager already knows how to program.
 //
-// loxilb-inference-gateway picks endpoints itself - prefix-cache aware,
-// GPU-aware, KV-exact, prefill/decode - which is the job the Inference
-// Extension gives to an Endpoint Picker. So a pool is read here as what it
-// describes rather than as a delegation: which pods, on which port. That is
-// `selector` and `targetPorts`, and both map onto a Service directly.
+// A pool says which pods, on which port: `selector` and `targetPorts`, both of
+// which map onto a Service directly. It may also name an Endpoint Picker. The
+// gateway calls the picker for every request; this manager never talks to it.
+// What it owes the picker is an address - the Service the pool names, resolved
+// to its cluster IP - put on the rule, and a status saying whether that
+// resolved. A pool without a picker is served by loxilb's own selection.
 type InferencePoolManager struct {
 	kubeClient      clientset.Interface
 	kubeExtClient   apiextensionclientset.Interface
@@ -112,6 +128,8 @@ type InferencePoolManager struct {
 	poolSynced      cache.InformerSynced
 	httpRouteLister sigsv1lister.HTTPRouteLister
 	httpRouteSynced cache.InformerSynced
+	serviceLister   corev1lister.ServiceLister
+	serviceSynced   cache.InformerSynced
 
 	queue workqueue.TypedRateLimitingInterface[InferencePoolQueueEntry]
 }
@@ -141,11 +159,14 @@ func NewInferencePoolManager(
 	sigsClient sigsclientset.Interface,
 	infClient infclientset.Interface,
 	networkConfig *config.NetworkConfig,
+	kubeInformerFactory informers.SharedInformerFactory,
 	sigsInformerFactory sigsexternalversions.SharedInformerFactory,
 	infInformerFactory infexternalversions.SharedInformerFactory) *InferencePoolManager {
 
 	poolInformer := infInformerFactory.Inference().V1().InferencePools()
 	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
+	// Shared with the loadbalancer manager, which has already started it.
+	serviceInformer := kubeInformerFactory.Core().V1().Services()
 
 	manager := &InferencePoolManager{
 		kubeClient:      kubeClient,
@@ -158,6 +179,8 @@ func NewInferencePoolManager(
 		poolSynced:      poolInformer.Informer().HasSynced,
 		httpRouteLister: httpRouteInformer.Lister(),
 		httpRouteSynced: httpRouteInformer.Informer().HasSynced,
+		serviceLister:   serviceInformer.Lister(),
+		serviceSynced:   serviceInformer.Informer().HasSynced,
 
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.NewTypedItemExponentialFailureRateLimiter[InferencePoolQueueEntry](minRetryDelay, maxRetryDelay),
@@ -180,7 +203,70 @@ func NewInferencePoolManager(
 		DeleteFunc: func(old interface{}) { manager.enqueueRoutePools(old) },
 	})
 
+	// The Endpoint Picker's Service can appear after the pool, go away, or
+	// come back with another cluster IP, and none of that touches the pool.
+	// Without this a pool that named a picker before its Service existed
+	// would report it unresolved until the next resync.
+	serviceInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(cur interface{}) { manager.enqueuePickerPools(cur) },
+		UpdateFunc: func(old, cur interface{}) {
+			if !pickerAddressChanged(old, cur) {
+				return
+			}
+			manager.enqueuePickerPools(cur)
+		},
+		DeleteFunc: func(old interface{}) { manager.enqueuePickerPools(old) },
+	})
+
 	return manager
+}
+
+// enqueuePickerPools - every pool whose endpointPickerRef names this Service.
+func (m *InferencePoolManager) enqueuePickerPools(obj interface{}) {
+	svc, ok := obj.(*corev1.Service)
+	if !ok {
+		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		svc, ok = deletedState.Obj.(*corev1.Service)
+		if !ok {
+			return
+		}
+	}
+
+	// The Services this manager makes are never a picker, and they change on
+	// every reconcile; skipping them keeps a pool from waking itself.
+	if svc.Labels[poolOwnerLabel] != "" {
+		return
+	}
+
+	pools, err := m.poolLister.InferencePools(svc.Namespace).List(labels.Everything())
+	if err != nil {
+		return
+	}
+	for _, pool := range pools {
+		if ref, ok := endpointPickerRefOf(pool); ok && string(ref.Name) == svc.Name {
+			m.queue.Add(InferencePoolQueueEntry{Namespace: pool.Namespace, Name: pool.Name})
+		}
+	}
+}
+
+// pickerAddressChanged - whether an update can change what a reference to this
+// Service resolves to. Status and metadata churn cannot.
+func pickerAddressChanged(old, cur interface{}) bool {
+	o, ok := old.(*corev1.Service)
+	if !ok {
+		return true
+	}
+	c, ok := cur.(*corev1.Service)
+	if !ok {
+		return true
+	}
+
+	return o.Spec.Type != c.Spec.Type ||
+		o.Spec.ClusterIP != c.Spec.ClusterIP ||
+		!reflect.DeepEqual(o.Spec.Ports, c.Spec.Ports)
 }
 
 func (m *InferencePoolManager) enqueuePool(obj interface{}) {
@@ -280,7 +366,7 @@ func (m *InferencePoolManager) Run(stopCh <-chan struct{}) {
 	klog.Infof("Starting %s", inferencePoolMgrName)
 	defer klog.Infof("Shutting down %s", inferencePoolMgrName)
 
-	if !cache.WaitForNamedCacheSync(inferencePoolMgrName, stopCh, m.poolSynced, m.httpRouteSynced) {
+	if !cache.WaitForNamedCacheSync(inferencePoolMgrName, stopCh, m.poolSynced, m.httpRouteSynced, m.serviceSynced) {
 		return
 	}
 
@@ -340,34 +426,28 @@ func (m *InferencePoolManager) reconcile(namespace, name string) error {
 		return m.clearStatus(ctx, pool)
 	}
 
-	// The Inference Extension hands endpoint selection to an Endpoint Picker;
-	// loxilb does that selection itself. Ignoring a picker the user asked for
-	// would serve a different routing policy than the one they declared, so
-	// only FailOpen - "carry on if the picker is unavailable" - is accepted.
-	if reason, message, ok := endpointPickerDecision(pool); !ok {
-		klog.Warningf("InferencePool %s/%s: %s", namespace, name, message)
-		if err := m.deleteOwnedServices(ctx, namespace, name, nil); err != nil {
-			return err
-		}
-		return m.updateStatus(ctx, pool, targets, statusReport{
-			accepted: false, acceptedReason: reason, acceptedMessage: message,
-			resolvedRefs: true, resolvedRefsReason: string(infv1.InferencePoolReasonResolvedRefs),
-		})
-	} else if message != "" {
-		klog.Infof("InferencePool %s/%s: %s", namespace, name, message)
+	// The gateway calls the Endpoint Picker; what this manager owes it is the
+	// address, resolved from the Service the pool names.
+	picker, err := m.resolveEndpointPicker(pool)
+	if err != nil {
+		return err
+	}
+	if picker.declared && !picker.resolved() {
+		// The rule still goes out: without the picker, FailOpen is served by
+		// loxilb's own selection, and FailClose is answered 503 by the
+		// gateway (see ruleEndpoint). The Service watch brings the pool back
+		// once the reference resolves.
+		klog.Warningf("InferencePool %s/%s: %s", namespace, name, picker.problem)
 	}
 
-	desired, err := m.buildServices(pool, targets)
+	desired, err := m.buildServices(pool, targets, picker)
 	if err != nil {
 		klog.Errorf("InferencePool %s/%s: %v", namespace, name, err)
 		if delErr := m.deleteOwnedServices(ctx, namespace, name, nil); delErr != nil {
 			return delErr
 		}
-		return m.updateStatus(ctx, pool, targets, statusReport{
-			accepted: false, acceptedReason: string(infv1.InferencePoolReasonNotSupportedByParent),
-			acceptedMessage: err.Error(),
-			resolvedRefs:    true, resolvedRefsReason: string(infv1.InferencePoolReasonResolvedRefs),
-		})
+		return m.updateStatus(ctx, pool, targets,
+			picker.report(false, string(infv1.InferencePoolReasonNotSupportedByParent), err.Error()))
 	}
 
 	keep := make(map[string]bool, len(desired))
@@ -384,38 +464,168 @@ func (m *InferencePoolManager) reconcile(namespace, name string) error {
 
 	klog.Infof("InferencePool %s/%s is reconciled into %d service(s)", namespace, name, len(desired))
 
-	return m.updateStatus(ctx, pool, targets, statusReport{
-		accepted: true, acceptedReason: string(infv1.InferencePoolReasonAccepted),
-		acceptedMessage: "managed by kube-loxilb",
-		resolvedRefs:    true, resolvedRefsReason: string(infv1.InferencePoolReasonResolvedRefs),
-	})
+	return m.updateStatus(ctx, pool, targets,
+		picker.report(true, string(infv1.InferencePoolReasonAccepted), "managed by kube-loxilb"))
 }
 
-// endpointPickerDecision - whether a pool's endpointPickerRef lets us serve it.
+// pickerResolution - what a pool's endpointPickerRef came to.
+type pickerResolution struct {
+	// declared - the pool names a picker at all.
+	declared bool
+	name     string
+	// endpoint - host:port for eppEndpoint; empty while unresolved.
+	endpoint string
+	// failureMode - eppFailOpen or eppFailClose, the API default applied.
+	failureMode string
+	// problem - why the reference did not resolve; empty when it did.
+	problem string
+}
+
+func (p pickerResolution) resolved() bool { return p.endpoint != "" }
+
+func (p pickerResolution) failsClosed() bool { return p.failureMode != eppFailOpen }
+
+// eppRefusedEndpoint - what an unresolved FailClose picker is pointed at:
+// loopback port 1 in the gateway's own network namespace, where nothing
+// listens, so every dial is refused at once.
+const eppRefusedEndpoint = "127.0.0.1:1"
+
+// ruleEndpoint - the eppEndpoint the rule carries, or "" for none.
 //
-// Returns the reason and message to report, and whether the pool is accepted.
-// A pool with no picker is the plain case and reports nothing.
+// A resolved picker gives its address. An unresolved FailClose picker still
+// has to keep requests off the model servers, and the way to do that while
+// answering them is to leave the rule in place and point it at an address
+// that always refuses: the gateway then answers every request 503
+// epp_unavailable within milliseconds. Removing the rule instead would leave
+// clients a connection refused, and the Inference Extension's conformance
+// expects a 5xx for a pool whose picker Service does not exist. An unresolved
+// FailOpen picker carries nothing, which is its declared fallback.
+func (p pickerResolution) ruleEndpoint() string {
+	switch {
+	case p.resolved():
+		return p.endpoint
+	case p.declared && p.failsClosed():
+		return eppRefusedEndpoint
+	}
+	return ""
+}
+
+// report - the pool's conditions, with ResolvedRefs saying what became of the
+// picker reference.
+func (p pickerResolution) report(accepted bool, acceptedReason, acceptedMessage string) statusReport {
+	r := statusReport{
+		accepted:           accepted,
+		acceptedReason:     acceptedReason,
+		acceptedMessage:    acceptedMessage,
+		resolvedRefs:       true,
+		resolvedRefsReason: string(infv1.InferencePoolReasonResolvedRefs),
+	}
+
+	switch {
+	case !p.declared:
+	case p.resolved():
+		r.resolvedRefsMessage = fmt.Sprintf("endpoint picker %q resolved to %s (failureMode %s)",
+			p.name, p.endpoint, p.failureMode)
+	default:
+		effect := "requests are answered 503 until it resolves"
+		if !p.failsClosed() {
+			effect = "served by loxilb's own endpoint selection until it resolves"
+		}
+		r.resolvedRefs = false
+		r.resolvedRefsReason = string(infv1.InferencePoolReasonInvalidExtensionRef)
+		r.resolvedRefsMessage = fmt.Sprintf("%s; failureMode %s: %s", p.problem, p.failureMode, effect)
+	}
+
+	return r
+}
+
+// endpointPickerRefOf - the pool's picker reference, and whether there is one.
 //
-// Absence is read as an empty name rather than a nil reference. The field is
-// required in the v1.5.0 CRD and optional from v1.6.0, and the Go type changed
-// from a value to a pointer with it; testing the name works either way, and
-// works when a v1.6.0 cluster serves a pool that omits the field entirely.
-func endpointPickerDecision(pool *infv1.InferencePool) (reason, message string, ok bool) {
+// The only place the field is read. It is a value in the v1.5.0 Go types and
+// becomes a pointer in v1.6.0, where a pool that omits it decodes to nil;
+// bumping the module changes this function and nothing else. Absence is an
+// empty name, which a v1.6.0 cluster serving a pool without the field also
+// decodes to under the v1.5.0 types.
+func endpointPickerRefOf(pool *infv1.InferencePool) (infv1.EndpointPickerRef, bool) {
 	ref := pool.Spec.EndpointPickerRef
-	if ref.Name == "" {
-		return "", "", true
+	return ref, ref.Name != ""
+}
+
+// resolveEndpointPicker - turn the pool's endpointPickerRef into the address
+// the gateway dials.
+//
+// The address is the Service's cluster IP, not a DNS name: a loxilb outside the
+// cluster cannot resolve cluster DNS, and the picker runs active-passive behind
+// its Service, so the Service is the stable way in. Only an error reading the
+// cache is returned as an error; a reference that does not resolve is reported
+// in the result, because retrying would not change it - the Service watch
+// does, when the Service appears.
+func (m *InferencePoolManager) resolveEndpointPicker(pool *infv1.InferencePool) (pickerResolution, error) {
+	ref, ok := endpointPickerRefOf(pool)
+	if !ok {
+		return pickerResolution{}, nil
 	}
 
+	p := pickerResolution{declared: true, name: string(ref.Name), failureMode: eppFailClose}
 	if ref.FailureMode == infv1.EndpointPickerFailOpen {
-		return "", fmt.Sprintf("endpointPickerRef %q is ignored - loxilb selects endpoints itself; "+
-			"accepted because failureMode is FailOpen", string(ref.Name)), true
+		p.failureMode = eppFailOpen
 	}
 
-	return string(infv1.InferencePoolReasonNotSupportedByParent),
-		fmt.Sprintf("endpointPickerRef %q requires an Endpoint Picker, which kube-loxilb does not delegate to "+
-			"(loxilb selects endpoints itself). Remove endpointPickerRef, or set failureMode: FailOpen to accept "+
-			"loxilb's own endpoint selection", string(ref.Name)),
-		false
+	if ref.Group != nil && *ref.Group != "" {
+		p.problem = fmt.Sprintf("endpointPickerRef %q has group %q; only a core Service can be an endpoint picker",
+			p.name, string(*ref.Group))
+		return p, nil
+	}
+	if ref.Kind != "" && ref.Kind != "Service" {
+		p.problem = fmt.Sprintf("endpointPickerRef %q has kind %q; only a Service can be an endpoint picker",
+			p.name, string(ref.Kind))
+		return p, nil
+	}
+	if ref.Port == nil {
+		p.problem = fmt.Sprintf("endpointPickerRef %q names a Service without a port", p.name)
+		return p, nil
+	}
+	port := int32(ref.Port.Number)
+
+	svc, err := m.serviceLister.Services(pool.Namespace).Get(p.name)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			p.problem = fmt.Sprintf("endpoint picker Service %s/%s not found", pool.Namespace, p.name)
+			return p, nil
+		}
+		return pickerResolution{}, err
+	}
+
+	// The Inference Extension forbids following ExternalName Services: they
+	// can point anywhere, which is CVE-2021-25740.
+	if svc.Spec.Type == corev1.ServiceTypeExternalName {
+		p.problem = fmt.Sprintf("endpoint picker Service %s/%s is an ExternalName Service, which an endpoint picker reference must not follow",
+			pool.Namespace, p.name)
+		return p, nil
+	}
+	if svc.Spec.ClusterIP == "" || svc.Spec.ClusterIP == corev1.ClusterIPNone {
+		p.problem = fmt.Sprintf("endpoint picker Service %s/%s has no cluster IP (headless); give it a ClusterIP so it has a stable address",
+			pool.Namespace, p.name)
+		return p, nil
+	}
+	if !serviceHasPort(svc, port) {
+		p.problem = fmt.Sprintf("endpoint picker Service %s/%s has no port %d", pool.Namespace, p.name, port)
+		return p, nil
+	}
+
+	p.endpoint = net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(int(port)))
+	return p, nil
+}
+
+// serviceHasPort - whether the Service exposes port over TCP. endpointPickerRef
+// names the Service port, not the target port.
+func serviceHasPort(svc *corev1.Service, port int32) bool {
+	for _, sp := range svc.Spec.Ports {
+		if sp.Port == port && (sp.Protocol == "" || sp.Protocol == corev1.ProtocolTCP) {
+			return true
+		}
+	}
+	return false
 }
 
 // findTargets - resolve every Gateway listener this pool is served on.
@@ -527,12 +737,19 @@ func findListenerForRoute(gateway *v1.Gateway, parentRef v1.ParentReference) *v1
 }
 
 // buildServices - the Services that express this pool on each of its targets.
-func (m *InferencePoolManager) buildServices(pool *infv1.InferencePool, targets []poolTarget) ([]*corev1.Service, error) {
+func (m *InferencePoolManager) buildServices(pool *infv1.InferencePool, targets []poolTarget, picker pickerResolution) ([]*corev1.Service, error) {
 	if len(pool.Spec.TargetPorts) == 0 {
 		return nil, fmt.Errorf("targetPorts is empty")
 	}
 	if len(pool.Spec.Selector.MatchLabels) == 0 {
 		return nil, fmt.Errorf("selector.matchLabels is empty")
+	}
+	if len(pool.Spec.TargetPorts) > 1 && picker.ruleEndpoint() != "" {
+		// The picker chooses among every (pod, port) of the pool and the rule
+		// holds only the first port, so any other choice would be refused by
+		// the gateway as an endpoint the rule does not have.
+		return nil, fmt.Errorf("an endpoint picker chooses among all %d targetPorts, but only the first (%d) "+
+			"is served; declare a single targetPort", len(pool.Spec.TargetPorts), pool.Spec.TargetPorts[0].Number)
 	}
 	if len(pool.Spec.TargetPorts) > 1 {
 		// Every port would need its own rule; until that is implemented,
@@ -545,7 +762,7 @@ func (m *InferencePoolManager) buildServices(pool *infv1.InferencePool, targets 
 	multi := len(targets) > 1
 	services := make([]*corev1.Service, 0, len(targets))
 	for _, target := range targets {
-		svc, err := m.buildService(pool, target, multi)
+		svc, err := m.buildService(pool, target, multi, picker)
 		if err != nil {
 			return nil, err
 		}
@@ -555,8 +772,8 @@ func (m *InferencePoolManager) buildServices(pool *infv1.InferencePool, targets 
 	return services, nil
 }
 
-func (m *InferencePoolManager) buildService(pool *infv1.InferencePool, target poolTarget, multi bool) (*corev1.Service, error) {
-	annotations, err := m.buildAnnotations(pool, target)
+func (m *InferencePoolManager) buildService(pool *infv1.InferencePool, target poolTarget, multi bool, picker pickerResolution) (*corev1.Service, error) {
+	annotations, err := m.buildAnnotations(pool, target, picker)
 	if err != nil {
 		return nil, err
 	}
@@ -595,10 +812,15 @@ func (m *InferencePoolManager) buildService(pool *infv1.InferencePool, target po
 
 // buildAnnotations - the loxilb settings the generated Service carries.
 //
-// Precedence is pool, then route, then the two values this translation has to
+// Precedence is pool, then route, then the values this translation has to
 // impose. Route last because the route is the more specific statement: the
 // same pool served through two routes can be tuned per route.
-func (m *InferencePoolManager) buildAnnotations(pool *infv1.InferencePool, target poolTarget) (map[string]string, error) {
+//
+// The Endpoint Picker's address and failure mode are imposed from the pool's
+// endpointPickerRef. The picker's deadline and transport (epp-timeout-ms,
+// epp-plaintext) have no field in the API, so they are taken from the pool and
+// route annotations like any other loxilb setting.
+func (m *InferencePoolManager) buildAnnotations(pool *infv1.InferencePool, target poolTarget, picker pickerResolution) (map[string]string, error) {
 	annotations := map[string]string{}
 	copyLoxilbAnnotations(pool.Annotations, annotations)
 	copyLoxilbAnnotations(target.routeAnnotations, annotations)
@@ -622,6 +844,27 @@ func (m *InferencePoolManager) buildAnnotations(pool *infv1.InferencePool, targe
 		annotations[lbModeAnnotation] = lbModeFullProxy
 	}
 
+	// Owned by the spec. A copied value must neither switch on a picker the
+	// pool does not name nor replace the one it does.
+	delete(annotations, eppEndpointAnnotation)
+	delete(annotations, eppFailureModeAnnotation)
+	if endpoint := picker.ruleEndpoint(); endpoint != "" {
+		// The gateway refuses both of these combinations; saying so here puts
+		// the reason on the pool instead of on a generated Service. The
+		// refusing address of an unresolved FailClose picker is still an EPP
+		// rule to the gateway, so the same checks apply to it.
+		if mode := annotations[lbModeAnnotation]; mode != lbModeFullProxy {
+			return nil, fmt.Errorf("an endpoint picker requires %s=%q, got %q: the picker decides per HTTP request",
+				lbModeAnnotation, lbModeFullProxy, mode)
+		}
+		if annotationTrue(annotations[pdDisaggAnnotation]) {
+			return nil, fmt.Errorf("an endpoint picker cannot be combined with %s: the picker orchestrates "+
+				"prefill/decode itself", pdDisaggAnnotation)
+		}
+		annotations[eppEndpointAnnotation] = endpoint
+		annotations[eppFailureModeAnnotation] = picker.failureMode
+	}
+
 	annotations["gateway-api-controller"] = m.gatewayProvider
 	annotations["parent-inference-pool"] = pool.Name
 	annotations["parent-gateway"] = target.gateway.Name
@@ -629,6 +872,16 @@ func (m *InferencePoolManager) buildAnnotations(pool *infv1.InferencePool, targe
 	annotations["parent-http-route"] = target.routeName
 
 	return annotations, nil
+}
+
+// annotationTrue - the true spellings the loadbalancer manager accepts for a
+// boolean annotation.
+func annotationTrue(value string) bool {
+	switch value {
+	case "true", "yes", "1":
+		return true
+	}
+	return false
 }
 
 // copyLoxilbAnnotations - copy only the loxilb settings.
