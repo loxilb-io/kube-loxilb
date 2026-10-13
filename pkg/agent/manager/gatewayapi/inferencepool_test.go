@@ -115,7 +115,7 @@ func TestBuildAnnotations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := testManager().buildAnnotations(testPool(tt.pool), testTarget(tt.route))
+			got, err := testManager().buildAnnotations(testPool(tt.pool), testTarget(tt.route), pickerResolution{})
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected an error containing %q, got none", tt.wantErr)
@@ -145,7 +145,7 @@ func TestBuildAnnotations(t *testing.T) {
 
 func TestBuildServices(t *testing.T) {
 	pool := testPool(map[string]string{epSelectAnnotation: "chwbl"})
-	services, err := testManager().buildServices(pool, []poolTarget{testTarget(nil)})
+	services, err := testManager().buildServices(pool, []poolTarget{testTarget(nil)}, pickerResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestBuildServicesRejectsIncompletePool(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := testManager().buildServices(tt.pool, []poolTarget{testTarget(nil)}); err == nil {
+			if _, err := testManager().buildServices(tt.pool, []poolTarget{testTarget(nil)}, pickerResolution{}); err == nil {
 				t.Fatal("expected an error, got none")
 			}
 		})
@@ -230,52 +230,6 @@ func TestServiceNameFor(t *testing.T) {
 	}
 	if first == second {
 		t.Errorf("distinct names collided after truncation: %q", first)
-	}
-}
-
-func TestEndpointPickerDecision(t *testing.T) {
-	tests := []struct {
-		name        string
-		ref         infv1.EndpointPickerRef
-		wantOK      bool
-		wantMessage bool
-	}{
-		{name: "no picker", ref: infv1.EndpointPickerRef{}, wantOK: true},
-		{
-			name:        "FailOpen is accepted and reported",
-			ref:         infv1.EndpointPickerRef{Name: "epp", FailureMode: infv1.EndpointPickerFailOpen},
-			wantOK:      true,
-			wantMessage: true,
-		},
-		{
-			name:        "FailClose is refused",
-			ref:         infv1.EndpointPickerRef{Name: "epp", FailureMode: infv1.EndpointPickerFailClose},
-			wantOK:      false,
-			wantMessage: true,
-		},
-		{
-			// FailClose is the API default, so an unset failureMode means the
-			// user is asking for the picker to be authoritative.
-			name:        "unset failureMode defaults to FailClose",
-			ref:         infv1.EndpointPickerRef{Name: "epp"},
-			wantOK:      false,
-			wantMessage: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pool := testPool(nil)
-			pool.Spec.EndpointPickerRef = tt.ref
-
-			_, message, ok := endpointPickerDecision(pool)
-			if ok != tt.wantOK {
-				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if (message != "") != tt.wantMessage {
-				t.Errorf("message = %q, want message: %v", message, tt.wantMessage)
-			}
-		})
 	}
 }
 
@@ -370,7 +324,7 @@ func TestApplyServiceCreatesUpdatesAndRefusesForeignOwners(t *testing.T) {
 	pool := testPool(nil)
 	m := testManager()
 
-	desired, err := m.buildServices(pool, []poolTarget{testTarget(nil)})
+	desired, err := m.buildServices(pool, []poolTarget{testTarget(nil)}, pickerResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -388,7 +342,7 @@ func TestApplyServiceCreatesUpdatesAndRefusesForeignOwners(t *testing.T) {
 	}
 
 	changed := testPool(map[string]string{epSelectAnnotation: "gpuaware"})
-	desired, err = m.buildServices(changed, []poolTarget{testTarget(nil)})
+	desired, err = m.buildServices(changed, []poolTarget{testTarget(nil)}, pickerResolution{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

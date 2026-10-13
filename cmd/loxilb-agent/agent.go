@@ -354,7 +354,7 @@ func run(o *Options) error {
 
 			infInformerFactory = infinformer.NewSharedInformerFactory(infClient, informerDefaultResync)
 			inferencePoolManager = gatewayapi.NewInferencePoolManager(
-				k8sClient, k8sExtClient, sigsClient, infClient, networkConfig, sigsInformerFactory, infInformerFactory)
+				k8sClient, k8sExtClient, sigsClient, infClient, networkConfig, informerFactory, sigsInformerFactory, infInformerFactory)
 		}
 
 		sigsInformerFactory.Start(stopCh)
