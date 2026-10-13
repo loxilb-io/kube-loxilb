@@ -17,9 +17,9 @@ turns into an inference rule on loxilb:
 | Everything below the Service | identical | identical |
 
 Use the Service path when loxilb is the only thing routing to your model servers. Use the Gateway API
-path when the fleet is already described with Gateway API objects, or when
+path when the fleet is already described with Gateway API objects, when
 [Inference Extension](https://gateway-api-inference-extension.sigs.k8s.io/) semantics matter to other
-tooling in the cluster.
+tooling in the cluster, or when an Endpoint Picker (for example llm-d's) should choose the endpoints.
 
 ## Contents
 
@@ -30,6 +30,7 @@ tooling in the cluster.
 - [Annotation reference](#annotation-reference)
   - [Inference gateway annotations](#inference-gateway-annotations)
   - [Prefill/decode annotations](#prefilldecode-annotations)
+  - [Endpoint Picker annotations](#endpoint-picker-annotations)
   - [Endpoint selection](#endpoint-selection)
   - [Annotations that are not inference-specific](#annotations-that-are-not-inference-specific)
 - [Requirements outside Kubernetes](#requirements-outside-kubernetes)
@@ -188,11 +189,38 @@ spec:
 The generated Service is named `<pool>-inference`, sits on the Gateway's address, and selects the
 pool's pods. What it carries and what the translation decides for you is below.
 
-**Endpoint selection is loxilb's.** The extension's reference design delegates it to an Endpoint
-Picker over ext-proc; loxilb-inference-gateway selects endpoints in the data plane instead, so a
-pool's `endpointPickerRef` is not called. A pool that sets it with `failureMode: FailOpen` is
-accepted and the picker ignored; with `FailClose` - the API default - the pool is refused, and
-`status.parents[].conditions` says why rather than routing by a policy you did not ask for.
+**An Endpoint Picker, when the pool names one.** Without `endpointPickerRef`, loxilb selects
+endpoints itself with the `epselect` algorithm. With it, the gateway asks the picker (an
+[Endpoint Picker](https://github.com/kubernetes-sigs/gateway-api-inference-extension/blob/main/docs/proposals/004-endpoint-picker-protocol/README.md)
+such as the llm-d EPP) over ext_proc where every request goes. kube-loxilb never talks to the picker
+itself: it resolves the referenced Service to its cluster IP and puts that address on the rule,
+and the gateway does the rest.
+
+- **failureMode.** `FailClose` (the API default) answers `503 epp_unavailable` when the picker cannot
+  answer; `FailOpen` falls back to the rule's own selection, so `epselect` still matters as the
+  fallback. An endpoint the picker names must still be one of the pool's endpoints and pass loxilb's
+  own health, circuit-breaker and disabled checks.
+- **The reference.** It has to be a Service (group `""`, kind `Service`) in the pool's namespace,
+  with a cluster IP - not headless, not `ExternalName` - and a port matching `endpointPickerRef.port`.
+  If it does not resolve, `ResolvedRefs` is `False` with reason `InvalidExtensionRef`; a `FailOpen`
+  pool is then served by loxilb's own selection, and a `FailClose` pool keeps its rule but points it
+  at an address that always refuses (`127.0.0.1:1`), so every request is answered
+  `503 epp_unavailable` - never by a model server - until the reference resolves. The Service is
+  watched, so creating it later, or recreating it at a new address, is picked up without touching
+  the pool.
+- **What it rules out.** A pool with a picker needs `loxilb.io/lbmode: fullproxy`, cannot be combined
+  with `loxilb.io/pd-disagg` (the picker orchestrates prefill/decode itself), and must declare a
+  single `targetPorts` entry. Any of these is reported as `Accepted=False` / `NotSupportedByParent`.
+- **KV-exact alongside a picker.** Allowed. A request the picker routes skips loxilb's KV-exact
+  selection; KV-exact is used only when a `FailOpen` pool falls back to loxilb's own selection, so it
+  is a reasonable fallback to configure.
+- **Reaching it.** A loxilb running outside the cluster needs a route to the service CIDR through a
+  node, the same way it needs one to the pod CIDR for pod endpoints.
+- **Which gateway.** Only gateway builds that list `"epp"` in the `features` of
+  `GET /netlox/v1/version` apply the picker. On any other gateway a `FailClose` pool is refused and a
+  `FailOpen` pool is served without the picker, both with an `EndpointPickerUnsupported` event.
+- **Tuning.** The picker's deadline and transport have no field in the API, so they are annotations -
+  see [Endpoint Picker annotations](#endpoint-picker-annotations).
 
 **Model routing needs a lookup key.** The gateway's userspace proxy finds an endpoint pool by
 host, path prefix and match mode, so a rule carrying inference settings is given `host` = its
@@ -221,7 +249,8 @@ case and the traffic is black-holed.
 
 **Ports.** The Service listens on the Gateway listener's port and targets the pool's first
 `targetPorts` entry. A pool declaring more than one target port is served on the first, with a
-warning in the kube-loxilb log.
+warning in the kube-loxilb log - unless it names an Endpoint Picker, which chooses among every target
+port, in which case it is refused.
 
 **One Service per listener.** A pool reachable through several Gateway listeners gets one Service per
 listener, named `<pool>-inference-<gateway>-<listener>`; long names are truncated to the API server's
@@ -279,6 +308,19 @@ what they require.
 | <b>loxilb.io/pd-cache-threshold</b> | Cache-hit percentage above which the cached prefill endpoint is preferred, 0..100. Default 20. |
 | <b>loxilb.io/pd-session-ttl</b> | Session lifetime in seconds. Default 0. |
 | <b>loxilb.io/pd-balance-abs-threshold</b> | Absolute load gap before rebalancing. Default 3. |
+
+### Endpoint Picker annotations
+
+On a pool, the address and the failure mode come from `endpointPickerRef` and anything written in
+these two annotations is overwritten. On a plain Service there is no reference to resolve, so the
+annotations are the whole configuration. Without `epp-endpoint`, the other three are ignored.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/epp-endpoint</b> | `host:port` of the Endpoint Picker's gRPC (ext_proc) server. Set from `endpointPickerRef` on a pool. Requires fullproxy; not combinable with `pd-disagg`. |
+| <b>loxilb.io/epp-failure-mode</b> | `"FailOpen"` or `"FailClose"`. Default `FailClose`. Set from `endpointPickerRef.failureMode` on a pool. |
+| <b>loxilb.io/epp-timeout-ms</b> | How long a request waits for the picker's decision before the failure mode applies, 0..600000. Default 3000. A picker that queues requests under load (llm-d flow control) needs more. |
+| <b>loxilb.io/epp-plaintext</b> | `"true"` connects to the picker without TLS. The default is TLS without certificate verification, matching the self-signed certificate the llm-d EPP serves. |
 
 ### Endpoint selection
 
@@ -346,6 +388,7 @@ Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the obj
 | `InferenceGatewayRequired` | Warning | An inference annotation was used against plain upstream loxilb. The rule is refused rather than silently downgraded. |
 | `InvalidInferenceConfig` | Warning | An annotation did not parse, or a combination is impossible (e.g. `pd-disagg` without pod endpoints). |
 | `GPUMonitoringDisabled` | Warning | `epselect: gpuaware` on an instance where the GPU routing mode is not armed. Re-checked on every reconcile. |
+| `EndpointPickerUnsupported` | Warning | The rule names an Endpoint Picker and a gateway instance does not list `"epp"` in its version features. A `FailClose` rule is refused there; a `FailOpen` rule is served there without the picker. |
 | `KvExactTokenizerRequired` | Normal | `kv-exact-mode` is on; names the tokenizer path loxilb will read. |
 | `LoxiLBRejected` | Warning | loxilb itself refused the value - an unknown cipher, an unregistered certificate id, and so on. |
 | `GatewayArgsDowngraded` | Warning | A gateway-only service setting was dropped for an upstream peer in the pool; names which. |
@@ -354,8 +397,8 @@ Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the obj
 | `RuleUnhealthy` / `RuleHealthy` | Warning / Normal | loxilb's own view of the rule changed. Needs `loxilb.io/liveness: "yes"`. |
 
 On the Gateway API path the pool also carries `status.parents[].conditions` (`Accepted`,
-`ResolvedRefs`) under the Gateway that serves it, which is where a refused `endpointPickerRef` is
-reported.
+`ResolvedRefs`) under the Gateway that serves it. `ResolvedRefs` says whether `endpointPickerRef`
+resolved, and to which address.
 
 ## See also
 
