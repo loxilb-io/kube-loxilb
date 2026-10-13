@@ -1165,6 +1165,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		m.recordTokenizerNotice(svc, aiArgs)
 		m.recordProbeNotices(svc, endpointProbe)
 		m.recordGatewayArgNotices(svc)
+		m.recordEndpointPickerNotices(svc, aiArgs)
 
 		klog.Infof("%s: Added(%v) Update(%v) needDelete(%v)", cacheKey, added, update, needDelete)
 		klog.Infof("Endpoint IP Pairs %v", endpointIPs)
@@ -1247,6 +1248,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 		if errors.Is(loxilbAPIErr, ErrGPUMonitoringDisabled) {
 			m.recordServiceWarning(svc, ReasonGPUMonitoringDisabled, loxilbAPIErr.Error())
+		}
+		if errors.Is(loxilbAPIErr, ErrEndpointPickerUnsupported) {
+			m.recordServiceWarning(svc, ReasonEndpointPickerUnsupported, loxilbAPIErr.Error())
 		}
 		// loxilb rejected the request itself. Retrying it unchanged will fail
 		// the same way, so the person who wrote the Service has to see the
@@ -1496,6 +1500,15 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 			return err
 		}
 		api.StripGatewayFields(model)
+	}
+
+	// Within the gateway, only builds that list the feature apply the
+	// Endpoint Picker fields; the others drop them silently.
+	if c.IsInferenceGateway() {
+		if err = checkEndpointPicker(c, model); err != nil {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
 	}
 
 	// sel=gpuaware is armed instance-wide, not by the rule, so a peer that
@@ -2816,11 +2829,17 @@ loop:
 				for _, value := range m.lbCache {
 					for _, sp := range value.LbServicePairs {
 						for _, lb := range sp.LbModelList {
+							refused := false
 							for retry := 0; retry < 5; retry++ {
 								err := m.installLB(aliveClient, lb, value.PrefLocal)
 								if err == nil {
 									klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lb)
 									isSuccess = true
+									break
+								} else if isPeerRefusal(err) {
+									klog.Infof("reinstallLoxiLbRules: lbModel: %v not installed on loxilb-lb(%s): %v",
+										lb, aliveClient.Host, err)
+									refused = true
 									break
 								} else {
 									if !strings.Contains(err.Error(), "exist") {
@@ -2831,6 +2850,12 @@ loop:
 										break
 									}
 								}
+							}
+							// A rule this peer cannot serve says nothing about
+							// whether the peer works, so it must not count
+							// towards the restart below.
+							if refused {
+								continue
 							}
 							if !isSuccess && aliveClient.IsAlive {
 								klog.Exit("restart kube-loxilb")
