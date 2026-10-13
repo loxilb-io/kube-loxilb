@@ -131,6 +131,25 @@ else
   bad "status written" "no parents after 60s"
 fi
 
+echo "=== 4a. nothing is rewritten while nothing changes ==="
+# Each status write used to be an update event that queued the pool again, so
+# a pool and its Service were rewritten every couple of seconds forever. Give
+# the testbed a few windows to settle; one quiet window is the pass.
+quiet=""
+for window in 1 2 3; do
+  P1=$(kubectl -n llm get inferencepool vllm-qwen3 -o jsonpath='{.metadata.resourceVersion}')
+  S1=$(kubectl -n llm get svc "$POOL_SVC" -o jsonpath='{.metadata.resourceVersion}')
+  sleep 15
+  P2=$(kubectl -n llm get inferencepool vllm-qwen3 -o jsonpath='{.metadata.resourceVersion}')
+  S2=$(kubectl -n llm get svc "$POOL_SVC" -o jsonpath='{.metadata.resourceVersion}')
+  if [[ "$P1" == "$P2" && "$S1" == "$S2" ]]; then quiet=yes; break; fi
+done
+if [[ -n "$quiet" ]]; then
+  ok "pool and Service unchanged for 15s"
+else
+  bad "pool and Service unchanged for 15s" "pool $P1 -> $P2, service $S1 -> $S2 in the last window"
+fi
+
 echo "=== 4b. a picker annotation cannot stand in for endpointPickerRef ==="
 # The address and failure mode belong to the pool's spec. Written by hand on a
 # pool that names no picker, they must not reach the Service or the rule.

@@ -60,15 +60,16 @@ func (m *InferencePoolManager) updateStatus(ctx context.Context, pool *infv1.Inf
 		}
 		seen[key] = true
 
+		ref := infv1.ParentReference{
+			Group:     groupOf("gateway.networking.k8s.io"),
+			Kind:      "Gateway",
+			Name:      infv1.ObjectName(target.gateway.Name),
+			Namespace: infv1.Namespace(target.gateway.Namespace),
+		}
 		parents = append(parents, infv1.ParentStatus{
-			ParentRef: infv1.ParentReference{
-				Group:     groupOf("gateway.networking.k8s.io"),
-				Kind:      "Gateway",
-				Name:      infv1.ObjectName(target.gateway.Name),
-				Namespace: infv1.Namespace(target.gateway.Namespace),
-			},
+			ParentRef:      ref,
 			ControllerName: inferencePoolControllerName,
-			Conditions:     report.conditions(pool.Generation),
+			Conditions:     carryTransitionTimes(ourConditions(pool, ref), report.conditions(pool.Generation)),
 		})
 	}
 
@@ -80,6 +81,38 @@ func (m *InferencePoolManager) updateStatus(ctx context.Context, pool *infv1.Inf
 	})
 
 	return m.writeParents(ctx, pool, parents)
+}
+
+// ourConditions - the conditions this controller last wrote under ref.
+func ourConditions(pool *infv1.InferencePool, ref infv1.ParentReference) []metav1.Condition {
+	for _, parent := range pool.Status.Parents {
+		if parent.ControllerName == inferencePoolControllerName && reflect.DeepEqual(parent.ParentRef, ref) {
+			return parent.Conditions
+		}
+	}
+	return nil
+}
+
+// carryTransitionTimes - stamp next with when each condition last changed.
+//
+// A condition whose status is what it was keeps its previous transition time;
+// one that is new or changed status gets now. That is the meaning
+// meta.SetStatusCondition gives lastTransitionTime, and it is also what lets
+// writeParents tell an unchanged reconcile from a changed one. Stamping every
+// condition with now made each reconcile a status write, and each write an
+// update event that queued the pool again.
+func carryTransitionTimes(previous, next []metav1.Condition) []metav1.Condition {
+	now := metav1.Now()
+	for i := range next {
+		next[i].LastTransitionTime = now
+		for _, old := range previous {
+			if old.Type == next[i].Type && old.Status == next[i].Status {
+				next[i].LastTransitionTime = old.LastTransitionTime
+				break
+			}
+		}
+	}
+	return next
 }
 
 // clearStatus - drop the parents we own, leaving other controllers' entries.
@@ -139,13 +172,14 @@ func condition(conditionType string, ok bool, reason, message string, generation
 		message = reason
 	}
 
+	// LastTransitionTime is left to carryTransitionTimes, which knows the
+	// previous status.
 	return metav1.Condition{
 		Type:               conditionType,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: generation,
-		LastTransitionTime: metav1.Now(),
 	}
 }
 
