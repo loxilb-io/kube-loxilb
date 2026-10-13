@@ -188,8 +188,13 @@ func NewInferencePoolManager(
 	}
 
 	poolInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(cur interface{}) { manager.enqueuePool(cur) },
-		UpdateFunc: func(old, cur interface{}) { manager.enqueuePool(cur) },
+		AddFunc: func(cur interface{}) { manager.enqueuePool(cur) },
+		UpdateFunc: func(old, cur interface{}) {
+			if !poolChanged(old, cur) {
+				return
+			}
+			manager.enqueuePool(cur)
+		},
 		DeleteFunc: func(old interface{}) { manager.enqueuePool(old) },
 	})
 
@@ -219,6 +224,31 @@ func NewInferencePoolManager(
 	})
 
 	return manager
+}
+
+// poolChanged - whether an update can change what the pool translates into.
+//
+// The spec bumps the generation and the loxilb settings live in annotations;
+// a status write touches neither. Without this, the status this manager writes
+// comes back as an update event and queues the pool again - a reconcile loop
+// for as long as anything in the status differs from the last write. Other
+// implementations' status writes are skipped for the same reason. A resync
+// redelivers the same resourceVersion and still goes through, so the periodic
+// repair of drifted Services keeps working.
+func poolChanged(old, cur interface{}) bool {
+	o, ok := old.(*infv1.InferencePool)
+	if !ok {
+		return true
+	}
+	c, ok := cur.(*infv1.InferencePool)
+	if !ok {
+		return true
+	}
+
+	return o.ResourceVersion == c.ResourceVersion ||
+		o.Generation != c.Generation ||
+		!reflect.DeepEqual(o.Annotations, c.Annotations) ||
+		!reflect.DeepEqual(o.Labels, c.Labels)
 }
 
 // enqueuePickerPools - every pool whose endpointPickerRef names this Service.
@@ -943,13 +973,16 @@ func (m *InferencePoolManager) applyService(ctx context.Context, pool *infv1.Inf
 			desired.Namespace, desired.Name, pool.Name)
 	}
 
-	if serviceUpToDate(existing, desired) {
+	drift := serviceDrift(existing, desired)
+	if drift == "" {
 		return nil
 	}
+	klog.V(4).Infof("service %s/%s differs from what InferencePool %s wants: %s",
+		existing.Namespace, existing.Name, pool.Name, drift)
 
 	updated := existing.DeepCopy()
-	updated.Labels = desired.Labels
-	updated.Annotations = desired.Annotations
+	updated.Labels = mergeOwned(existing.Labels, desired.Labels, poolOwnedLabel)
+	updated.Annotations = mergeOwned(existing.Annotations, desired.Annotations, poolOwnedAnnotation)
 	updated.Spec.Type = desired.Spec.Type
 	updated.Spec.LoadBalancerClass = desired.Spec.LoadBalancerClass
 	updated.Spec.LoadBalancerIP = desired.Spec.LoadBalancerIP
@@ -984,27 +1017,89 @@ func mergeServicePorts(existing, desired []corev1.ServicePort) []corev1.ServiceP
 	return merged
 }
 
-func serviceUpToDate(existing, desired *corev1.Service) bool {
-	if !reflect.DeepEqual(existing.Annotations, desired.Annotations) ||
-		!reflect.DeepEqual(existing.Labels, desired.Labels) ||
-		!reflect.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) ||
-		existing.Spec.LoadBalancerIP != desired.Spec.LoadBalancerIP ||
-		existing.Spec.Type != desired.Spec.Type {
-		return false
+// serviceDrift - how the existing Service differs from the desired one in
+// what this manager owns, or "" when it does not.
+//
+// Only the annotations and labels this manager writes are compared. Other
+// controllers add their own - Rancher's field.cattle.io/publicEndpoints is one
+// - and comparing the whole map read every such key as drift, so each
+// reconcile updated the Service back, the other controller added the key
+// again, and the Service churned without end.
+func serviceDrift(existing, desired *corev1.Service) string {
+	if got := ownedOnly(existing.Annotations, poolOwnedAnnotation); !reflect.DeepEqual(got, ownedOnly(desired.Annotations, poolOwnedAnnotation)) {
+		return fmt.Sprintf("annotations %v, want %v", got, ownedOnly(desired.Annotations, poolOwnedAnnotation))
+	}
+	if got := ownedOnly(existing.Labels, poolOwnedLabel); !reflect.DeepEqual(got, ownedOnly(desired.Labels, poolOwnedLabel)) {
+		return fmt.Sprintf("labels %v, want %v", got, ownedOnly(desired.Labels, poolOwnedLabel))
+	}
+	if !reflect.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) {
+		return fmt.Sprintf("selector %v, want %v", existing.Spec.Selector, desired.Spec.Selector)
+	}
+	if existing.Spec.LoadBalancerIP != desired.Spec.LoadBalancerIP {
+		return fmt.Sprintf("loadBalancerIP %q, want %q", existing.Spec.LoadBalancerIP, desired.Spec.LoadBalancerIP)
+	}
+	if existing.Spec.Type != desired.Spec.Type {
+		return fmt.Sprintf("type %s, want %s", existing.Spec.Type, desired.Spec.Type)
 	}
 
 	if len(existing.Spec.Ports) != len(desired.Spec.Ports) {
-		return false
+		return fmt.Sprintf("%d ports, want %d", len(existing.Spec.Ports), len(desired.Spec.Ports))
 	}
 	for i := range desired.Spec.Ports {
 		if existing.Spec.Ports[i].Port != desired.Spec.Ports[i].Port ||
 			existing.Spec.Ports[i].TargetPort != desired.Spec.Ports[i].TargetPort ||
 			existing.Spec.Ports[i].Protocol != desired.Spec.Ports[i].Protocol {
-			return false
+			return fmt.Sprintf("port %d is %d->%s/%s, want %d->%s/%s", i,
+				existing.Spec.Ports[i].Port, existing.Spec.Ports[i].TargetPort.String(), existing.Spec.Ports[i].Protocol,
+				desired.Spec.Ports[i].Port, desired.Spec.Ports[i].TargetPort.String(), desired.Spec.Ports[i].Protocol)
 		}
 	}
 
-	return true
+	return ""
+}
+
+// poolOwnedAnnotation - whether this manager writes key on the Services it
+// makes: every loxilb setting it copies or imposes, and its bookkeeping.
+func poolOwnedAnnotation(key string) bool {
+	switch key {
+	case "gateway-api-controller", "parent-inference-pool", "parent-gateway",
+		"parent-gateway-namespace", "parent-http-route":
+		return true
+	}
+	return strings.HasPrefix(key, loxilbAnnotationPrefix)
+}
+
+// poolOwnedLabel - whether this manager writes key as a label.
+func poolOwnedLabel(key string) bool {
+	return key == "implementation" || key == poolOwnerLabel
+}
+
+// ownedOnly - the entries of m whose key owned accepts. Never nil, so an
+// absent map and an empty one compare equal.
+func ownedOnly(m map[string]string, owned func(string) bool) map[string]string {
+	out := map[string]string{}
+	for key, value := range m {
+		if owned(key) {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+// mergeOwned - desired for the keys this manager owns, existing for every
+// other key. An owned key absent from desired is dropped: it was copied from a
+// pool or route annotation that has since been removed.
+func mergeOwned(existing, desired map[string]string, owned func(string) bool) map[string]string {
+	out := map[string]string{}
+	for key, value := range existing {
+		if !owned(key) {
+			out[key] = value
+		}
+	}
+	for key, value := range desired {
+		out[key] = value
+	}
+	return out
 }
 
 // deleteOwnedServices - remove the Services of this pool that are no longer
