@@ -2,6 +2,7 @@ package gatewayapi
 
 import (
 	"testing"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	extfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
@@ -64,6 +65,37 @@ func TestWaitForServedVersion(t *testing.T) {
 				t.Errorf("served = %v, want %v", served, tt.want)
 			}
 		})
+	}
+}
+
+// An error that is not about permission is asked again rather than taken as
+// "watch anyway": a blip at startup must not bring back the failing watch on a
+// cluster that only serves v1.
+func TestWaitForServedVersionRetriesTransientErrors(t *testing.T) {
+	defer func(old time.Duration) { crdPollInterval = old }(crdPollInterval)
+	crdPollInterval = 10 * time.Millisecond
+
+	client := extfake.NewSimpleClientset(routeCRD(
+		apiextensionsv1.CustomResourceDefinitionVersion{Name: "v1alpha2", Served: false},
+		apiextensionsv1.CustomResourceDefinitionVersion{Name: "v1", Served: true, Storage: true}))
+	failures := 2
+	client.PrependReactor("get", "customresourcedefinitions", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if failures > 0 {
+			failures--
+			return true, nil, errors.NewServerTimeout(schema.GroupResource{Resource: "customresourcedefinitions"}, "get", 1)
+		}
+		return false, nil, nil
+	})
+
+	served, ok := WaitForServedVersion(make(chan struct{}), client, TCPRouteCRDName, RouteWatchVersion)
+	if !ok {
+		t.Fatal("ok = false without the stop channel closing")
+	}
+	if served {
+		t.Error("a timeout was taken as unreadable and the v1-only CRD reported served")
+	}
+	if failures != 0 {
+		t.Errorf("%d failures left: the check did not ask again", failures)
 	}
 }
 

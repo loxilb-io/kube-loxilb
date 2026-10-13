@@ -40,32 +40,44 @@ const (
 	RouteWatchVersion = "v1alpha2"
 )
 
+// crdPollInterval - how often a missing or unreadable CRD is asked again.
+var crdPollInterval = 5 * time.Second
+
 // WaitForServedVersion - wait for the CRD to exist, then report whether it
 // serves version.
 //
 // Watching a version the CRD does not serve fails on every retry, forever,
 // and achieves nothing; asking first lets the caller skip the watch with one
-// log line. A CRD that cannot be read for any reason other than not existing
-// - no RBAC for CRDs, an API error - reports served: the check could not run,
-// and the caller then watches as it always did. ok is false only when stopCh
-// closes first.
+// log line.
+//
+// A CRD this process is not allowed to read reports served: the check cannot
+// run, and the caller watches as it always did. Any other error - the API
+// server not ready yet, a timeout - is asked again: falling back on it would
+// bring back the endlessly failing watch on a cluster that only serves v1,
+// because of a blip at startup. ok is false only when stopCh closes first.
 func WaitForServedVersion(stopCh <-chan struct{}, extClient apiextensionclientset.Interface, crdName, version string) (served, ok bool) {
-	logged := false
+	waiting, failing := false, false
 
-	err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), time.Second*5, true,
+	err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), crdPollInterval, true,
 		func(ctx context.Context) (bool, error) {
 			crd, err := extClient.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crdName, metav1.GetOptions{})
 			switch {
 			case errors.IsNotFound(err):
-				if !logged {
+				if !waiting {
 					klog.Infof("waiting for the %s CRD", crdName)
-					logged = true
+					waiting = true
 				}
 				return false, nil
-			case err != nil:
-				klog.Infof("cannot read the %s CRD (%v); watching it at %s regardless", crdName, err, version)
+			case errors.IsForbidden(err) || errors.IsUnauthorized(err):
+				klog.Infof("not allowed to read the %s CRD (%v); watching it at %s regardless", crdName, err, version)
 				served = true
 				return true, nil
+			case err != nil:
+				if !failing {
+					klog.Infof("cannot read the %s CRD yet (%v); asking again", crdName, err)
+					failing = true
+				}
+				return false, nil
 			}
 
 			served = crdServes(crd, version)
