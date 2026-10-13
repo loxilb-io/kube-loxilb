@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"sort"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
@@ -121,6 +122,28 @@ func (m *InferencePoolManager) clearStatus(ctx context.Context, pool *infv1.Infe
 }
 
 func (m *InferencePoolManager) writeParents(ctx context.Context, pool *infv1.InferencePool, ours []infv1.ParentStatus) error {
+	err := m.putParents(ctx, pool, ours)
+	if apierrors.IsConflict(err) {
+		// The informer cache had not caught up with an earlier write to this
+		// pool - typically this manager's own, a moment ago, when a Service
+		// event queues the pool again right after it. Ask the API server once
+		// and try once more; a second conflict goes back to the queue.
+		fresh, getErr := m.infClient.InferenceV1().InferencePools(pool.Namespace).Get(ctx, pool.Name, metav1.GetOptions{})
+		if getErr == nil {
+			err = m.putParents(ctx, fresh, recarry(fresh, ours))
+		}
+	}
+	if err != nil {
+		klog.Errorf("InferencePool %s/%s: unable to update status: %v", pool.Namespace, pool.Name, err)
+		return err
+	}
+
+	return nil
+}
+
+// putParents - one status write of ours merged into pool, skipped when it
+// would change nothing.
+func (m *InferencePoolManager) putParents(ctx context.Context, pool *infv1.InferencePool, ours []infv1.ParentStatus) error {
 	merged := mergeParents(pool.Status.Parents, ours)
 	// No parents at all reads back as nil - the field is omitempty - while
 	// mergeParents builds an empty slice; both mean the same status.
@@ -131,13 +154,22 @@ func (m *InferencePoolManager) writeParents(ctx context.Context, pool *infv1.Inf
 	updated := pool.DeepCopy()
 	updated.Status.Parents = merged
 
-	if _, err := m.infClient.InferenceV1().InferencePools(updated.Namespace).
-		UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
-		klog.Errorf("InferencePool %s/%s: unable to update status: %v", pool.Namespace, pool.Name, err)
-		return err
-	}
+	_, err := m.infClient.InferenceV1().InferencePools(updated.Namespace).
+		UpdateStatus(ctx, updated, metav1.UpdateOptions{})
+	return err
+}
 
-	return nil
+// recarry - ours with the transition times worked out again against what the
+// API server holds, rather than against the stale copy they were first
+// computed from.
+func recarry(fresh *infv1.InferencePool, ours []infv1.ParentStatus) []infv1.ParentStatus {
+	out := make([]infv1.ParentStatus, len(ours))
+	for i, parent := range ours {
+		parent.Conditions = carryTransitionTimes(ourConditions(fresh, parent.ParentRef),
+			append([]metav1.Condition(nil), parent.Conditions...))
+		out[i] = parent
+	}
+	return out
 }
 
 // mergeParents - replace the entries this controller owns, keep the rest.
