@@ -56,7 +56,8 @@ type GatewayManager struct {
 	gatewayLister       sigslister.GatewayLister
 	gatewayListerSynced cache.InformerSynced
 	// httpRouteLister - to see which listeners an InferencePool has claimed.
-	httpRouteLister sigslister.HTTPRouteLister
+	httpRouteLister       sigslister.HTTPRouteLister
+	httpRouteListerSynced cache.InformerSynced
 
 	queue workqueue.RateLimitingInterface
 }
@@ -79,6 +80,9 @@ func NewGatewayManager(
 		gatewayLister:       gatewayInformer.Lister(),
 		gatewayListerSynced: gatewayInformer.Informer().HasSynced,
 		httpRouteLister:     httpRouteInformer.Lister(),
+		// Waited for in Run: a listener reads as unclaimed until the routes
+		// are in the cache, and an ingress service would take its port.
+		httpRouteListerSynced: httpRouteInformer.Informer().HasSynced,
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gateway"),
 	}
@@ -166,10 +170,17 @@ func (gm *GatewayManager) Run(stopCh <-chan struct{}) {
 	klog.Infof("Starting %s", gwMgrName)
 	defer klog.Infof("Shutting down %s", gwMgrName)
 
+	// The routes have to be in the cache before any Gateway is handled. An
+	// empty route cache makes every listener look unclaimed, and the ingress
+	// service then takes the port of a listener an InferencePool is about to
+	// use. A Gateway applied before its routes still has that moment; the
+	// load-balancer manager retries the pool's Service until the port is
+	// released instead of failing on it.
 	if !cache.WaitForNamedCacheSync(
 		gwMgrName,
 		stopCh,
-		gm.gatewayListerSynced) {
+		gm.gatewayListerSynced,
+		gm.httpRouteListerSynced) {
 		return
 	}
 
