@@ -230,7 +230,10 @@ accepted, reads back correctly, and answers every request with `model_unavailabl
 **The pool takes the listener.** A Gateway with HTTP/HTTPS listeners normally also gets a
 `<gateway>-ingress-service` pointing at the loxilb-ingress pods. A listener that an InferencePool
 is attached to is left out of that Service - both would otherwise claim the same address and port,
-and which rule the data plane binds would be a race.
+and which rule the data plane binds would be a race. When a Gateway is applied together with its
+routes, the ingress service can hold the port for a moment before the route is seen; the pool's
+Service then waits, with an `ExternalIPUnavailable` event naming the holder, and gets the port once
+the ingress service lets it go.
 
 **CRDs.** Install the Inference Extension CRDs separately; kube-loxilb waits for
 `inferencepools.inference.networking.k8s.io` and does nothing until it exists. Pools that omit
@@ -391,6 +394,7 @@ Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the obj
 | `EndpointPickerUnsupported` | Warning | The rule names an Endpoint Picker and a gateway instance does not list `"epp"` in its version features. A `FailClose` rule is refused there; a `FailOpen` rule is served there without the picker. |
 | `KvExactTokenizerRequired` | Normal | `kv-exact-mode` is on; names the tokenizer path loxilb will read. |
 | `LoxiLBRejected` | Warning | loxilb itself refused the value - an unknown cipher, an unregistered certificate id, and so on. |
+| `ExternalIPUnavailable` | Warning | No external address and port could be allocated yet: another Service holds that port on the pool's address, or the pool is out of addresses. Names the holder when there is one; the Service is retried until it is released. |
 | `GatewayArgsDowngraded` | Warning | A gateway-only service setting was dropped for an upstream peer in the pool; names which. |
 | `ProbeFieldsDowngraded` | Warning | Health-monitor fields dropped for an upstream peer; the probe path is carried across to `probereq`. |
 | `ProbeModeChanged` | Warning | Both the new health monitor and `proberesp` are configured; names what will actually be checked. |
