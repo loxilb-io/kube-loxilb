@@ -734,6 +734,9 @@ const (
 	// ReasonGPUMonitoringDisabled - the rule selects GPU-aware routing on a
 	// loxilb instance where that mode is not armed.
 	ReasonGPUMonitoringDisabled = "GPUMonitoringDisabled"
+	// ReasonExternalIPUnavailable - no external address and port could be
+	// allocated for the Service yet; it is retried.
+	ReasonExternalIPUnavailable = "ExternalIPUnavailable"
 	// ReasonEndpointPickerUnsupported - the rule names an Endpoint Picker and a
 	// gateway peer does not support it: refused there (FailClose) or served
 	// without it (FailOpen).

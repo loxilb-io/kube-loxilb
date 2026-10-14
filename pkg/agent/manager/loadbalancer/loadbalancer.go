@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -907,6 +908,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}()
 
 	if err != nil {
+		if errors.Is(err, ErrExternalIPUnavailable) {
+			m.recordServiceWarning(svc, ReasonExternalIPUnavailable, err.Error())
+		}
 		return errors.Wrap(err, "getIngressSvcPairs return error")
 	}
 
@@ -1096,6 +1100,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, m.lbCache[cacheKey])
 		if err != nil {
 			retIPAMOnErr = true
+			if errors.Is(err, ErrExternalIPUnavailable) {
+				m.recordServiceWarning(svc, ReasonExternalIPUnavailable, err.Error())
+			}
 			return errors.Wrap(err, "getIngressSecSvcPairs return error")
 		}
 
@@ -2063,10 +2070,14 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 			if !poolReserved {
 				newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 				if newIP == nil {
-					errMsg := fmt.Sprintf("failed to generate external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
-					klog.Error(errMsg)
-					klog.Exit("kube-loxilb cant run optimally anymore")
-					return nil, errors.New(errMsg), hasExtIPAllocated
+					// Not fatal: with one shared address, a port is often
+					// held for a moment by a Service on its way out - an
+					// ingress service giving a listener up to an
+					// InferencePool, say. The pairs gathered so far go back
+					// to the caller, which returns what this call allocated.
+					err := m.externalIPUnavailable(ipPool, cacheKey, portNum, proto)
+					klog.Warning(err.Error())
+					return sPairs, err, hasExtIPAllocated
 				}
 
 				klog.V(4).Infof("getIngressSvcPairs: service %s :%s generated new externalIP: %s", cacheKey, identIPAM, newIP.String())
@@ -2088,6 +2099,43 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 		}
 	}
 	return sPairs, nil, hasExtIPAllocated
+}
+
+// ErrExternalIPUnavailable - no address could be allocated for a port, either
+// because another Service holds it or because the pool is exhausted. The
+// Service is retried; a holder on its way out releases it.
+var ErrExternalIPUnavailable = errors.New("external IP unavailable")
+
+// externalIPUnavailable - the error for a failed allocation, naming the
+// Services that hold the port on an address of the pool when there are any.
+func (m *Manager) externalIPUnavailable(pool *ippool.IPPool, cacheKey string, port int32, proto string) error {
+	holders := m.externalIPHolders(pool, cacheKey, port, proto)
+	if len(holders) == 0 {
+		return fmt.Errorf("no external IP for %s %d/%s: pool %s has no address left for it; retrying: %w",
+			cacheKey, port, proto, pool.CIDR, ErrExternalIPUnavailable)
+	}
+	return fmt.Errorf("no external IP for %s %d/%s: pool %s gives that port to %s; retrying until it is released: %w",
+		cacheKey, port, proto, pool.CIDR, strings.Join(holders, ", "), ErrExternalIPUnavailable)
+}
+
+// externalIPHolders - the other Services this manager has given port/proto on
+// an address of pool.
+func (m *Manager) externalIPHolders(pool *ippool.IPPool, self string, port int32, proto string) []string {
+	var holders []string
+	for key, entry := range m.lbCache {
+		if key == self {
+			continue
+		}
+		for _, sp := range entry.LbServicePairs {
+			ip := net.ParseIP(sp.ExternalIP)
+			if sp.Port == uint16(port) && sp.Protocol == proto && ip != nil && pool.Contains(ip) {
+				holders = append(holders, key)
+				break
+			}
+		}
+	}
+	sort.Strings(holders)
+	return holders
 }
 
 // returnSecondaryIPs
@@ -2133,10 +2181,10 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 						rpool := sipPools[j]
 						rpool.ReturnIPAddr(sPairs[j].IPString, sPairs[j].IdentIPAM)
 					}
-					errMsg := fmt.Sprintf("failed to generate secondary external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
-					klog.Error(errMsg)
-					klog.Exit("kube-loxilb cant run optimally anymore")
-					return nil, errors.New(errMsg)
+					err := fmt.Errorf("no secondary external IP for %s %d/%s in pool %s (ident %q); retrying: %w",
+						cacheKey, portNum, proto, pool.CIDR, identIPAM, ErrExternalIPUnavailable)
+					klog.Warning(err.Error())
+					return nil, err
 				}
 				newsp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}
 				sPairs = append(sPairs, newsp)
