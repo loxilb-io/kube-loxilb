@@ -92,6 +92,20 @@ func TestIsClientError(t *testing.T) {
 	}
 }
 
+func TestIsNotFound(t *testing.T) {
+	if !IsNotFound(fmt.Errorf("wrapped: %w", &APIError{StatusCode: http.StatusNotFound, Message: "lbrule not-exists error"})) {
+		t.Error("a wrapped 404 is not reported as not found")
+	}
+	for _, code := range []int{http.StatusBadRequest, http.StatusConflict, http.StatusInternalServerError} {
+		if IsNotFound(&APIError{StatusCode: code, Message: "lbrule not-exists error"}) {
+			t.Errorf("HTTP %d read as not found because of its wording", code)
+		}
+	}
+	if IsNotFound(errors.New("connection refused")) {
+		t.Error("a transport error is not a 404")
+	}
+}
+
 // The reason loxilb gave has to survive to the caller, since that is the whole
 // point of reporting it.
 func TestAPIErrorKeepsTheReason(t *testing.T) {

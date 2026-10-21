@@ -42,6 +42,13 @@ type fakeLoxiLB struct {
 	createStatus int
 	createResult string
 
+	// deleteStatus, when set, answers a load-balancer DELETE with this status
+	// and deleteResult instead of success; deletes counts them. Guarded by mu,
+	// so a test can change the answer between attempts.
+	deleteStatus int
+	deleteResult string
+	deletes      int
+
 	mu     sync.Mutex
 	bodies []string
 }
@@ -64,6 +71,20 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(f.gpuStatus)
+
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/netlox/v1/config/loadbalancer/"):
+			f.mu.Lock()
+			f.deletes++
+			status, result := f.deleteStatus, f.deleteResult
+			f.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			if status != 0 {
+				w.WriteHeader(status)
+				_, _ = fmt.Fprintf(w, `{"result":%q}`, result)
+				return
+			}
+			_, _ = w.Write([]byte(`{"result":"Success"}`))
 
 		case strings.HasSuffix(r.URL.Path, "/status") && strings.Contains(r.URL.Path, "/config/loadbalancer/"):
 			f.mu.Lock()
