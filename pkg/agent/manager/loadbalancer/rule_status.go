@@ -140,15 +140,26 @@ func (m *Manager) collectRuleStatus(ctx context.Context, svc *corev1.Service, en
 		var peers []string
 
 		for _, c := range gateways {
+			// A peer kept from the rule on purpose, or still waiting for it, is
+			// not missing anything: it never had the rule.
+			if st, ok := sp.peers[c.Host]; ok && st.phase != peerInstalled {
+				continue
+			}
+
 			status, err := c.LoadBalancer().Status(ctx, sp.ExternalIP, sp.Port, sp.Protocol)
 			if err != nil {
 				if api.StatusCodeOf(err) == http.StatusNotFound {
 					// The rule is gone from that peer. Not degraded service -
-					// a missing rule, which reconciliation has to put back.
+					// a missing rule, which the retry later in this sync puts
+					// back.
 					message := fmt.Sprintf("loxilb-lb(%s) has no rule for %s:%d/%s any more",
 						c.Host, sp.ExternalIP, sp.Port, sp.Protocol)
 					klog.Errorf("service %s/%s: %s", svc.Namespace, svc.Name, message)
 					m.recordServiceWarning(svc, ReasonRuleMissing, message)
+					if sp.peers == nil {
+						sp.peers = make(map[string]peerState)
+					}
+					sp.peers[c.Host] = peerState{phase: peerPending, err: err}
 					continue
 				}
 				klog.V(4).Infof("loxilb-lb(%s): rule status unreadable for %s:%d/%s: %v",

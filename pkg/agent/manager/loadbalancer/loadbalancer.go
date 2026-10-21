@@ -188,6 +188,10 @@ type LbServicePairEntry struct {
 	InRange     bool
 	IdentIPAM   string
 	LbModelList []api.LoadBalancerModel
+
+	// peers - each peer's standing with these rules, by peer host. A peer
+	// without an entry has not been tried since it came (back) up.
+	peers map[string]peerState
 }
 
 type LbCacheEntry struct {
@@ -409,7 +413,11 @@ func (m *Manager) processNextWorkItem() bool {
 		m.queue.Forget(key)
 	} else {
 		m.queue.AddRateLimited(key)
-		klog.Errorf("Error syncing LoadBalancer %s, requeuing. Error: %v", key, err)
+		if errors.Is(err, errPeersPending) {
+			klog.V(2).Infof("LoadBalancer %s: %v, retrying", key, err)
+		} else {
+			klog.Errorf("Error syncing LoadBalancer %s, requeuing. Error: %v", key, err)
+		}
 	}
 	return true
 }
@@ -1152,6 +1160,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			retIPAMOnErr = true
 		}
 		ingSvcPairs = nil
+
+		// Nothing about the Service changed, but a peer may still lack its
+		// rules: refused, failed, missing, or back up since the last sync.
+		if m.retryPeers(cacheKey) {
+			return errPeersPending
+		}
 		return nil
 	} else {
 		if needDelete {
@@ -1191,8 +1205,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// Get private IP for the service (respects staticIP annotation)
 	privateIPStr := m.getServicePrivateIP(svc)
 
+	pending := false
 	for _, ingSvcPair := range ingSvcPairs {
-		var errChList []chan error
 		lbArgs := LbArgs{
 			externalIP:          ingSvcPair.IPString,
 			livenessCheck:       m.lbCache[cacheKey].ActCheck,
@@ -1240,20 +1254,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			return errors.Wrap(err, "makeLoxiLoadBalancerModel return error")
 		}
 
-		for _, client := range m.LoxiClients.Clients {
-			ch := make(chan error)
-			go func(c *api.LoxiClient, h chan error) {
-				err := m.installLB(c, lbModel, m.lbCache[cacheKey].PrefLocal)
-				h <- err
-			}(client, ch)
-
-			errChList = append(errChList, ch)
-		}
+		clients := m.LoxiClients.Clients
+		errs := m.installOnPeers(clients, lbModel, m.lbCache[cacheKey].PrefLocal)
 
 		var loxilbAPIErr error
 		errCount := 0
-		for _, errCh := range errChList {
-			err := <-errCh
+		for _, err := range errs {
 			if err != nil {
 				loxilbAPIErr = err
 				errCount++
@@ -1270,9 +1276,16 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			m.recordServiceWarning(svc, ReasonLoxiLBRejected, loxilbAPIErr.Error())
 		}
 
-		if loxilbAPIErr != nil && errCount >= len(m.LoxiClients.Clients) {
+		if loxilbAPIErr != nil && errCount >= len(clients) {
 			retIPAMOnErr = true
 			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
+		}
+
+		// Some peer has it, so the Service is served and keeps its address.
+		// The peers that do not are recorded and tried again on their own.
+		sp.peers = peerStatesOf(clients, errs)
+		if peersPending(clients, sp.peers) {
+			pending = true
 		}
 
 		sp.LbModelList = append(sp.LbModelList, lbModel)
@@ -1289,6 +1302,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		time.Sleep(1 * time.Second)
 	}
 
+	if pending {
+		return errPeersPending
+	}
 	return nil
 }
 
