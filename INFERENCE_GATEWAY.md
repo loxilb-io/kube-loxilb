@@ -32,6 +32,7 @@ tooling in the cluster, or when an Endpoint Picker (for example llm-d's) should 
   - [Prefill/decode annotations](#prefilldecode-annotations)
   - [Endpoint Picker annotations](#endpoint-picker-annotations)
   - [Credential annotations](#credential-annotations)
+  - [JWT auth profiles](#jwt-auth-profiles)
   - [Endpoint selection](#endpoint-selection)
   - [Annotations that are not inference-specific](#annotations-that-are-not-inference-specific)
 - [Requirements outside Kubernetes](#requirements-outside-kubernetes)
@@ -334,7 +335,7 @@ the InferencePool; they are copied onto the Service it generates.
 | Annotation | Description |
 | ---------- | ----------- |
 | <b>loxilb.io/api-key-auth</b> | `"disabled"`, `"required"`, `"jwt"` or `"apikey-or-jwt"`. `required` validates `X-Api-Key` against loxilb's key store; `jwt` validates an `Authorization: Bearer` token against the profile named below; `apikey-or-jwt` accepts either, and a present `X-Api-Key` decides alone. `disabled` checks nothing but still strips `X-Api-Key`, which is not the same as leaving the annotation out. Requires fullproxy. |
-| <b>loxilb.io/jwt-auth-profile</b> | Name of the JWT auth profile that checks the token, at most 63 characters. Required by `jwt` and `apikey-or-jwt`, refused with any other mode. Register the profile on every loxilb instance (`POST /netlox/v1/config/ai/jwtauthprofile`) first: loxilb refuses a rule naming a profile it does not have (`LoxiLBRejected`), and kube-loxilb keeps retrying that instance until it has the profile. |
+| <b>loxilb.io/jwt-auth-profile</b> | Name of the JWT auth profile that checks the token, at most 63 characters. Required by `jwt` and `apikey-or-jwt`, refused with any other mode. Create it as a `JWTAuthProfile` (see [JWT auth profiles](#jwt-auth-profiles)); the rule goes to each loxilb instance once the profile is there. |
 
 loxilb checks the credential once per listener - address, port and protocol - before it looks at
 host, path or model, so every Service sharing a listener must declare the same pair; loxilb refuses
@@ -346,6 +347,48 @@ count as different. A gateway instance that does not list
 `"api_key_auth"` in its version features (and, for `jwt` and `apikey-or-jwt`, `"jwt_auth_profile"`)
 would drop the fields and serve the rule unauthenticated, so the rule is not sent there
 (`AuthNotSupported`).
+
+### JWT auth profiles
+
+A profile tells loxilb how to check a Bearer token: which issuer it must come from, where its signing
+keys are, which audiences it must carry, and which claims hold the tenant, the user, the roles and the
+models it may use. loxilb keeps profiles per instance, so kube-loxilb owns them as a cluster-scoped
+`JWTAuthProfile` and registers each one on every loxilb-inference-gateway instance that lists
+`"jwt_auth_profile"` in its version features - including an instance added later, or one restarted
+without its snapshot. Apply the CRD once:
+
+```bash
+kubectl apply -f manifest/crds/jwt-auth-profile.yaml
+```
+
+```yaml
+apiVersion: jwtauthprofile.loxilb.io/v1
+kind: JWTAuthProfile
+metadata:
+  name: kc                      # the value of loxilb.io/jwt-auth-profile, at most 63 characters
+spec:
+  issuer: https://keycloak.example/realms/inference   # also the base of OIDC discovery
+  audiences: [inference-api]
+  rolesClaim: realm_access.roles                       # the defaults match Keycloak
+  modelRolePrefix: "model:"
+```
+
+Every field of loxilb's profile is there, under its camelCase name (`jwksUrl`, `algs`, `leewaySec`,
+`refreshSec`, `tenantClaim`, `defaultTenant`, `userClaim`, `usernameClaim`, `modelsClaim`,
+`modelAuthz`, `forwardIdentity`, `authorizationPassthrough`, `priorityClass`); unset fields take
+loxilb's defaults. `kubectl get jwtauthprofiles` shows whether a profile is `Programmed` on every such
+instance, and `status.peers` shows each instance's answer.
+
+A rule naming a profile is held back from an instance until the profile is there
+(`ProfileNotProgrammed`), and from every instance while no `JWTAuthProfile` of that name exists
+(`ProfileNotFound`); it goes out on its own once the reason is gone. Without the CRD installed, rules
+go as they are and loxilb answers for the profile, which then has to be registered on each instance
+by hand.
+
+Changing a profile reloads its signing keys on every instance at once; Bearer requests checked
+against it answer 503 until they are fetched, so change it when traffic allows. A profile is deleted
+from the instances only once no rule names it: delete the routes and pools first. Until then the
+delete waits (`ProfileInUse`).
 
 ### Endpoint selection
 
@@ -408,7 +451,8 @@ If the file is missing, loxilb logs `kv-router: tokenizer not available` once an
 Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the object as an event, so
 `kubectl describe` is the first place to look. On a Service generated from an InferencePool, the
 warnings about the pool's own configuration - `InvalidInferenceConfig`, `AuthNotSupported`,
-`ListenerAuthConflict`, `LoxiLBRejected` - are repeated on the pool, naming the Service:
+`ListenerAuthConflict`, `ProfileNotFound`, `ProfileNotProgrammed`, `LoxiLBRejected` - are repeated on
+the pool, naming the Service. A `JWTAuthProfile` carries its own, listed last.
 
 | Reason | Type | Meaning |
 | ------ | ---- | ------- |
@@ -416,6 +460,8 @@ warnings about the pool's own configuration - `InvalidInferenceConfig`, `AuthNot
 | `InvalidInferenceConfig` | Warning | An annotation did not parse, or a combination is impossible (e.g. `pd-disagg` without pod endpoints). |
 | `GPUMonitoringDisabled` | Warning | `epselect: gpuaware` on an instance where the GPU routing mode is not armed. Re-checked on every reconcile. |
 | `EndpointPickerUnsupported` | Warning | The rule names an Endpoint Picker and a gateway instance does not list `"epp"` in its version features. A `FailClose` rule is refused there; a `FailOpen` rule is served there without the picker. |
+| `ProfileNotFound` | Warning | The rule names a JWT auth profile that has no `JWTAuthProfile`. It is sent nowhere until one is created. |
+| `ProfileNotProgrammed` | Warning | The JWT auth profile is not on that loxilb instance yet. The rule goes there once it is. |
 | `ListenerAuthConflict` | Warning | The Service shares a listener with an older one that declares another `api-key-auth` or `jwt-auth-profile`. It is not served there until they agree. |
 | `AuthNotSupported` | Warning | The rule declares `api-key-auth` and a gateway instance does not list the matching version features, or stores the rule without the policy when it is read back. The rule is refused, or removed, there rather than served unauthenticated. |
 | `KvExactTokenizerRequired` | Normal | `kv-exact-mode` is on; names the tokenizer path loxilb will read. |
@@ -426,6 +472,8 @@ warnings about the pool's own configuration - `InvalidInferenceConfig`, `AuthNot
 | `ProbeModeChanged` | Warning | Both the new health monitor and `proberesp` are configured; names what will actually be checked. |
 | `RuleMissing` | Warning | A loxilb instance no longer has a rule kube-loxilb programmed there. It is put back in the same sync. |
 | `RuleUnhealthy` / `RuleHealthy` | Warning / Normal | loxilb's own view of the rule changed. Needs `loxilb.io/liveness: "yes"`. |
+| `ProfileRefused` (on a `JWTAuthProfile`) | Warning | A loxilb instance refused the profile and said why; it is tried again. |
+| `ProfileInUse` (on a `JWTAuthProfile`) | Warning | The profile is being deleted and a rule still names it; the delete waits for the rule to go. |
 
 With more than one loxilb instance, a rule that one instance refuses or fails is not given up on. The
 Service is served by the instances that took it, and the others are tried again with backoff, at most
