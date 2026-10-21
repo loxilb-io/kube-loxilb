@@ -177,7 +177,7 @@ A rule fanned out to several instances is reported at its worst: if one instance
 <a name="inference-gateway-annotations"></a>
 * Inference gateway annotations:
 
-A further set of annotations drives [loxilb-inference-gateway](https://github.com/loxilb-io/loxilb-inference-gateway) as an LLM-serving load balancer: model-name routing, SSE-aware streaming, prefix-cache aware and GPU-aware endpoint selection, KV-cache exact routing, and prefill/decode disaggregation. They are the `loxilb.io/model-name`, `sse-mode`, `max-stream-duration`, `backend-keepalive-interval`, `session-header-name`, `trace-type`, `cb-enable`, `chwbl-*`, `kv-*`, `pd-*` and `epp-*` annotations, plus the `chwbl`, `gpuaware` and `wrr-hash` values of `loxilb.io/epselect`.
+A further set of annotations drives [loxilb-inference-gateway](https://github.com/loxilb-io/loxilb-inference-gateway) as an LLM-serving load balancer: model-name routing, SSE-aware streaming, prefix-cache aware and GPU-aware endpoint selection, KV-cache exact routing, prefill/decode disaggregation, and API-key or JWT credential checks. They are the `loxilb.io/model-name`, `sse-mode`, `max-stream-duration`, `backend-keepalive-interval`, `session-header-name`, `trace-type`, `cb-enable`, `chwbl-*`, `kv-*`, `pd-*`, `epp-*`, `api-key-auth` and `jwt-auth-profile` annotations, plus the `chwbl`, `gpuaware` and `wrr-hash` values of `loxilb.io/epselect`.
 
 All of them are documented, with examples for both the Service and the Gateway API way of using them, in the <b>[Inference gateway guide](INFERENCE_GATEWAY.md)</b>.
 
