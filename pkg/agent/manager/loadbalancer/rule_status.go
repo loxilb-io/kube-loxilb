@@ -124,9 +124,14 @@ type ruleStatus struct {
 // Plain upstream peers are skipped rather than queried: the sub-resource does
 // not exist there and a 404 must not be read as ill health.
 func (m *Manager) collectRuleStatus(ctx context.Context, svc *corev1.Service, entry *LbCacheEntry) []ruleStatus {
+	// A peer the health check found down is not asked. One that drops the
+	// request instead of refusing it would hold this sync - and, with one
+	// worker, every other Service's - for the whole timeout, every time. Its
+	// rules are not missing anything worth reporting either: when it is back
+	// they are all installed on it again.
 	var gateways []*api.LoxiClient
 	for _, c := range m.LoxiClients.Clients {
-		if c.IsInferenceGateway() {
+		if c.IsInferenceGateway() && c.IsAlive {
 			gateways = append(gateways, c)
 		}
 	}
