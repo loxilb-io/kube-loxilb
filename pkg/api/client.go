@@ -383,6 +383,10 @@ func (l *LoxiClient) GPU() *GPUAPI {
 	return newGPUAPI(l.GetRESTClient())
 }
 
+func (l *LoxiClient) JWTAuthProfile() *JWTAuthProfileAPI {
+	return newJWTAuthProfileAPI(l.GetRESTClient())
+}
+
 func (l *LoxiClient) Version() *VersionAPI {
 	return newVersionAPI(l.GetRESTClient())
 }
