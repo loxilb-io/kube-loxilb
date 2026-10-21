@@ -31,6 +31,7 @@ tooling in the cluster, or when an Endpoint Picker (for example llm-d's) should 
   - [Inference gateway annotations](#inference-gateway-annotations)
   - [Prefill/decode annotations](#prefilldecode-annotations)
   - [Endpoint Picker annotations](#endpoint-picker-annotations)
+  - [Credential annotations](#credential-annotations)
   - [Endpoint selection](#endpoint-selection)
   - [Annotations that are not inference-specific](#annotations-that-are-not-inference-specific)
 - [Requirements outside Kubernetes](#requirements-outside-kubernetes)
@@ -325,6 +326,23 @@ annotations are the whole configuration. Without `epp-endpoint`, the other three
 | <b>loxilb.io/epp-timeout-ms</b> | How long a request waits for the picker's decision before the failure mode applies, 0..600000. Default 3000. A picker that queues requests under load (llm-d flow control) needs more. |
 | <b>loxilb.io/epp-plaintext</b> | `"true"` connects to the picker without TLS. The default is TLS without certificate verification, matching the self-signed certificate the llm-d EPP serves. |
 
+### Credential annotations
+
+These make loxilb check a credential before a request reaches a backend. On a pool, write them on
+the InferencePool; they are copied onto the Service it generates.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/api-key-auth</b> | `"disabled"`, `"required"`, `"jwt"` or `"apikey-or-jwt"`. `required` validates `X-Api-Key` against loxilb's key store; `jwt` validates an `Authorization: Bearer` token against the profile named below; `apikey-or-jwt` accepts either, and a present `X-Api-Key` decides alone. `disabled` checks nothing but still strips `X-Api-Key`, which is not the same as leaving the annotation out. Requires fullproxy. |
+| <b>loxilb.io/jwt-auth-profile</b> | Name of the JWT auth profile that checks the token, at most 63 characters. Required by `jwt` and `apikey-or-jwt`, refused with any other mode. Register the profile on every loxilb instance (`POST /netlox/v1/config/ai/jwtauthprofile`) first: loxilb refuses a rule naming a profile it does not have (`LoxiLBRejected`). |
+
+loxilb checks the credential once per listener - address, port and protocol - before it looks at
+host, path or model, so every Service sharing a listener must declare the same pair; loxilb refuses
+a rule that disagrees with the ones already there. A gateway instance that does not list
+`"api_key_auth"` in its version features (and, for `jwt` and `apikey-or-jwt`, `"jwt_auth_profile"`)
+would drop the fields and serve the rule unauthenticated, so the rule is not sent there
+(`AuthNotSupported`).
+
 ### Endpoint selection
 
 `loxilb.io/epselect` is not new, but three of its values are: `chwbl`, `gpuaware` and `wrr-hash` exist
@@ -392,8 +410,9 @@ Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the obj
 | `InvalidInferenceConfig` | Warning | An annotation did not parse, or a combination is impossible (e.g. `pd-disagg` without pod endpoints). |
 | `GPUMonitoringDisabled` | Warning | `epselect: gpuaware` on an instance where the GPU routing mode is not armed. Re-checked on every reconcile. |
 | `EndpointPickerUnsupported` | Warning | The rule names an Endpoint Picker and a gateway instance does not list `"epp"` in its version features. A `FailClose` rule is refused there; a `FailOpen` rule is served there without the picker. |
+| `AuthNotSupported` | Warning | The rule declares `api-key-auth` and a gateway instance does not list the matching version features. The rule is refused there rather than served unauthenticated. |
 | `KvExactTokenizerRequired` | Normal | `kv-exact-mode` is on; names the tokenizer path loxilb will read. |
-| `LoxiLBRejected` | Warning | loxilb itself refused the value - an unknown cipher, an unregistered certificate id, and so on. |
+| `LoxiLBRejected` | Warning | loxilb itself refused the value - an unknown cipher, an unregistered certificate id, a JWT auth profile the instance does not have, and so on. |
 | `ExternalIPUnavailable` | Warning | No external address and port could be allocated yet: another Service holds that port on the pool's address, or the pool is out of addresses. Names the holder when there is one; the Service is retried until it is released. |
 | `GatewayArgsDowngraded` | Warning | A gateway-only service setting was dropped for an upstream peer in the pool; names which. |
 | `ProbeFieldsDowngraded` | Warning | Health-monitor fields dropped for an upstream peer; the probe path is carried across to `probereq`. |
