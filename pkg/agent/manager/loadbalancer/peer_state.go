@@ -207,6 +207,8 @@ func sameError(a, b error) bool {
 // the lifecycle goroutine and post the rules from there, and to restart
 // kube-loxilb when the first of them could not be installed.
 func (m *Manager) reinstallLoxiLbRules(aliveClient *api.LoxiClient) {
+	m.callPeerBackHook(aliveClient)
+
 	m.lbCacheMu.Lock()
 	keys := make([]string, 0, len(m.lbCache))
 	for cacheKey, entry := range m.lbCache {

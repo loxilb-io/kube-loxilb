@@ -153,6 +153,12 @@ type Manager struct {
 	// yielding - Services kept off their listeners by an older one declaring
 	// another credential policy, by cache key, to the key of that one.
 	yielding map[string]string
+
+	// jwtProfiles - a jwtProfilesHolder, once JWTAuthProfiles are managed;
+	// see SetJWTProfiles.
+	jwtProfiles atomic.Value
+	// peerBackHook - a peerBackHook; see SetPeerBackHook.
+	peerBackHook atomic.Value
 }
 
 type LbArgs struct {
@@ -1582,6 +1588,10 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 	// silently.
 	if c.IsInferenceGateway() {
 		if err = checkCredentialPolicy(c, model); err != nil {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
+		if err = m.checkProfile(c, model); err != nil {
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 			return err
 		}

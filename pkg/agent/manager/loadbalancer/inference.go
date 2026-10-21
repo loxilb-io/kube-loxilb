@@ -513,6 +513,10 @@ func refusalReason(err error) string {
 		return ReasonAuthNotSupported
 	case errors.Is(err, ErrListenerAuthConflict):
 		return ReasonListenerAuthConflict
+	case errors.Is(err, ErrProfileNotFound):
+		return ReasonProfileNotFound
+	case errors.Is(err, ErrProfileNotProgrammed):
+		return ReasonProfileNotProgrammed
 	case errors.Is(err, ErrEndpointPickerUnsupported):
 		return ReasonEndpointPickerUnsupported
 	case errors.Is(err, ErrGPUMonitoringDisabled):
@@ -813,6 +817,12 @@ const (
 	// ReasonListenerAuthConflict - the Service shares a listener with an older
 	// one that declares another credential policy, and is not served there.
 	ReasonListenerAuthConflict = "ListenerAuthConflict"
+	// ReasonProfileNotFound - the rule names a JWT auth profile that has no
+	// JWTAuthProfile; it is sent nowhere until one is created.
+	ReasonProfileNotFound = "ProfileNotFound"
+	// ReasonProfileNotProgrammed - the JWT auth profile is not on a peer yet;
+	// the rule goes there once it is.
+	ReasonProfileNotProgrammed = "ProfileNotProgrammed"
 	// ReasonInvalidProbeConfig - the health-monitor annotations are malformed.
 	ReasonInvalidProbeConfig = "InvalidProbeConfig"
 	// ReasonProbeModeChanged - the probe annotations retire a proberesp check

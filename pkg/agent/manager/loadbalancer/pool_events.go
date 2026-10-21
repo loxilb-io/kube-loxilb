@@ -37,6 +37,8 @@ var poolWarningReasons = map[string]bool{
 	ReasonAuthNotSupported:       true,
 	ReasonLoxiLBRejected:         true,
 	ReasonListenerAuthConflict:   true,
+	ReasonProfileNotFound:        true,
+	ReasonProfileNotProgrammed:   true,
 }
 
 // SetInferencePoolLister - the InferencePools, for the Services generated from
