@@ -46,6 +46,16 @@ def drop_rules(path):
                 str(sa.get("protocol")) == key.get("protocol")):
             del RULES[rid]
 
+def any_rule_at(path):
+    parts = path.split("/")
+    key = {}
+    for i in range(len(parts) - 1):
+        if parts[i] in ("externalipaddress", "port", "protocol"):
+            key[parts[i]] = parts[i + 1]
+    return any(str(sa.get("externalIP")) == key.get("externalipaddress") and
+               str(sa.get("port")) == key.get("port") and
+               str(sa.get("protocol")) == key.get("protocol") for sa in RULES.values())
+
 def record(method, path, body):
     with open(REC, "a") as f:
         f.write(json.dumps({"ts": round(time.time(), 3), "method": method,
@@ -85,6 +95,11 @@ class H(BaseHTTPRequestHandler):
         if p.endswith("/config/cistate/all"):
             return self._send(200, {"Attr": []})
         if "/config/loadbalancer/status" in p or p.endswith("/status"):
+            # A rule this fake holds answers like a gateway's rule without a
+            # health monitor; one it does not hold is missing. Answering 404
+            # for every rule read as each rule vanishing on every sync.
+            if any_rule_at(p):
+                return self._send(200, {"adminStateUp": True, "operatingStatus": "NO_MONITOR"})
             return self._send(404, {"result": "not-exists"})
         if "/config/loadbalancer/id/" in p:
             sa = RULES.get(p.rsplit("/", 1)[-1])
