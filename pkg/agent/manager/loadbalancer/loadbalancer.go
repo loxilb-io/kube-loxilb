@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -144,6 +145,10 @@ type Manager struct {
 	// peer's standing. Unguarded, the two met in "concurrent map iteration and
 	// map write", which ends the process.
 	lbCacheMu sync.Mutex
+
+	// poolLister - an infv1lister.InferencePoolLister, stored once the
+	// inference extension is on; see SetInferencePoolLister.
+	poolLister atomic.Value
 }
 
 type LbArgs struct {

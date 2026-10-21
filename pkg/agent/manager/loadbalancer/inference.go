@@ -847,6 +847,7 @@ func (m *Manager) recordServiceEvent(svc *corev1.Service, eventType, reason, mes
 // recordServiceWarning - report a rejected configuration.
 func (m *Manager) recordServiceWarning(svc *corev1.Service, reason, message string) {
 	m.recordServiceEvent(svc, corev1.EventTypeWarning, reason, message)
+	m.recordPoolWarning(svc, reason, message)
 }
 
 // kvTokenizerDir - where the gateway looks for tokenizers

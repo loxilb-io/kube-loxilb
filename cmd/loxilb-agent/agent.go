@@ -349,6 +349,9 @@ func run(o *Options) error {
 			infInformerFactory = infinformer.NewSharedInformerFactory(infClient, informerDefaultResync)
 			inferencePoolManager = gatewayapi.NewInferencePoolManager(
 				k8sClient, k8sExtClient, sigsClient, infClient, networkConfig, informerFactory, sigsInformerFactory, infInformerFactory)
+			// The pool manager's informer, shared: what the loadbalancer
+			// manager reports on a generated Service reaches its pool too.
+			lbManager.SetInferencePoolLister(infInformerFactory.Inference().V1().InferencePools().Lister())
 		}
 
 		sigsInformerFactory.Start(stopCh)
