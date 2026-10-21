@@ -140,9 +140,9 @@ type Manager struct {
 	gpuArmed   map[string]bool
 
 	// lbCacheMu guards lbCache. The worker holds it for a whole sync; the
-	// re-sync for a peer that comes back up, which runs on the lifecycle
-	// goroutine, holds it one Service at a time. Unguarded, the two met in
-	// "concurrent map iteration and map write", which ends the process.
+	// lifecycle goroutine takes it when a peer comes back up, to forget that
+	// peer's standing. Unguarded, the two met in "concurrent map iteration and
+	// map write", which ends the process.
 	lbCacheMu sync.Mutex
 }
 
@@ -2928,97 +2928,6 @@ loop:
 
 			if !aliveClient.PeeringOnly {
 				m.reinstallLoxiLbRules(aliveClient)
-			}
-		}
-	}
-}
-
-// reinstallLoxiLbRules - put every cached rule back on a peer that has come
-// (back) up.
-//
-// What the peer refuses or downgrades is reported on the Service, as it is
-// when the rule is first programmed: a peer restarted on an older build - one
-// without Endpoint Picker support, say - otherwise changes what a Service gets
-// with nothing but a log line to show for it.
-//
-// Runs on the lifecycle goroutine while the worker keeps changing the cache,
-// so it walks a copy of the keys and takes the cache lock one Service at a
-// time.
-func (m *Manager) reinstallLoxiLbRules(aliveClient *api.LoxiClient) {
-	isSuccess := false
-	for _, cacheKey := range m.lbCacheKeys() {
-		m.reinstallService(aliveClient, cacheKey, &isSuccess)
-	}
-}
-
-// lbCacheKeys - the keys of lbCache, copied under the cache lock.
-func (m *Manager) lbCacheKeys() []string {
-	m.lbCacheMu.Lock()
-	defer m.lbCacheMu.Unlock()
-
-	keys := make([]string, 0, len(m.lbCache))
-	for cacheKey := range m.lbCache {
-		keys = append(keys, cacheKey)
-	}
-
-	return keys
-}
-
-// reinstallService - put one Service's rules back on a peer that came up.
-//
-// The cache lock is held across the requests. A Service the worker deletes
-// meanwhile is then either gone before it is looked up here, or deleted after
-// its rules went back on - never put back after its delete, which would leave
-// the peer serving a Service that no longer exists. Holding it per Service
-// rather than for the whole pass lets the worker in between, so a peer that
-// answers slowly holds the worker for one Service's retries at most.
-//
-// isSuccess is shared across the pass: the restart below fires only if no
-// rule at all has gone on to this peer yet.
-func (m *Manager) reinstallService(aliveClient *api.LoxiClient, cacheKey string, isSuccess *bool) {
-	m.lbCacheMu.Lock()
-	defer m.lbCacheMu.Unlock()
-
-	value, ok := m.lbCache[cacheKey]
-	if !ok {
-		return
-	}
-
-	for _, sp := range value.LbServicePairs {
-		for _, lb := range sp.LbModelList {
-			refused := false
-			for retry := 0; retry < 5; retry++ {
-				err := m.installLB(aliveClient, lb, value.PrefLocal)
-				if err == nil {
-					klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lb)
-					m.reportResyncDowngrade(cacheKey, aliveClient, lb)
-					*isSuccess = true
-					break
-				} else if isPeerRefusal(err) {
-					klog.Infof("reinstallLoxiLbRules: lbModel: %v not installed on loxilb-lb(%s): %v",
-						lb, aliveClient.Host, err)
-					m.reportResyncRefusal(cacheKey, err)
-					refused = true
-					break
-				} else if api.IsClientError(err) {
-					klog.Infof("reinstallLoxiLbRules: lbModel: %v refused by loxilb-lb(%s): %v",
-						lb, aliveClient.Host, err)
-					m.reportResyncRejection(cacheKey, aliveClient, err)
-					refused = true
-					break
-				} else {
-					klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lb, retry)
-					time.Sleep(1 * time.Second)
-				}
-			}
-			// A rule this peer cannot serve, or answered and refused, says
-			// nothing about whether the peer works, so it must not count
-			// towards the restart below.
-			if refused {
-				continue
-			}
-			if !*isSuccess && aliveClient.IsAlive {
-				klog.Exit("restart kube-loxilb")
 			}
 		}
 	}

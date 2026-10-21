@@ -1,12 +1,8 @@
 package loadbalancer
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -68,67 +64,47 @@ func TestReinstallAndWorkerShareTheCache(t *testing.T) {
 	wg.Wait()
 }
 
-// A Service the worker deletes while its rule is being put back on a peer
-// must not end up back on that peer: the delete has to wait for the re-sync
-// of that Service, not slip in before its POST is answered.
-func TestReinstallNeverPutsBackADeletedService(t *testing.T) {
-	var mu sync.Mutex
-	var events []string
-	record := func(event string) {
-		mu.Lock()
-		events = append(events, event)
-		mu.Unlock()
+// A peer coming back no longer posts anything from the lifecycle goroutine:
+// it forgets that peer's standing and queues every Service, and the worker
+// puts the rules back. That is also why a Service deleted meanwhile cannot be
+// put back after its delete - the worker does both, one after the other.
+func TestPeerBackLeavesInstallingToTheWorker(t *testing.T) {
+	back := newFakeLoxiLB(t, "")
+	other := newFakeLoxiLB(t, "")
+	backPeer, otherPeer := back.client(t), other.client(t)
+	m := deleteManager(backPeer, otherPeer)
+	m.lbCache[GenKey("llm", "other")] = &LbCacheEntry{
+		LbServicePairs: map[string]*LbServicePairEntry{"pair": {LbModelList: []api.LoadBalancerModel{plainModel()}}},
 	}
-
-	postStarted := make(chan struct{}, 1)
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releasePost := func() { releaseOnce.Do(func() { close(release) }) }
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/netlox/v1/version":
-			_ = json.NewEncoder(w).Encode(&api.VersionModel{Version: "test"})
-		case r.Method == http.MethodPost:
-			record("post")
-			postStarted <- struct{}{}
-			<-release
-			record("post-done")
-			_, _ = w.Write([]byte(`{"result":"Success"}`))
-		case r.Method == http.MethodDelete:
-			record("delete")
-			_, _ = w.Write([]byte(`{"result":"Success"}`))
+	for _, entry := range m.lbCache {
+		for _, sp := range entry.LbServicePairs {
+			sp.peers = map[string]peerState{
+				backPeer.Host:  {phase: peerInstalled},
+				otherPeer.Host: {phase: peerInstalled},
+			}
 		}
-	}))
-	t.Cleanup(srv.Close)
-	t.Cleanup(releasePost) // before Close, which waits for handlers
-
-	peer := clientFor(t, srv)
-	m := deleteManager(peer)
-	m.serviceLister = emptyServiceLister()
-
-	reinstalled := make(chan struct{})
-	go func() {
-		m.reinstallLoxiLbRules(peer)
-		close(reinstalled)
-	}()
-	<-postStarted
-
-	synced := make(chan error, 1)
-	go func() { synced <- m.syncLoadBalancer(LbCacheKey{Namespace: "llm", Name: "vllm"}) }()
-	time.Sleep(100 * time.Millisecond) // room for the delete to overtake, if it can
-	releasePost()
-
-	<-reinstalled
-	if err := <-synced; err != nil {
-		t.Fatalf("sync: %v", err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-	if got := strings.Join(events, ","); got != "post,post-done,delete" {
-		t.Errorf("requests reached the peer as %s, want post,post-done,delete", got)
+	m.reinstallLoxiLbRules(backPeer)
+
+	back.mu.Lock()
+	posted := len(back.bodies)
+	back.mu.Unlock()
+	if posted != 0 {
+		t.Errorf("the lifecycle goroutine posted %d rules itself", posted)
+	}
+	for key, entry := range m.lbCache {
+		for _, sp := range entry.LbServicePairs {
+			if _, ok := sp.peers[backPeer.Host]; ok {
+				t.Errorf("%s: the returning peer's standing was kept", key)
+			}
+			if sp.peers[otherPeer.Host].phase != peerInstalled {
+				t.Errorf("%s: another peer's standing was touched", key)
+			}
+		}
+	}
+	if n := m.queue.Len(); n != 2 {
+		t.Errorf("%d Services queued, want both", n)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
@@ -194,4 +195,34 @@ func sameError(a, b error) bool {
 	}
 
 	return a.Error() == b.Error()
+}
+
+// reinstallLoxiLbRules - a peer has come (back) up, and whatever it held may be
+// gone: it restarted without its snapshot, or it is new.
+//
+// Its standing is forgotten for every cached rule and every Service is
+// queued, so the worker sends the rules on its next sync of each (retryPeers):
+// with the reporting and the backoff of any other retry, and under the cache
+// lock, as everything else that installs rules. This used to walk the cache on
+// the lifecycle goroutine and post the rules from there, and to restart
+// kube-loxilb when the first of them could not be installed.
+func (m *Manager) reinstallLoxiLbRules(aliveClient *api.LoxiClient) {
+	m.lbCacheMu.Lock()
+	keys := make([]string, 0, len(m.lbCache))
+	for cacheKey, entry := range m.lbCache {
+		for _, sp := range entry.LbServicePairs {
+			delete(sp.peers, aliveClient.Host)
+		}
+		keys = append(keys, cacheKey)
+	}
+	m.lbCacheMu.Unlock()
+
+	for _, cacheKey := range keys {
+		namespace, name, err := cache.SplitMetaNamespaceKey(cacheKey)
+		if err != nil {
+			continue
+		}
+		m.queue.Add(LbCacheKey{Namespace: namespace, Name: name})
+	}
+	klog.Infof("loxilb-lb(%s): rules of %d services queued to be put back", aliveClient.Host, len(keys))
 }
