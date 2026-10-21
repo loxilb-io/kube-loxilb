@@ -138,6 +138,12 @@ type Manager struct {
 	// check reports the edge into disarmed rather than every observation.
 	gpuArmedMu sync.Mutex
 	gpuArmed   map[string]bool
+
+	// lbCacheMu guards lbCache. The worker holds it for a whole sync; the
+	// re-sync for a peer that comes back up, which runs on the lifecycle
+	// goroutine, holds it one Service at a time. Unguarded, the two met in
+	// "concurrent map iteration and map write", which ends the process.
+	lbCacheMu sync.Mutex
 }
 
 type LbArgs struct {
@@ -292,7 +298,7 @@ func NewLoadBalancerManager(
 		nodeListerSynced:    nodeInformer.Informer().HasSynced,
 		endpointSliceLister: endpointSliceInformer.Lister(),
 		endpointSliceSynced: endpointSliceInformer.Informer().HasSynced,
-		instAddrApplyCh:     make(chan struct{}),
+		instAddrApplyCh:     make(chan struct{}, 1),
 		loxiInstAddrMap:     make(map[string]net.IP),
 		zoneInstRoleMap:     make(map[string]*LoxiInstRole),
 		ClientAliveCh:       make(chan *api.LoxiClient, 50),
@@ -409,6 +415,9 @@ func (m *Manager) processNextWorkItem() bool {
 }
 
 func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
+	m.lbCacheMu.Lock()
+	defer m.lbCacheMu.Unlock()
+
 	startTime := time.Now()
 	defer func() {
 		klog.V(4).Infof("Finished syncing LoadBalancer service %s. (%v)", lb.Name, time.Since(startTime))
@@ -1468,6 +1477,8 @@ func (m *Manager) deleteLB(client *api.LoxiClient, lbModel api.LoadBalancerModel
 }
 
 func (m *Manager) DeleteAllLoadBalancer() {
+	m.lbCacheMu.Lock()
+	defer m.lbCacheMu.Unlock()
 
 	klog.Infof("Len %d", len(m.lbCache))
 	for _, lbEntry := range m.lbCache {
@@ -2913,47 +2924,99 @@ loop:
 // when the rule is first programmed: a peer restarted on an older build - one
 // without Endpoint Picker support, say - otherwise changes what a Service gets
 // with nothing but a log line to show for it.
+//
+// Runs on the lifecycle goroutine while the worker keeps changing the cache,
+// so it walks a copy of the keys and takes the cache lock one Service at a
+// time.
 func (m *Manager) reinstallLoxiLbRules(aliveClient *api.LoxiClient) {
 	isSuccess := false
-	for cacheKey, value := range m.lbCache {
-		for _, sp := range value.LbServicePairs {
-			for _, lb := range sp.LbModelList {
-				refused := false
-				for retry := 0; retry < 5; retry++ {
-					err := m.installLB(aliveClient, lb, value.PrefLocal)
-					if err == nil {
-						klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lb)
-						m.reportResyncDowngrade(cacheKey, aliveClient, lb)
-						isSuccess = true
-						break
-					} else if isPeerRefusal(err) {
-						klog.Infof("reinstallLoxiLbRules: lbModel: %v not installed on loxilb-lb(%s): %v",
-							lb, aliveClient.Host, err)
-						m.reportResyncRefusal(cacheKey, err)
-						refused = true
-						break
-					} else if api.IsClientError(err) {
-						klog.Infof("reinstallLoxiLbRules: lbModel: %v refused by loxilb-lb(%s): %v",
-							lb, aliveClient.Host, err)
-						m.reportResyncRejection(cacheKey, aliveClient, err)
-						refused = true
-						break
-					} else {
-						klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lb, retry)
-						time.Sleep(1 * time.Second)
-					}
-				}
-				// A rule this peer cannot serve, or answered and refused, says
-				// nothing about whether the peer works, so it must not count
-				// towards the restart below.
-				if refused {
-					continue
-				}
-				if !isSuccess && aliveClient.IsAlive {
-					klog.Exit("restart kube-loxilb")
+	for _, cacheKey := range m.lbCacheKeys() {
+		m.reinstallService(aliveClient, cacheKey, &isSuccess)
+	}
+}
+
+// lbCacheKeys - the keys of lbCache, copied under the cache lock.
+func (m *Manager) lbCacheKeys() []string {
+	m.lbCacheMu.Lock()
+	defer m.lbCacheMu.Unlock()
+
+	keys := make([]string, 0, len(m.lbCache))
+	for cacheKey := range m.lbCache {
+		keys = append(keys, cacheKey)
+	}
+
+	return keys
+}
+
+// reinstallService - put one Service's rules back on a peer that came up.
+//
+// The cache lock is held across the requests. A Service the worker deletes
+// meanwhile is then either gone before it is looked up here, or deleted after
+// its rules went back on - never put back after its delete, which would leave
+// the peer serving a Service that no longer exists. Holding it per Service
+// rather than for the whole pass lets the worker in between, so a peer that
+// answers slowly holds the worker for one Service's retries at most.
+//
+// isSuccess is shared across the pass: the restart below fires only if no
+// rule at all has gone on to this peer yet.
+func (m *Manager) reinstallService(aliveClient *api.LoxiClient, cacheKey string, isSuccess *bool) {
+	m.lbCacheMu.Lock()
+	defer m.lbCacheMu.Unlock()
+
+	value, ok := m.lbCache[cacheKey]
+	if !ok {
+		return
+	}
+
+	for _, sp := range value.LbServicePairs {
+		for _, lb := range sp.LbModelList {
+			refused := false
+			for retry := 0; retry < 5; retry++ {
+				err := m.installLB(aliveClient, lb, value.PrefLocal)
+				if err == nil {
+					klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lb)
+					m.reportResyncDowngrade(cacheKey, aliveClient, lb)
+					*isSuccess = true
+					break
+				} else if isPeerRefusal(err) {
+					klog.Infof("reinstallLoxiLbRules: lbModel: %v not installed on loxilb-lb(%s): %v",
+						lb, aliveClient.Host, err)
+					m.reportResyncRefusal(cacheKey, err)
+					refused = true
+					break
+				} else if api.IsClientError(err) {
+					klog.Infof("reinstallLoxiLbRules: lbModel: %v refused by loxilb-lb(%s): %v",
+						lb, aliveClient.Host, err)
+					m.reportResyncRejection(cacheKey, aliveClient, err)
+					refused = true
+					break
+				} else {
+					klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lb, retry)
+					time.Sleep(1 * time.Second)
 				}
 			}
+			// A rule this peer cannot serve, or answered and refused, says
+			// nothing about whether the peer works, so it must not count
+			// towards the restart below.
+			if refused {
+				continue
+			}
+			if !*isSuccess && aliveClient.IsAlive {
+				klog.Exit("restart kube-loxilb")
+			}
 		}
+	}
+}
+
+// signalInstAddrApply - ask the lifecycle loop to apply the instance addresses
+// again. It never waits: the loop reads the whole map each time, so one
+// pending signal covers any number of changes. The callers hold m.mtx, which
+// the worker takes too, and the loop can be waiting on the cache lock the
+// worker holds - a blocking send here closed that circle.
+func (m *Manager) signalInstAddrApply() {
+	select {
+	case m.instAddrApplyCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -2972,7 +3035,7 @@ func (m *Manager) AddLoxiInstAddr(name string, IP net.IP) error {
 	}
 
 	m.loxiInstAddrMap[name] = IP
-	m.instAddrApplyCh <- struct{}{}
+	m.signalInstAddrApply()
 	klog.Infof("added cidr host name: %s:%s", name, IP.String())
 	return nil
 }
@@ -2987,7 +3050,7 @@ func (m *Manager) DeleteLoxiInstAddr(name string) error {
 	}
 
 	delete(m.loxiInstAddrMap, name)
-	m.instAddrApplyCh <- struct{}{}
+	m.signalInstAddrApply()
 	klog.Infof("removed cidr host name: %s", name)
 	return nil
 }
