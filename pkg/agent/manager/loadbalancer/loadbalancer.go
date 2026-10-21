@@ -1389,29 +1389,23 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 		var errChList []chan error
 		for _, lb := range sp.LbModelList {
 			for _, loxiClient := range m.LoxiClients.Clients {
-				ch := make(chan error)
+				// Buffered, so the sender never waits on the reader.
+				ch := make(chan error, 1)
 				errChList = append(errChList, ch)
 
 				go func(client *api.LoxiClient, ch chan error, lbModel api.LoadBalancerModel) {
-					klog.Infof("loxilb-lb(%s): delete lb %v", client.Host, lbModel)
-					if m.networkConfig.AppendEPs {
-						lbModel.Service.Oper = api.LBOPDetach
-						ch <- client.LoadBalancer().Create(context.Background(), &lbModel)
-					} else {
-						ch <- client.LoadBalancer().Delete(context.Background(), &lbModel)
-					}
+					ch <- m.deleteLB(client, lbModel)
 				}(loxiClient, ch, lb)
 			}
 		}
 
-		var err error
-
+		// Every answer is read, not just up to the first failure: the pair is
+		// only gone once every peer has answered, and an unread result used to
+		// leave its goroutine blocked on the send for good.
 		for _, errCh := range errChList {
-			err = <-errCh
-			if err != nil {
+			if err := <-errCh; err != nil {
 				isError = true
 				rErr = err
-				break
 			}
 		}
 	}
@@ -1437,6 +1431,40 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 		delete(m.lbCache, cacheKey)
 	}
 	return nil
+}
+
+// deleteRequestTimeout - how long one peer gets to answer a delete. The REST
+// client has no timeout of its own, and the worker waits for every answer, so
+// a peer that accepts the connection and never replies would otherwise stop
+// every Service from being processed. A var so tests can shorten it.
+var deleteRequestTimeout = 5 * time.Second
+
+// deleteLB - remove one rule from one peer.
+//
+// A rule the peer does not have is already where the caller wants it: the
+// peer refused it when it was added, or an earlier attempt reached this peer
+// even though the attempt as a whole failed. Reading that 404 as a failure
+// kept the Service's cache entry and address held for good, since every retry
+// got the same answer.
+func (m *Manager) deleteLB(client *api.LoxiClient, lbModel api.LoadBalancerModel) error {
+	ctx, cancel := context.WithTimeout(context.Background(), deleteRequestTimeout)
+	defer cancel()
+
+	klog.Infof("loxilb-lb(%s): delete lb %v", client.Host, lbModel)
+
+	var err error
+	if m.networkConfig.AppendEPs {
+		lbModel.Service.Oper = api.LBOPDetach
+		err = client.LoadBalancer().Create(ctx, &lbModel)
+	} else {
+		err = client.LoadBalancer().Delete(ctx, &lbModel)
+	}
+	if api.IsNotFound(err) {
+		klog.V(2).Infof("loxilb-lb(%s): lb %v already absent", client.Host, lbModel)
+		return nil
+	}
+
+	return err
 }
 
 func (m *Manager) DeleteAllLoadBalancer() {

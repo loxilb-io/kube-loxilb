@@ -83,6 +83,13 @@ func IsConflict(err error) bool {
 	return strings.Contains(message, "exist")
 }
 
+// IsNotFound - the peer is saying the resource is not there. Keyed on the
+// status alone: loxilb and loxilb-inference-gateway both answer 404 for a rule
+// they do not have ("lbrule not-exists error").
+func IsNotFound(err error) bool {
+	return StatusCodeOf(err) == http.StatusNotFound
+}
+
 // IsClientError - loxilb rejected the request itself, so retrying it unchanged
 // will fail the same way. Something has to change in the Service.
 func IsClientError(err error) bool {
