@@ -75,6 +75,13 @@ rules:
       - inferencepools/status
     verbs: ["get", "watch", "list", "patch", "update"]
   - apiGroups:
+      - jwtauthprofile.loxilb.io
+    resources:
+      - jwtauthprofiles
+      - jwtauthprofiles/status
+      - jwtauthprofiles/finalizers
+    verbs: ["get", "watch", "list", "patch", "update"]
+  - apiGroups:
       - networking.k8s.io
     resources:
       - ingresses
