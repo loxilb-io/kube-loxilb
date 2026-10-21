@@ -149,6 +149,10 @@ type Manager struct {
 	// poolLister - an infv1lister.InferencePoolLister, stored once the
 	// inference extension is on; see SetInferencePoolLister.
 	poolLister atomic.Value
+
+	// yielding - Services kept off their listeners by an older one declaring
+	// another credential policy, by cache key, to the key of that one.
+	yielding map[string]string
 }
 
 type LbArgs struct {
@@ -442,7 +446,11 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 	svcName := lb.Name
 	svc, err := m.serviceLister.Services(svcNs).Get(svcName)
 	if err != nil {
-		return m.deleteLoadBalancer(svcNs, svcName, true)
+		if err := m.deleteLoadBalancer(svcNs, svcName, true); err != nil {
+			return err
+		}
+		m.releaseYielders(GenKey(svcNs, svcName))
+		return nil
 	}
 	return m.addLoadBalancer(svc)
 }
@@ -819,6 +827,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	lbCacheEntry, added := m.lbCache[cacheKey]
+
+	// The gateway checks one credential policy per listener. A Service that
+	// disagrees with an older one on a shared listener is not programmed.
+	if yields, err := m.settleListeners(svc, cacheKey); yields || err != nil {
+		return err
+	}
 
 	pdRoles, err := m.resolvePDRoles(context.Background(), svc, aiArgs)
 	if err != nil {

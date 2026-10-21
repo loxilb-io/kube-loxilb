@@ -511,6 +511,8 @@ func refusalReason(err error) string {
 	switch {
 	case errors.Is(err, ErrAuthUnsupported):
 		return ReasonAuthNotSupported
+	case errors.Is(err, ErrListenerAuthConflict):
+		return ReasonListenerAuthConflict
 	case errors.Is(err, ErrEndpointPickerUnsupported):
 		return ReasonEndpointPickerUnsupported
 	case errors.Is(err, ErrGPUMonitoringDisabled):
@@ -808,6 +810,9 @@ const (
 	// ReasonAuthNotSupported - the rule declares a credential policy and a
 	// gateway peer does not enforce it, so the rule is not sent there.
 	ReasonAuthNotSupported = "AuthNotSupported"
+	// ReasonListenerAuthConflict - the Service shares a listener with an older
+	// one that declares another credential policy, and is not served there.
+	ReasonListenerAuthConflict = "ListenerAuthConflict"
 	// ReasonInvalidProbeConfig - the health-monitor annotations are malformed.
 	ReasonInvalidProbeConfig = "InvalidProbeConfig"
 	// ReasonProbeModeChanged - the probe annotations retire a proberesp check
