@@ -367,3 +367,52 @@ func TestStatusIsNotRewrittenUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// The finalizer, each status write and a peer coming up all wake a profile up
+// again within moments; the generation just registered is not posted again.
+func TestFreshRegistrationIsNotRepeated(t *testing.T) {
+	g := newFakeGateway(t, api.FeatureJWTAuthProfile)
+	h := newHarness(t, []*jwtv1.JWTAuthProfile{kc()}, g.client(t))
+
+	for i := 0; i < 3; i++ {
+		if err := h.m.reconcile("kc"); err != nil && !errors.Is(err, errRetry) {
+			t.Fatalf("reconcile: %v", err)
+		}
+	}
+	if posts, _ := g.counts(); posts != 1 {
+		t.Errorf("posted %d times, want once", posts)
+	}
+}
+
+// A changed spec is a new generation, and goes out at once.
+func TestNewGenerationIsRegisteredAgain(t *testing.T) {
+	g := newFakeGateway(t, api.FeatureJWTAuthProfile)
+	h := newHarness(t, []*jwtv1.JWTAuthProfile{kc()}, g.client(t))
+	if err := h.m.reconcile("kc"); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := h.get(t).DeepCopy()
+	changed.Spec.Audiences = []string{"other-api"}
+	changed.Generation = 2
+	if _, err := h.client.JwtauthprofileV1().JWTAuthProfiles().Update(context.Background(), changed, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if p, err := h.m.lister.Get("kc"); err == nil && p.Generation == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := h.m.reconcile("kc"); err != nil {
+		t.Fatal(err)
+	}
+	if posts, _ := g.counts(); posts != 2 {
+		t.Fatalf("posted %d times, want the new generation posted too", posts)
+	}
+	if aud := g.posted[1]["audiences"]; fmt.Sprint(aud) != "[other-api]" {
+		t.Errorf("second post carried audiences %v", aud)
+	}
+}
