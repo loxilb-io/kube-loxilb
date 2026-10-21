@@ -1,0 +1,11 @@
+# Rendered by validation-auth.sh with the stand-in OIDC provider's issuer.
+apiVersion: jwtauthprofile.loxilb.io/v1
+kind: JWTAuthProfile
+metadata:
+  name: kc
+spec:
+  issuer: __ISSUER__
+  audiences:
+    - __AUDIENCE__
+  algs:
+    - RS256

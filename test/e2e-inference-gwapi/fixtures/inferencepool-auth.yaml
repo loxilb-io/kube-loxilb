@@ -1,0 +1,32 @@
+# A pool whose listener requires a token: api-key-auth and jwt-auth-profile
+# are copied to its Service and become the rule's credential policy.
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: vllm-auth
+  namespace: llm
+  annotations:
+    loxilb.io/epselect: "chwbl"
+    loxilb.io/model-name: "qwen3-32b"
+    loxilb.io/api-key-auth: "jwt"
+    loxilb.io/jwt-auth-profile: "kc"
+spec:
+  selector:
+    matchLabels:
+      app: vllm-qwen3
+  targetPorts:
+    - number: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: auth-route
+  namespace: llm
+spec:
+  parentRefs:
+    - name: inference-gw
+  rules:
+    - backendRefs:
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: vllm-auth
