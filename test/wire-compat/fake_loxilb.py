@@ -14,6 +14,8 @@ env:
                 missing - 404 (loxilb too old to have /version)
                 gateway - 200 with product=loxilb-inference-gateway
                 gateway-epp - the same, plus features=["epp"] (Endpoint Picker support)
+                gateway-auth - the same, plus features=["api_key_auth", "jwt_auth_profile"]
+                gateway-apikey - the same, plus features=["api_key_auth"] only (no JWT arm)
 """
 import json, os, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,10 +50,14 @@ class H(BaseHTTPRequestHandler):
             if VMODE == "missing":
                 return self._send(404, {"result": "not found"})
             v = {"version": "0.9.9", "buildInfo": "fake"}
-            if VMODE in ("gateway", "gateway-epp"):
+            if VMODE in ("gateway", "gateway-epp", "gateway-auth", "gateway-apikey"):
                 v["product"] = "loxilb-inference-gateway"
             if VMODE == "gateway-epp":
                 v["features"] = ["epp"]
+            if VMODE == "gateway-auth":
+                v["features"] = ["api_key_auth", "jwt_auth_profile"]
+            if VMODE == "gateway-apikey":
+                v["features"] = ["api_key_auth"]
             return self._send(200, v)
         if p.endswith("/config/loadbalancer/all"):
             return self._send(200, {"lbAttr": []})
