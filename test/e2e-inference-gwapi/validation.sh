@@ -4,9 +4,8 @@
 #
 # One sentinel at the end: SCENARIO-e2e-inference-gwapi [OK] or [FAILED].
 set -u
-HERE="$(cd "$(dirname "$0")" && pwd)"
-IGW_ADDR="${IGW_ADDR:-12.12.12.1}"
-VIP="${VIP:-12.12.12.1}"
+source "$(dirname "$0")/env.sh"
+HERE="$E2E_HERE"
 GW_PORT="${GW_PORT:-8080}"
 POOL_SVC="vllm-qwen3-inference"
 
@@ -115,10 +114,10 @@ fi
 echo "=== 3c. fullproxy is listening on the VIP ==="
 # mode=4 is only real if loxilb bound a socket for it; a rule that failed to
 # bind still reads back exactly the same over REST.
-if sudo ip netns exec igw1 ss -tln 2>/dev/null | grep -q "$VIP:$GW_PORT"; then
+if in_netns igw1 ss -tln 2>/dev/null | grep -q "$VIP:$GW_PORT"; then
   ok "socket bound on $VIP:$GW_PORT"
 else
-  bad "socket bound on $VIP:$GW_PORT" "$(sudo ip netns exec igw1 ss -tln 2>/dev/null | tail -3 | tr '\n' ' ')"
+  bad "socket bound on $VIP:$GW_PORT" "$(in_netns igw1 ss -tln 2>/dev/null | tail -3 | tr '\n' ' ')"
 fi
 
 echo "=== 4. the pool reports its status ==="
@@ -405,11 +404,14 @@ if poll 90 bash -c "! kubectl -n llm get svc $POOL_SVC >/dev/null 2>&1"; then
 else
   bad "service removed with its route" "still present after 90s"
 fi
+# The Gateway's own ingress Service takes the listener back once no pool
+# claims it, so its rule is left out: what must not be left is the pool's.
 if poll 60 bash -c "[ \"\$(curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
-                          jq '[.lbAttr[]? | select(.serviceArguments.externalIP==\"$VIP\" and .serviceArguments.port==$GW_PORT)] | length')\" = 0 ]"; then
-  ok "no rule left on $VIP:$GW_PORT"
+                          jq '[.lbAttr[]? | select(.serviceArguments.externalIP==\"$VIP\" and .serviceArguments.port==$GW_PORT)
+                               | select(.serviceArguments.name|startswith(\"llm_inference-gw-ingress-service\")|not)] | length')\" = 0 ]"; then
+  ok "no pool rule left on $VIP:$GW_PORT"
 else
-  bad "no rule left on $VIP:$GW_PORT" "$(rules | jq -c '.lbAttr[]?.serviceArguments|{name,model_name}' 2>/dev/null | tr '\n' ' ')"
+  bad "no pool rule left on $VIP:$GW_PORT" "$(rules | jq -c '.lbAttr[]?.serviceArguments|{name,model_name}' 2>/dev/null | tr '\n' ' ')"
 fi
 
 echo
