@@ -24,6 +24,7 @@ func deleteManager(peers ...*api.LoxiClient) *Manager {
 	return &Manager{
 		LoxiClients:   pool,
 		networkConfig: &config.NetworkConfig{},
+		queue:         testQueue(),
 		lbCache: LbCacheTable{
 			GenKey("llm", "vllm"): &LbCacheEntry{
 				LbServicePairs: map[string]*LbServicePairEntry{
