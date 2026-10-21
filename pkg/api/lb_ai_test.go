@@ -192,6 +192,23 @@ func TestEndpointPickerWireFields(t *testing.T) {
 	}
 }
 
+// The credential policy sits flat in serviceArguments under the gateway's
+// snake_case names.
+func TestCredentialPolicyWireFields(t *testing.T) {
+	svc := LoadBalancerService{
+		ExternalIP: "10.0.0.1",
+		Port:       8080,
+		AIArgs:     AIArgs{APIKeyAuth: APIKeyAuthJWT, JwtAuthProfile: "kc"},
+	}
+
+	payload := mustMarshal(t, &svc)
+	for _, want := range []string{`"api_key_auth":"jwt"`, `"jwt_auth_profile":"kc"`} {
+		if !strings.Contains(payload, want) {
+			t.Errorf("payload missing %s\n%s", want, payload)
+		}
+	}
+}
+
 // A gateway peer without EPP support gets the rule without the four fields;
 // the payload of every other peer in the same fan-out keeps them.
 func TestStripEndpointPickerLeavesSourceIntact(t *testing.T) {
@@ -438,6 +455,80 @@ func TestAIArgsValidate(t *testing.T) {
 			args:    AIArgs{EppFailureMode: "Maybe"},
 			mode:    LBModeFullProxy,
 			wantErr: "eppFailureMode must be FailOpen or FailClose",
+		},
+		{
+			name: "api key auth required",
+			args: AIArgs{APIKeyAuth: APIKeyAuthRequired},
+			mode: LBModeFullProxy,
+		},
+		{
+			name: "api key auth disabled",
+			args: AIArgs{APIKeyAuth: APIKeyAuthDisabled},
+			mode: LBModeFullProxy,
+		},
+		{
+			name: "jwt with a profile",
+			args: AIArgs{APIKeyAuth: APIKeyAuthJWT, JwtAuthProfile: "kc"},
+			mode: LBModeFullProxy,
+		},
+		{
+			name: "apikey-or-jwt with a profile",
+			args: AIArgs{APIKeyAuth: APIKeyAuthAPIKeyOrJWT, JwtAuthProfile: "kc"},
+			mode: LBModeFullProxy,
+		},
+		{
+			name:    "unknown api key auth mode",
+			args:    AIArgs{APIKeyAuth: "oauth"},
+			mode:    LBModeFullProxy,
+			wantErr: "invalid api_key_auth: must be one of disabled, required, jwt, apikey-or-jwt",
+		},
+		{
+			name:    "jwt without a profile",
+			args:    AIArgs{APIKeyAuth: APIKeyAuthJWT},
+			mode:    LBModeFullProxy,
+			wantErr: "jwt_auth_profile: required by this api_key_auth mode",
+		},
+		{
+			name:    "apikey-or-jwt without a profile",
+			args:    AIArgs{APIKeyAuth: APIKeyAuthAPIKeyOrJWT},
+			mode:    LBModeFullProxy,
+			wantErr: "jwt_auth_profile: required by this api_key_auth mode",
+		},
+		{
+			name:    "profile with required",
+			args:    AIArgs{APIKeyAuth: APIKeyAuthRequired, JwtAuthProfile: "kc"},
+			mode:    LBModeFullProxy,
+			wantErr: "jwt_auth_profile: only valid with api_key_auth jwt or apikey-or-jwt",
+		},
+		{
+			name:    "profile with disabled",
+			args:    AIArgs{APIKeyAuth: APIKeyAuthDisabled, JwtAuthProfile: "kc"},
+			mode:    LBModeFullProxy,
+			wantErr: "jwt_auth_profile: only valid with api_key_auth jwt or apikey-or-jwt",
+		},
+		{
+			name:    "profile without a mode",
+			args:    AIArgs{JwtAuthProfile: "kc"},
+			mode:    LBModeFullProxy,
+			wantErr: "jwt_auth_profile: only valid with api_key_auth jwt or apikey-or-jwt",
+		},
+		{
+			name: "profile name at the bound",
+			args: AIArgs{APIKeyAuth: APIKeyAuthJWT, JwtAuthProfile: strings.Repeat("k", 63)},
+			mode: LBModeFullProxy,
+		},
+		{
+			name:    "profile name too long",
+			args:    AIArgs{APIKeyAuth: APIKeyAuthJWT, JwtAuthProfile: strings.Repeat("k", 64)},
+			mode:    LBModeFullProxy,
+			wantErr: "jwt_auth_profile must be at most 63 bytes",
+		},
+		{
+			// Stored and not enforced outside fullproxy: every request would pass.
+			name:    "api key auth outside fullproxy",
+			args:    AIArgs{APIKeyAuth: APIKeyAuthRequired},
+			mode:    LBModeFullNat,
+			wantErr: "api_key_auth requires mode=fullproxy",
 		},
 	}
 
