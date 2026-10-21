@@ -170,6 +170,7 @@ type LoadBalancerService struct {
 	ProbeTimeout    uint32              `json:"probeTimeout,omitempty"`
 	Security        int32               `json:"security,omitempty"`
 	Name            string              `json:"name,omitempty"`
+	ID              string              `json:"id,omitempty"` // gateway only; set per peer by installLB
 	Oper            LbOP                `json:"oper,omitempty"`
 	Host            string              `json:"host,omitempty" key:"hosturl"`
 	PpV2            bool                `json:"proxyprotocolv2,omitempty"`
