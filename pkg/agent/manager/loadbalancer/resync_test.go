@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -118,6 +119,36 @@ func TestReinstallReportsCredentialPolicyRefusal(t *testing.T) {
 	defer gw.mu.Unlock()
 	if len(gw.bodies) != 0 {
 		t.Errorf("a refused rule was still POSTed:\n%s", gw.bodies[0])
+	}
+}
+
+// A peer that answers 4xx - here a JWT auth profile it does not have yet - is
+// reported once on the Service, is not asked again in the same pass, and does
+// not restart kube-loxilb: the answer would be the same either way. The rule
+// used to be retried five times and then end the process.
+func TestReinstallReportsRejectionWithoutRestarting(t *testing.T) {
+	const reason = "jwt_auth_profile: required by this api_key_auth mode and must name a configured profile"
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.features = []string{api.FeatureAPIKeyAuth, api.FeatureJWTAuthProfile}
+	gw.createStatus = http.StatusBadRequest
+	gw.createResult = reason
+	peer := gw.client(t)
+	peer.IsAlive = true // the condition the restart is gated on
+	m, recorder := resyncManager(peer, map[string]api.LoadBalancerModel{
+		"jwt": authLoadBalancerModel(api.APIKeyAuthJWT, "kc"),
+	})
+
+	m.reinstallLoxiLbRules(peer)
+
+	events := drainEvents(recorder)
+	if len(events) != 1 || !strings.HasPrefix(events[0], "Warning "+ReasonLoxiLBRejected+" ") ||
+		!strings.Contains(events[0], peer.Host) || !strings.Contains(events[0], reason) {
+		t.Errorf("events = %q, want one %s warning naming the peer and loxilb's reason", events, ReasonLoxiLBRejected)
+	}
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	if len(gw.bodies) != 1 {
+		t.Errorf("POSTed %d times, want once: a 4xx is not retried", len(gw.bodies))
 	}
 }
 
