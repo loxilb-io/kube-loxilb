@@ -62,10 +62,16 @@ const (
 	// CRDName - the JWTAuthProfile CRD. The manager starts once it exists.
 	CRDName = "jwtauthprofiles.jwtauthprofile.loxilb.io"
 
-	resyncPeriod   = 60 * time.Second
-	minRetryDelay  = 2 * time.Second
-	maxRetryDelay  = 120 * time.Second
-	requestTimeout = 5 * time.Second
+	resyncPeriod = 60 * time.Second
+	// reregisterAfter - how long a registration of a profile's generation on
+	// a peer is taken as current. The finalizer, every status write and a
+	// peer coming up each wake the profile up again within moments; posting it
+	// each time only repeats a no-op. The resync, a minute apart, still posts
+	// it again, which puts back a profile a peer lost without restarting.
+	reregisterAfter = 30 * time.Second
+	minRetryDelay   = 2 * time.Second
+	maxRetryDelay   = 120 * time.Second
+	requestTimeout  = 5 * time.Second
 
 	// ReasonProfileRefused - a peer refused the profile and said why.
 	ReasonProfileRefused = "ProfileRefused"
@@ -96,6 +102,9 @@ type Manager struct {
 	// refused - the refusal last reported for each profile and peer, so one
 	// is reported once rather than on every pass.
 	refused map[string]map[string]string
+	// registered - when each profile was last registered on each peer, and
+	// at which generation.
+	registered map[string]map[string]registration
 
 	// onChange - called with a profile's name when the peers holding it
 	// change; set by whoever holds rules back for it.
@@ -123,8 +132,9 @@ func NewManager(kubeClient clientset.Interface, extClient apiextensionclientset.
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.NewTypedItemExponentialFailureRateLimiter[string](minRetryDelay, maxRetryDelay),
 			workqueue.TypedRateLimitingQueueConfig[string]{Name: "jwtAuthProfile"}),
-		present: map[string]map[string]bool{},
-		refused: map[string]map[string]string{},
+		present:    map[string]map[string]bool{},
+		refused:    map[string]map[string]string{},
+		registered: map[string]map[string]registration{},
 	}
 
 	enqueue := func(obj interface{}) {
@@ -277,12 +287,19 @@ func (m *Manager) reconcile(name string) error {
 			continue
 		}
 
+		if m.registeredRecently(name, c.Host, profile.Generation) {
+			peer.Programmed = true
+			peers = append(peers, peer)
+			continue
+		}
+
 		if err := register(c, model); err != nil {
 			peer.LastError = err.Error()
 			pending = true
 			m.reportRefusal(profile, c, err)
 		} else {
 			peer.Programmed = true
+			m.noteRegistered(name, c.Host, profile.Generation)
 			if m.markPresent(name, c.Host) {
 				gained = true
 			}
@@ -291,6 +308,11 @@ func (m *Manager) reconcile(name string) error {
 	}
 
 	if err := m.updateStatus(profile, peers); err != nil {
+		// Written from an older copy than the latest - the finalizer or the
+		// previous status landed meanwhile. The next pass reads the latest.
+		if apierrors.IsConflict(err) {
+			return errRetry
+		}
 		return err
 	}
 	if gained {
@@ -460,6 +482,7 @@ func (m *Manager) unmarkPresent(name, host string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.present[name], host)
+	delete(m.registered[name], host)
 }
 
 func (m *Manager) forget(name string) {
@@ -467,6 +490,31 @@ func (m *Manager) forget(name string) {
 	defer m.mu.Unlock()
 	delete(m.present, name)
 	delete(m.refused, name)
+	delete(m.registered, name)
+}
+
+// registration - a profile registered on a peer: its generation and when.
+type registration struct {
+	generation int64
+	at         time.Time
+}
+
+func (m *Manager) noteRegistered(name, host string, generation int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.registered[name] == nil {
+		m.registered[name] = map[string]registration{}
+	}
+	m.registered[name][host] = registration{generation: generation, at: time.Now()}
+}
+
+// registeredRecently - the peer holds this generation of the profile, posted
+// less than reregisterAfter ago.
+func (m *Manager) registeredRecently(name, host string, generation int64) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	reg, ok := m.registered[name][host]
+	return ok && m.present[name][host] && reg.generation == generation && time.Since(reg.at) < reregisterAfter
 }
 
 func (m *Manager) notify(name string) {
