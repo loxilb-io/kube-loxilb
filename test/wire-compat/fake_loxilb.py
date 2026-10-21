@@ -25,6 +25,27 @@ REC = os.environ.get("FAKE_REC", "record.jsonl")
 MODE = os.environ.get("FAKE_MODE", "normal")
 VMODE = os.environ.get("FAKE_VERSION", "plain")
 
+# Rules stored by their serviceArguments.id, for GET .../loadbalancer/id/{id}:
+# a gateway peer reads each rule back after installing it.
+RULES = {}
+
+def store_rule(body):
+    sa = (body or {}).get("serviceArguments") or {}
+    if sa.get("id"):
+        RULES[sa["id"]] = sa
+
+def drop_rules(path):
+    parts = path.split("/")
+    key = {}
+    for i in range(len(parts) - 1):
+        if parts[i] in ("externalipaddress", "port", "protocol"):
+            key[parts[i]] = parts[i + 1]
+    for rid, sa in list(RULES.items()):
+        if (str(sa.get("externalIP")) == key.get("externalipaddress") and
+                str(sa.get("port")) == key.get("port") and
+                str(sa.get("protocol")) == key.get("protocol")):
+            del RULES[rid]
+
 def record(method, path, body):
     with open(REC, "a") as f:
         f.write(json.dumps({"ts": round(time.time(), 3), "method": method,
@@ -65,6 +86,11 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"Attr": []})
         if "/config/loadbalancer/status" in p or p.endswith("/status"):
             return self._send(404, {"result": "not-exists"})
+        if "/config/loadbalancer/id/" in p:
+            sa = RULES.get(p.rsplit("/", 1)[-1])
+            if sa is None:
+                return self._send(404, {"result": "not-exists"})
+            return self._send(200, {"serviceArguments": sa})
         return self._send(200, {})
 
     def _read_body(self):
@@ -80,15 +106,17 @@ class H(BaseHTTPRequestHandler):
         body = self._read_body()
         record("POST", p, body)
         if "/config/loadbalancer" in p:
-            if MODE == "conflict":
-                return self._send(409, {"result": "lb rule exists", "message": "conflict"})
             if MODE == "notfound":
                 return self._send(404, {"result": "not-exists", "message": "not found"})
+            store_rule(body)  # "conflict" stands for a rule that is already there
+            if MODE == "conflict":
+                return self._send(409, {"result": "lb rule exists", "message": "conflict"})
         return self._send(200, {"result": "Success"})
 
     def do_DELETE(self):
         p = self.path.split("?")[0]
         record("DELETE", p, self._read_body())
+        drop_rules(p)
         return self._send(200, {"result": "Success"})
 
 if __name__ == "__main__":
