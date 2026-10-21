@@ -106,7 +106,10 @@ main: 19 rules   igw: 19 rules
 | `gateway-apikey` | `api_key_auth: required` | 요청 없음 (`jwt_auth_profile` 기능이 없어 거부) |
 | `gateway-auth` | `api_key_auth: required` | `api_key_auth: jwt`, `jwt_auth_profile: kc` |
 
-`f12-*`, `f13-*` 외의 픽스처는 어느 모드에서든 바이트 동일해야 한다.
+`f12-*`, `f13-*` 외의 픽스처는 어느 모드에서든 바이트 동일해야 한다. 다만 `gateway*` 모드에서는 규칙 id(`serviceArguments.id`)를
+보내기 이전 빌드(A)와 비교하면 **모든 룰에 `id` 키가 더해지는 의도된 diff**가 난다. 후보(B)는 설치마다 그 id로 룰을 다시
+읽는다(`GET .../loadbalancer/id/{id}`, GET은 기록하지 않는다). 가짜 loxilb는 받은 룰을 id로 저장해 두었다가 돌려주므로 추가
+DELETE·POST는 생기지 않는다. `plain`·`missing` 모드에는 `id`가 붙지 않는다.
 
 ## 픽스처 (`fixtures.yaml`)
 
