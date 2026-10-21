@@ -1570,6 +1570,9 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 			return err
 		}
+		// Known by a stable id, so it can be read back below. Set on this
+		// peer's copy only: plain peers never see it.
+		model.Service.ID = api.RuleID(&model.Service)
 	}
 
 	// sel=gpuaware is armed instance-wide, not by the rule, so a peer that
@@ -1590,6 +1593,13 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 		} else {
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 		}
+	}
+
+	// A gateway can answer success for a rule it did not store as sent; read it
+	// back. Not with appended endpoints: there the rule is shared with other
+	// clusters, and putting it right means deleting it.
+	if err == nil && c.IsInferenceGateway() && (m.networkConfig == nil || !m.networkConfig.AppendEPs) {
+		err = m.readBack(c, model)
 	}
 
 	if err == nil {

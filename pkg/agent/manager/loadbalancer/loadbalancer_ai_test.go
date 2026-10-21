@@ -49,8 +49,67 @@ type fakeLoxiLB struct {
 	deleteResult string
 	deletes      int
 
+	// createAnswers, while not empty, answers the next POSTs in turn ahead of
+	// createStatus; a zero status is success.
+	createAnswers []fakeAnswer
+
+	// rules holds what a successful POST stored, by its serviceArguments.id,
+	// for GET /config/loadbalancer/id/{id}; DELETE removes the rules on its
+	// address, port and protocol. Tests can seed it with what a peer kept.
+	rules map[string]map[string]any
+	// dropFields are left out when a rule is stored, as a gateway build that
+	// does not know them would.
+	dropFields []string
+	// readBacks counts the GET-by-id requests.
+	readBacks int
+
 	mu     sync.Mutex
 	bodies []string
+}
+
+type fakeAnswer struct {
+	status int
+	result string
+}
+
+// storeRule - keep a successfully POSTed rule under its id.
+func (f *fakeLoxiLB) storeRule(body []byte) {
+	var model struct {
+		Service map[string]any `json:"serviceArguments"`
+	}
+	if err := json.Unmarshal(body, &model); err != nil {
+		return
+	}
+	id, _ := model.Service["id"].(string)
+	if id == "" {
+		return
+	}
+	for _, field := range f.dropFields {
+		delete(model.Service, field)
+	}
+	if f.rules == nil {
+		f.rules = make(map[string]map[string]any)
+	}
+	f.rules[id] = model.Service
+}
+
+// dropRules - remove the stored rules a DELETE names by address, port and
+// protocol.
+func (f *fakeLoxiLB) dropRules(urlPath string) {
+	parts := strings.Split(urlPath, "/")
+	key := map[string]string{}
+	for i := 0; i+1 < len(parts); i++ {
+		switch parts[i] {
+		case "externalipaddress", "port", "protocol":
+			key[parts[i]] = parts[i+1]
+		}
+	}
+	for id, rule := range f.rules {
+		if fmt.Sprint(rule["externalIP"]) == key["externalipaddress"] &&
+			fmt.Sprint(rule["port"]) == key["port"] && fmt.Sprint(rule["protocol"]) == key["protocol"] {
+			delete(f.rules, id)
+		}
+	}
 }
 
 func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
@@ -76,6 +135,9 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			f.mu.Lock()
 			f.deletes++
 			status, result := f.deleteStatus, f.deleteResult
+			if status == 0 {
+				f.dropRules(r.URL.Path)
+			}
 			f.mu.Unlock()
 
 			w.Header().Set("Content-Type", "application/json")
@@ -100,6 +162,20 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			}
 			_ = json.NewEncoder(w).Encode(status)
 
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/netlox/v1/config/loadbalancer/id/"):
+			id := strings.TrimPrefix(r.URL.Path, "/netlox/v1/config/loadbalancer/id/")
+			f.mu.Lock()
+			f.readBacks++
+			rule, ok := f.rules[id]
+			f.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"serviceArguments": rule})
+
 		case r.URL.Path == "/netlox/v1/config/loadbalancer" && r.Method == http.MethodPost:
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -107,12 +183,19 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			}
 			f.mu.Lock()
 			f.bodies = append(f.bodies, string(body))
+			answer := fakeAnswer{status: f.createStatus, result: f.createResult}
+			if len(f.createAnswers) > 0 {
+				answer, f.createAnswers = f.createAnswers[0], f.createAnswers[1:]
+			}
+			if answer.status == 0 {
+				f.storeRule(body)
+			}
 			f.mu.Unlock()
 
 			w.Header().Set("Content-Type", "application/json")
-			if f.createStatus != 0 {
-				w.WriteHeader(f.createStatus)
-				_, _ = fmt.Fprintf(w, `{"result":%q}`, f.createResult)
+			if answer.status != 0 {
+				w.WriteHeader(answer.status)
+				_, _ = fmt.Fprintf(w, `{"result":%q}`, answer.result)
 				return
 			}
 			_, _ = w.Write([]byte(`{"result":"Success"}`))
