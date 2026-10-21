@@ -40,3 +40,11 @@ kube::codegen::gen_client \
     --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
     --one-input-api "egress" \
     "${SCRIPT_ROOT}/pkg/crds"
+
+kube::codegen::gen_client \
+    --with-watch \
+    --output-dir "${SCRIPT_ROOT}/pkg/jwtauthprofile-client" \
+    --output-pkg "${THIS_PKG}/pkg/jwtauthprofile-client" \
+    --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
+    --one-input-api "jwtauthprofile" \
+    "${SCRIPT_ROOT}/pkg/crds"
