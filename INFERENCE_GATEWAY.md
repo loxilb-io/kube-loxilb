@@ -334,7 +334,7 @@ the InferencePool; they are copied onto the Service it generates.
 | Annotation | Description |
 | ---------- | ----------- |
 | <b>loxilb.io/api-key-auth</b> | `"disabled"`, `"required"`, `"jwt"` or `"apikey-or-jwt"`. `required` validates `X-Api-Key` against loxilb's key store; `jwt` validates an `Authorization: Bearer` token against the profile named below; `apikey-or-jwt` accepts either, and a present `X-Api-Key` decides alone. `disabled` checks nothing but still strips `X-Api-Key`, which is not the same as leaving the annotation out. Requires fullproxy. |
-| <b>loxilb.io/jwt-auth-profile</b> | Name of the JWT auth profile that checks the token, at most 63 characters. Required by `jwt` and `apikey-or-jwt`, refused with any other mode. Register the profile on every loxilb instance (`POST /netlox/v1/config/ai/jwtauthprofile`) first: loxilb refuses a rule naming a profile it does not have (`LoxiLBRejected`). |
+| <b>loxilb.io/jwt-auth-profile</b> | Name of the JWT auth profile that checks the token, at most 63 characters. Required by `jwt` and `apikey-or-jwt`, refused with any other mode. Register the profile on every loxilb instance (`POST /netlox/v1/config/ai/jwtauthprofile`) first: loxilb refuses a rule naming a profile it does not have (`LoxiLBRejected`), and kube-loxilb keeps retrying that instance until it has the profile. |
 
 loxilb checks the credential once per listener - address, port and protocol - before it looks at
 host, path or model, so every Service sharing a listener must declare the same pair; loxilb refuses
@@ -417,7 +417,14 @@ Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the obj
 | `GatewayArgsDowngraded` | Warning | A gateway-only service setting was dropped for an upstream peer in the pool; names which. |
 | `ProbeFieldsDowngraded` | Warning | Health-monitor fields dropped for an upstream peer; the probe path is carried across to `probereq`. |
 | `ProbeModeChanged` | Warning | Both the new health monitor and `proberesp` are configured; names what will actually be checked. |
+| `RuleMissing` | Warning | A loxilb instance no longer has a rule kube-loxilb programmed there. It is put back in the same sync. |
 | `RuleUnhealthy` / `RuleHealthy` | Warning / Normal | loxilb's own view of the rule changed. Needs `loxilb.io/liveness: "yes"`. |
+
+With more than one loxilb instance, a rule that one instance refuses or fails is not given up on. The
+Service is served by the instances that took it, and the others are tried again with backoff, at most
+two minutes apart, until they take it - a JWT auth profile registered there later, for instance. Each
+refusal is reported once. An instance that is down is left alone until it comes back up, when every
+rule is sent to it again.
 
 On the Gateway API path the pool also carries `status.parents[].conditions` (`Accepted`,
 `ResolvedRefs`) under the Gateway that serves it. `ResolvedRefs` says whether `endpointPickerRef`
