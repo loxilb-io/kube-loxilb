@@ -410,7 +410,7 @@ Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the obj
 | `InvalidInferenceConfig` | Warning | An annotation did not parse, or a combination is impossible (e.g. `pd-disagg` without pod endpoints). |
 | `GPUMonitoringDisabled` | Warning | `epselect: gpuaware` on an instance where the GPU routing mode is not armed. Re-checked on every reconcile. |
 | `EndpointPickerUnsupported` | Warning | The rule names an Endpoint Picker and a gateway instance does not list `"epp"` in its version features. A `FailClose` rule is refused there; a `FailOpen` rule is served there without the picker. |
-| `AuthNotSupported` | Warning | The rule declares `api-key-auth` and a gateway instance does not list the matching version features. The rule is refused there rather than served unauthenticated. |
+| `AuthNotSupported` | Warning | The rule declares `api-key-auth` and a gateway instance does not list the matching version features, or stores the rule without the policy when it is read back. The rule is refused, or removed, there rather than served unauthenticated. |
 | `KvExactTokenizerRequired` | Normal | `kv-exact-mode` is on; names the tokenizer path loxilb will read. |
 | `LoxiLBRejected` | Warning | loxilb itself refused the value - an unknown cipher, an unregistered certificate id, a JWT auth profile the instance does not have, and so on. |
 | `ExternalIPUnavailable` | Warning | No external address and port could be allocated yet: another Service holds that port on the pool's address, or the pool is out of addresses. Names the holder when there is one; the Service is retried until it is released. |
