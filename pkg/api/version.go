@@ -18,6 +18,16 @@ const ProductInferenceGateway = "loxilb-inference-gateway"
 // a rule naming an Endpoint Picker is sent.
 const FeatureEndpointPicker = "epp"
 
+// FeatureAPIKeyAuth - the `features` entry of a gateway build that accepts and
+// enforces api_key_auth. Builds without it accept the field and drop it, which
+// would serve the rule unauthenticated.
+const FeatureAPIKeyAuth = "api_key_auth"
+
+// FeatureJWTAuthProfile - the `features` entry of a gateway build that accepts
+// jwt_auth_profile and enforces the Bearer arm of api_key_auth "jwt" and
+// "apikey-or-jwt".
+const FeatureJWTAuthProfile = "jwt_auth_profile"
+
 // VersionModel - response of GET /netlox/v1/version.
 type VersionModel struct {
 	Version   string `json:"version,omitempty"`

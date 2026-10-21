@@ -108,6 +108,21 @@ type AIArgs struct {
 	// without certificate verification, matching what the llm-d charts set
 	// up for the EPP's self-signed certificate.
 	EppPlaintext bool `json:"eppPlaintext,omitempty"`
+
+	// --- Credential enforcement ---
+	//
+	// The gateway reads these once per listener (address, port, protocol),
+	// before a request is matched to a rule, so every fullproxy rule on a
+	// listener has to declare the same pair; it refuses a rule that does not.
+
+	// APIKeyAuth - "disabled" | "required" | "jwt" | "apikey-or-jwt". Empty
+	// declares nothing and keeps proxying byte-identical. "disabled" is not
+	// the same: it marks the service AI-facing and strips X-Api-Key.
+	APIKeyAuth string `json:"api_key_auth,omitempty"`
+	// JwtAuthProfile - the JWT auth profile that decides the Bearer arm.
+	// Required by, and only valid with, "jwt" and "apikey-or-jwt"; the gateway
+	// refuses a name it has no profile for.
+	JwtAuthProfile string `json:"jwt_auth_profile,omitempty"`
 }
 
 // IsSet - whether any gateway-only field carries a value.
@@ -144,6 +159,28 @@ const (
 	// EppEndpointMaxBytes - upper bound of the UTF-8 length of EppEndpoint.
 	EppEndpointMaxBytes = 255
 )
+
+// api_key_auth values and the profile-name bound, mirroring
+// loxilb-inference-gateway common/common.go and api/swagger.yml.
+const (
+	// APIKeyAuthDisabled - AI-facing without enforcement; X-Api-Key is stripped.
+	APIKeyAuthDisabled = "disabled"
+	// APIKeyAuthRequired - X-Api-Key is validated against the key store.
+	APIKeyAuthRequired = "required"
+	// APIKeyAuthJWT - an Authorization Bearer JWT is validated against the
+	// JWT auth profile.
+	APIKeyAuthJWT = "jwt"
+	// APIKeyAuthAPIKeyOrJWT - either credential; a present X-Api-Key decides alone.
+	APIKeyAuthAPIKeyOrJWT = "apikey-or-jwt"
+	// JwtAuthProfileMaxLen - upper bound of the length of JwtAuthProfile.
+	JwtAuthProfileMaxLen = 63
+)
+
+// UsesJWTAuth - whether the declared mode has a Bearer arm, and so needs a
+// JWT auth profile.
+func (a AIArgs) UsesJWTAuth() bool {
+	return a.APIKeyAuth == APIKeyAuthJWT || a.APIKeyAuth == APIKeyAuthAPIKeyOrJWT
+}
 
 // UsesEndpointPicker - whether the rule hands endpoint selection to an EPP.
 func (a AIArgs) UsesEndpointPicker() bool { return a.EppEndpoint != "" }
@@ -269,7 +306,41 @@ func (a AIArgs) ValidateServiceArgs(mode LbMode) error {
 		return fmt.Errorf("backend_keepalive_interval_sec must be >= 0, got %d", a.BackendKeepaliveIntervalSec)
 	}
 
+	if err := a.validateCredentialPolicy(mode); err != nil {
+		return err
+	}
+
 	return a.validateEndpointPicker(mode)
+}
+
+// validateCredentialPolicy - the gateway's api_key_auth and jwt_auth_profile
+// checks, client side and in its wording. Whether a named profile exists only
+// the gateway can say.
+func (a AIArgs) validateCredentialPolicy(mode LbMode) error {
+	switch a.APIKeyAuth {
+	case "", APIKeyAuthDisabled, APIKeyAuthRequired, APIKeyAuthJWT, APIKeyAuthAPIKeyOrJWT:
+	default:
+		return fmt.Errorf("invalid api_key_auth: must be one of disabled, required, jwt, apikey-or-jwt, got %q", a.APIKeyAuth)
+	}
+
+	if a.UsesJWTAuth() {
+		if a.JwtAuthProfile == "" {
+			return fmt.Errorf("jwt_auth_profile: required by this api_key_auth mode and must name a configured profile")
+		}
+	} else if a.JwtAuthProfile != "" {
+		return fmt.Errorf("jwt_auth_profile: only valid with api_key_auth jwt or apikey-or-jwt")
+	}
+	if len(a.JwtAuthProfile) > JwtAuthProfileMaxLen {
+		return fmt.Errorf("jwt_auth_profile must be at most %d bytes, got %d", JwtAuthProfileMaxLen, len(a.JwtAuthProfile))
+	}
+
+	// Enforcement runs in the fullproxy AI path only. On any other mode the
+	// gateway stores the declaration and lets every request through.
+	if a.APIKeyAuth != "" && mode != LBModeFullProxy {
+		return fmt.Errorf("api_key_auth requires mode=fullproxy")
+	}
+
+	return nil
 }
 
 // validateEndpointPicker - the gateway's eppArgsValidate, client side.
