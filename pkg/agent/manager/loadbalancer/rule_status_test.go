@@ -167,11 +167,14 @@ func TestPortStatusesEqual(t *testing.T) {
 	}
 }
 
-// statusManager wires a Manager around the given peers with one programmed
-// rule on 10.0.0.1:8080/tcp.
+// statusManager wires a Manager around the given peers, all up, with one
+// programmed rule on 10.0.0.1:8080/tcp.
 func statusManager(t *testing.T, svc *corev1.Service, peers ...*api.LoxiClient) (*Manager, *record.FakeRecorder) {
 	t.Helper()
 
+	for _, peer := range peers {
+		peer.IsAlive = true
+	}
 	recorder := record.NewFakeRecorder(16)
 	m := &Manager{
 		kubeClient:    k8sfake.NewSimpleClientset(svc),
@@ -223,6 +226,39 @@ func TestSyncRuleStatusSkipsPlainPeers(t *testing.T) {
 	}
 	if events := drainEvents(recorder); len(events) != 0 {
 		t.Errorf("plain peers produced events: %v", events)
+	}
+}
+
+// A peer that is down is not asked: one that drops the request would hold
+// every sync for the whole timeout. Nor is its rule reported missing.
+func TestSyncRuleStatusSkipsPeersThatAreDown(t *testing.T) {
+	up := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	up.ruleStatus = &api.LoadBalancerStatusModel{OperatingStatus: api.OperatingStatusOnline}
+	down := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	down.ruleStatus = nil // a query would read as a missing rule
+
+	svc := statusSvc()
+	downClient := down.client(t)
+	m, recorder := statusManager(t, svc, up.client(t), downClient)
+	downClient.IsAlive = false
+
+	m.syncRuleStatus(svc, GenKey(svc.Namespace, svc.Name))
+
+	up.mu.Lock()
+	upQueries := up.statusQueries
+	up.mu.Unlock()
+	down.mu.Lock()
+	downQueries := down.statusQueries
+	down.mu.Unlock()
+
+	if downQueries != 0 {
+		t.Errorf("a peer that is down was queried %d times", downQueries)
+	}
+	if upQueries != 1 {
+		t.Errorf("the peer that is up was queried %d times, want 1", upQueries)
+	}
+	if events := drainEvents(recorder); len(events) != 0 {
+		t.Errorf("a peer that is down produced events: %v", events)
 	}
 }
 
