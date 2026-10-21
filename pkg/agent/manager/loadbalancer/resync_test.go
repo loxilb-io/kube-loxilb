@@ -99,6 +99,28 @@ func TestReinstallQuietOnAPeerWithThePicker(t *testing.T) {
 	}
 }
 
+// A gateway that comes back on a build without the credential features is not
+// sent the rule, and the Service says why.
+func TestReinstallReportsCredentialPolicyRefusal(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway) // no features
+	peer := gw.client(t)
+	m, recorder := resyncManager(peer, map[string]api.LoadBalancerModel{
+		"jwt": authLoadBalancerModel(api.APIKeyAuthJWT, "kc"),
+	})
+
+	m.reinstallLoxiLbRules(peer)
+
+	events := drainEvents(recorder)
+	if len(events) != 1 || !strings.HasPrefix(events[0], "Warning "+ReasonAuthNotSupported+" ") {
+		t.Errorf("events = %q, want one %s warning", events, ReasonAuthNotSupported)
+	}
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	if len(gw.bodies) != 0 {
+		t.Errorf("a refused rule was still POSTed:\n%s", gw.bodies[0])
+	}
+}
+
 // The other refusals reach their Service the same way.
 func TestReinstallReportsPlainPeerRefusal(t *testing.T) {
 	plain := newFakeLoxiLB(t, "")
