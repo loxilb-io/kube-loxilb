@@ -338,7 +338,11 @@ the InferencePool; they are copied onto the Service it generates.
 
 loxilb checks the credential once per listener - address, port and protocol - before it looks at
 host, path or model, so every Service sharing a listener must declare the same pair; loxilb refuses
-a rule that disagrees with the ones already there. A gateway instance that does not list
+a rule that disagrees with the ones already there. kube-loxilb settles it first: among the fullproxy
+Services on a listener, the oldest one's pair holds - for a Service generated from an InferencePool,
+the pool's age counts - and a Service declaring another pair is not programmed, and has its rules
+taken back, until the two agree (`ListenerAuthConflict`). An unset `api-key-auth` and `"disabled"`
+count as different. A gateway instance that does not list
 `"api_key_auth"` in its version features (and, for `jwt` and `apikey-or-jwt`, `"jwt_auth_profile"`)
 would drop the fields and serve the rule unauthenticated, so the rule is not sent there
 (`AuthNotSupported`).
@@ -402,7 +406,9 @@ If the file is missing, loxilb logs `kv-router: tokenizer not available` once an
 ## Events and status
 
 Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the object as an event, so
-`kubectl describe` is the first place to look:
+`kubectl describe` is the first place to look. On a Service generated from an InferencePool, the
+warnings about the pool's own configuration - `InvalidInferenceConfig`, `AuthNotSupported`,
+`ListenerAuthConflict`, `LoxiLBRejected` - are repeated on the pool, naming the Service:
 
 | Reason | Type | Meaning |
 | ------ | ---- | ------- |
@@ -410,6 +416,7 @@ Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the obj
 | `InvalidInferenceConfig` | Warning | An annotation did not parse, or a combination is impossible (e.g. `pd-disagg` without pod endpoints). |
 | `GPUMonitoringDisabled` | Warning | `epselect: gpuaware` on an instance where the GPU routing mode is not armed. Re-checked on every reconcile. |
 | `EndpointPickerUnsupported` | Warning | The rule names an Endpoint Picker and a gateway instance does not list `"epp"` in its version features. A `FailClose` rule is refused there; a `FailOpen` rule is served there without the picker. |
+| `ListenerAuthConflict` | Warning | The Service shares a listener with an older one that declares another `api-key-auth` or `jwt-auth-profile`. It is not served there until they agree. |
 | `AuthNotSupported` | Warning | The rule declares `api-key-auth` and a gateway instance does not list the matching version features, or stores the rule without the policy when it is read back. The rule is refused, or removed, there rather than served unauthenticated. |
 | `KvExactTokenizerRequired` | Normal | `kv-exact-mode` is on; names the tokenizer path loxilb will read. |
 | `LoxiLBRejected` | Warning | loxilb itself refused the value - an unknown cipher, an unregistered certificate id, a JWT auth profile the instance does not have, and so on. |
