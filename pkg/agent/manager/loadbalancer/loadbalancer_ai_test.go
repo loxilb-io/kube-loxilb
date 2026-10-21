@@ -37,6 +37,11 @@ type fakeLoxiLB struct {
 	// features is reported on /version; set it before client() detects it.
 	features []string
 
+	// createStatus, when set, answers the load-balancer POST with this status
+	// and createResult instead of success. The body is recorded either way.
+	createStatus int
+	createResult string
+
 	mu     sync.Mutex
 	bodies []string
 }
@@ -84,6 +89,11 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			f.mu.Unlock()
 
 			w.Header().Set("Content-Type", "application/json")
+			if f.createStatus != 0 {
+				w.WriteHeader(f.createStatus)
+				_, _ = fmt.Fprintf(w, `{"result":%q}`, f.createResult)
+				return
+			}
 			_, _ = w.Write([]byte(`{"result":"Success"}`))
 
 		default:

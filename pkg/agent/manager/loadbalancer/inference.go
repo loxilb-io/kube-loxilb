@@ -551,6 +551,16 @@ func (m *Manager) reportResyncRefusal(cacheKey string, err error) {
 	}
 }
 
+// reportResyncRejection - the re-sync's counterpart of the LoxiLBRejected
+// warning the fan-out raises: the peer answered and refused the rule - a JWT
+// auth profile it does not have yet, say. Sending the same rule again cannot
+// change that, and neither can restarting kube-loxilb.
+func (m *Manager) reportResyncRejection(cacheKey string, c *api.LoxiClient, err error) {
+	if svc := m.serviceForCacheKey(cacheKey); svc != nil {
+		m.recordServiceWarning(svc, ReasonLoxiLBRejected, fmt.Sprintf("loxilb-lb(%s): %v", c.Host, err))
+	}
+}
+
 // reportResyncDowngrade - a FailOpen rule the re-sync installed on this peer
 // without its Endpoint Picker. installLB strips the fields and succeeds, so
 // nothing else would say so.

@@ -2904,18 +2904,20 @@ func (m *Manager) reinstallLoxiLbRules(aliveClient *api.LoxiClient) {
 						m.reportResyncRefusal(cacheKey, err)
 						refused = true
 						break
+					} else if api.IsClientError(err) {
+						klog.Infof("reinstallLoxiLbRules: lbModel: %v refused by loxilb-lb(%s): %v",
+							lb, aliveClient.Host, err)
+						m.reportResyncRejection(cacheKey, aliveClient, err)
+						refused = true
+						break
 					} else {
-						if !strings.Contains(err.Error(), "exist") {
-							klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lb, retry)
-							time.Sleep(1 * time.Second)
-						} else {
-							isSuccess = true
-							break
-						}
+						klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lb, retry)
+						time.Sleep(1 * time.Second)
 					}
 				}
-				// A rule this peer cannot serve says nothing about whether the
-				// peer works, so it must not count towards the restart below.
+				// A rule this peer cannot serve, or answered and refused, says
+				// nothing about whether the peer works, so it must not count
+				// towards the restart below.
 				if refused {
 					continue
 				}
