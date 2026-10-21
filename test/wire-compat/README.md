@@ -94,7 +94,19 @@ main: 19 rules   igw: 19 rules
 | `gateway` | 요청 없음 (`epp` 기능이 없는 게이트웨이에서 FailClose 거부) | EPP 키 없이 전송 (FailOpen 강등) |
 | `gateway-epp` | `eppEndpoint`만 (failureMode·timeout은 게이트웨이 기본값 FailClose·3000ms) | `eppEndpoint`, `eppFailureMode`, `eppTimeoutMs` |
 
-`f12-*` 외의 픽스처는 어느 모드에서든 바이트 동일해야 한다.
+### 인증 픽스처의 기대 diff
+
+`f13-*`도 인증 지원 이전 빌드(A)와 비교하면 **의도된 diff**가 난다. A는 `api-key-auth`·`jwt-auth-profile`
+어노테이션을 모르므로 평범한 fullproxy 룰을 보낸다(인증 없이 설치 — 이 작업이 막으려는 fail-open).
+
+| `FAKE_VERSION` | `f13-auth-required` (B) | `f13-auth-jwt` (B) |
+|---|---|---|
+| `plain`, `missing` | 요청 없음 (게이트웨이 전용 필드라 plain 피어에서 거부) | 요청 없음 (같은 이유) |
+| `gateway`, `gateway-epp` | 요청 없음 (`api_key_auth` 기능이 없어 거부, `AuthNotSupported`) | 요청 없음 (같은 이유) |
+| `gateway-apikey` | `api_key_auth: required` | 요청 없음 (`jwt_auth_profile` 기능이 없어 거부) |
+| `gateway-auth` | `api_key_auth: required` | `api_key_auth: jwt`, `jwt_auth_profile: kc` |
+
+`f12-*`, `f13-*` 외의 픽스처는 어느 모드에서든 바이트 동일해야 한다.
 
 ## 픽스처 (`fixtures.yaml`)
 
@@ -115,6 +127,7 @@ Service 하나당 **포트 하나**를 배정해 두 실행 사이에서 룰을 
 | `f10-scale` | 8030 | 예비 |
 | `f11-podnet` | 8031 | `usepodnetwork` — 엔드포인트 증감 시나리오용 |
 | `f12-epp-failclose` / `f12-epp-failopen` | 8032 / 8033 | Endpoint Picker 어노테이션(`epp-*`) — 피어 종류별 처리 |
+| `f13-auth-required` / `f13-auth-jwt` | 8034 / 8035 | 인증 어노테이션(`api-key-auth`, `jwt-auth-profile`) — 피어 기능별 처리 |
 
 새 어노테이션을 추가하면 **여기에 픽스처를 한 줄 늘리는 것이 이 하네스를 유지하는 방법**이다.
 
@@ -131,6 +144,8 @@ Service 하나당 **포트 하나**를 배정해 두 실행 사이에서 룰을 
 | | `missing` | `/version` 404 = 구형 피어 |
 | | `gateway` | `product: loxilb-inference-gateway` |
 | | `gateway-epp` | 위와 같고 `features: ["epp"]` 추가 = Endpoint Picker 지원 게이트웨이 |
+| | `gateway-auth` | `features: ["api_key_auth", "jwt_auth_profile"]` = 인증 지원 게이트웨이 |
+| | `gateway-apikey` | `features: ["api_key_auth"]`만 = API 키만 지원하는 게이트웨이 |
 
 ## 한계
 

@@ -415,3 +415,40 @@ spec:
     targetPort: 80
     protocol: TCP
     nodePort: 30033
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f13-auth-required
+  namespace: l1
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+    loxilb.io/api-key-auth: "required"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8034
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30034
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: f13-auth-jwt
+  namespace: l1
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+    loxilb.io/api-key-auth: "jwt"
+    loxilb.io/jwt-auth-profile: "kc"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector: {app: ep}
+  ports:
+  - port: 8035
+    targetPort: 80
+    protocol: TCP
+    nodePort: 30035
