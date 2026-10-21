@@ -250,6 +250,37 @@ func TestGetAIArgsRejections(t *testing.T) {
 			sel:     api.LbSelRr,
 			wantErr: "eppEndpoint is incompatible with pd_disagg_mode=true",
 		},
+		{
+			name: "jwt auth profile with required",
+			annotations: map[string]string{
+				apiKeyAuthAnnotation:     api.APIKeyAuthRequired,
+				jwtAuthProfileAnnotation: "kc",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: "jwt_auth_profile: only valid with api_key_auth jwt or apikey-or-jwt",
+		},
+		{
+			name:        "jwt without a profile",
+			annotations: map[string]string{apiKeyAuthAnnotation: api.APIKeyAuthJWT},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "jwt_auth_profile: required by this api_key_auth mode",
+		},
+		{
+			name:        "api key auth outside fullproxy",
+			annotations: map[string]string{apiKeyAuthAnnotation: api.APIKeyAuthRequired},
+			lbMode:      int(api.LBModeDefault),
+			sel:         api.LbSelRr,
+			wantErr:     "api_key_auth requires mode=fullproxy",
+		},
+		{
+			name:        "api key auth inherits a fullproxy agent default",
+			annotations: map[string]string{apiKeyAuthAnnotation: api.APIKeyAuthRequired},
+			lbMode:      -1,
+			sel:         api.LbSelRr,
+			defaultMode: uint16(api.LBModeFullProxy),
+		},
 	}
 
 	for _, tt := range tests {
@@ -461,6 +492,119 @@ func TestGetAIArgsEndpointPickerSettingsWithoutEndpoint(t *testing.T) {
 	}
 }
 
+// The credential policy reaches the payload as written, and a Service that
+// declares nothing else is still an inference Service: on a plain peer it has
+// to be refused, not stripped and served unauthenticated.
+func TestGetAIArgsCredentialPolicy(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		apiKeyAuthAnnotation:     api.APIKeyAuthJWT,
+		jwtAuthProfileAnnotation: "kc",
+	})
+
+	if !hasAIAnnotation(svc) {
+		t.Fatal("a Service declaring only a credential policy is not seen as an inference Service")
+	}
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if want := (api.AIArgs{APIKeyAuth: api.APIKeyAuthJWT, JwtAuthProfile: "kc"}); got != want {
+		t.Errorf("AIArgs = %+v, want %+v", got, want)
+	}
+}
+
+func authLoadBalancerModel(mode, profile string) api.LoadBalancerModel {
+	return api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			Protocol:   "tcp",
+			Mode:       api.LBModeFullProxy,
+			AIArgs:     api.AIArgs{APIKeyAuth: mode, JwtAuthProfile: profile},
+		},
+		Endpoints: []api.LoadBalancerEndpoint{{EndpointIP: "10.42.0.7", TargetPort: 8000, Weight: 1}},
+	}
+}
+
+func TestInstallLBSendsCredentialPolicyToSupportingGateway(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.features = []string{api.FeatureAPIKeyAuth, api.FeatureJWTAuthProfile}
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), authLoadBalancerModel(api.APIKeyAuthJWT, "kc"), false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+
+	body := gw.lastBody(t)
+	for _, want := range []string{`"api_key_auth":"jwt"`, `"jwt_auth_profile":"kc"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %s\n%s", want, body)
+		}
+	}
+}
+
+// A gateway build without the features would accept the rule, drop both
+// fields and serve it unauthenticated. Nothing may be sent, and unlike a
+// FailOpen Endpoint Picker there is no stripped variant to fall back on.
+func TestInstallLBRefusesCredentialPolicyOnGatewayWithoutTheFeature(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.features = []string{api.FeatureEndpointPicker}
+
+	m := &Manager{}
+	for _, lb := range []api.LoadBalancerModel{
+		authLoadBalancerModel(api.APIKeyAuthRequired, ""),
+		authLoadBalancerModel(api.APIKeyAuthDisabled, ""),
+		authLoadBalancerModel(api.APIKeyAuthJWT, "kc"),
+	} {
+		err := m.installLB(gw.client(t), lb, false)
+		if !errors.Is(err, ErrAuthUnsupported) {
+			t.Errorf("installLB(%s) = %v, want ErrAuthUnsupported", lb.Service.APIKeyAuth, err)
+		}
+	}
+
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	if len(gw.bodies) != 0 {
+		t.Errorf("a refused rule was still POSTed:\n%s", gw.bodies[0])
+	}
+}
+
+// A build that enforces API keys but not JWTs takes the API-key modes and
+// refuses the ones with a Bearer arm.
+func TestInstallLBNeedsBothFeaturesForJWT(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.features = []string{api.FeatureAPIKeyAuth}
+	peer := gw.client(t)
+
+	m := &Manager{}
+	if err := m.installLB(peer, authLoadBalancerModel(api.APIKeyAuthRequired, ""), false); err != nil {
+		t.Errorf("required on an API-key build: %v", err)
+	}
+	for _, mode := range []string{api.APIKeyAuthJWT, api.APIKeyAuthAPIKeyOrJWT} {
+		err := m.installLB(peer, authLoadBalancerModel(mode, "kc"), false)
+		if !errors.Is(err, ErrAuthUnsupported) {
+			t.Errorf("installLB(%s) = %v, want ErrAuthUnsupported", mode, err)
+		} else if !strings.Contains(err.Error(), `"jwt_auth_profile"`) || strings.Contains(err.Error(), `"api_key_auth"`) {
+			t.Errorf("the refusal should name only the missing feature: %v", err)
+		}
+	}
+}
+
+// A Service without a credential policy does not depend on the features.
+func TestInstallLBPlainInferenceRuleIgnoresAuthFeatures(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), eppLoadBalancerModel(api.EppFailureModeFailOpen), false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+	if body := gw.lastBody(t); strings.Contains(body, "api_key_auth") || strings.Contains(body, "jwt_auth_profile") {
+		t.Errorf("credential fields on a rule that declares none\n%s", body)
+	}
+}
+
 func eppLoadBalancerModel(failureMode string) api.LoadBalancerModel {
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
@@ -569,7 +713,7 @@ func TestEndpointPickerDowngradeNotice(t *testing.T) {
 // The re-sync after a peer comes back must not mistake a rule the peer cannot
 // serve for a broken peer.
 func TestIsPeerRefusal(t *testing.T) {
-	for _, err := range []error{ErrInferenceGatewayRequired, ErrGPUMonitoringDisabled, ErrEndpointPickerUnsupported} {
+	for _, err := range []error{ErrInferenceGatewayRequired, ErrGPUMonitoringDisabled, ErrEndpointPickerUnsupported, ErrAuthUnsupported} {
 		if wrapped := errors.Wrap(err, "loxilb-lb(10.0.0.11)"); !isPeerRefusal(wrapped) {
 			t.Errorf("isPeerRefusal(%v) = false", wrapped)
 		}

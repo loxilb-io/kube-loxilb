@@ -91,6 +91,13 @@ const (
 	eppFailureModeAnnotation = "loxilb.io/epp-failure-mode"
 	eppTimeoutMsAnnotation   = "loxilb.io/epp-timeout-ms"
 	eppPlaintextAnnotation   = "loxilb.io/epp-plaintext"
+
+	// --- Credential enforcement ---
+	//
+	// The gateway applies these per listener, so every Service sharing an
+	// address and port has to declare the same pair.
+	apiKeyAuthAnnotation     = "loxilb.io/api-key-auth"
+	jwtAuthProfileAnnotation = "loxilb.io/jwt-auth-profile"
 )
 
 // Endpoint health-monitor annotations.
@@ -166,6 +173,7 @@ var aiAnnotations = []string{
 	pdBalanceAbsThresholdAnnotation,
 	eppEndpointAnnotation, eppFailureModeAnnotation, eppTimeoutMsAnnotation,
 	eppPlaintextAnnotation,
+	apiKeyAuthAnnotation, jwtAuthProfileAnnotation,
 }
 
 // hasAIAnnotation - whether the service asks for anything gateway-specific,
@@ -291,6 +299,9 @@ func (m *Manager) getAIArgs(svc *corev1.Service, lbMode int, sel api.EpSelect) (
 	aiArgs.EppFailureMode = svc.Annotations[eppFailureModeAnnotation]
 	aiArgs.EppTimeoutMs = intVal(eppTimeoutMsAnnotation)
 	aiArgs.EppPlaintext = boolVal(eppPlaintextAnnotation)
+
+	aiArgs.APIKeyAuth = svc.Annotations[apiKeyAuthAnnotation]
+	aiArgs.JwtAuthProfile = svc.Annotations[jwtAuthProfileAnnotation]
 
 	if len(errs) > 0 {
 		return api.AIArgs{}, errs[0]
@@ -483,6 +494,10 @@ var ErrGPUMonitoringDisabled = errors.New("GPU monitoring is disabled on the lox
 // Picker fields and the rule is FailClose, so it must not be served without one.
 var ErrEndpointPickerUnsupported = errors.New("loxilb peer does not support an Endpoint Picker")
 
+// ErrAuthUnsupported - the gateway peer does not enforce the credential policy
+// the rule declares, and would serve it unauthenticated.
+var ErrAuthUnsupported = errors.New("loxilb peer does not enforce the declared credential policy")
+
 // isPeerRefusal - whether installLB declined the rule itself because of what
 // the peer is, before sending anything. Retrying cannot change the answer, and
 // the peer may be perfectly healthy.
@@ -494,6 +509,8 @@ func isPeerRefusal(err error) bool {
 // what the peer is, or "" for any other error.
 func refusalReason(err error) string {
 	switch {
+	case errors.Is(err, ErrAuthUnsupported):
+		return ReasonAuthNotSupported
 	case errors.Is(err, ErrEndpointPickerUnsupported):
 		return ReasonEndpointPickerUnsupported
 	case errors.Is(err, ErrGPUMonitoringDisabled):
@@ -575,6 +592,43 @@ func checkEndpointPicker(c *api.LoxiClient, model *api.LoadBalancerModel) error 
 	api.StripEndpointPicker(model)
 
 	return nil
+}
+
+// authFeatures - the version features a gateway peer must list to enforce the
+// credential policy in aiArgs: api_key_auth for any declaration, and
+// jwt_auth_profile as well for the modes with a Bearer arm.
+func authFeatures(aiArgs api.AIArgs) []string {
+	switch {
+	case aiArgs.APIKeyAuth == "":
+		return nil
+	case aiArgs.UsesJWTAuth():
+		return []string{api.FeatureAPIKeyAuth, api.FeatureJWTAuthProfile}
+	default:
+		return []string{api.FeatureAPIKeyAuth}
+	}
+}
+
+// checkCredentialPolicy - refuse a rule that declares a credential policy on a
+// gateway peer that does not list the features enforcing it.
+//
+// Gateway builds without them accept api_key_auth and jwt_auth_profile, drop
+// them without a word and serve the rule unauthenticated. Unlike a FailOpen
+// Endpoint Picker, no reading of the declaration allows that, so the rule is
+// never stripped and sent: it is refused before anything goes out.
+func checkCredentialPolicy(c *api.LoxiClient, model *api.LoadBalancerModel) error {
+	var missing []string
+	for _, feature := range authFeatures(model.Service.AIArgs) {
+		if !c.SupportsFeature(feature) {
+			missing = append(missing, strconv.Quote(feature))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf("loxilb-lb(%s) does not list %s in its version features, so it would drop %s "+
+		"and serve the rule unauthenticated: %w",
+		c.Host, strings.Join(missing, " and "), apiKeyAuthAnnotation, ErrAuthUnsupported)
 }
 
 // eppUnsupportedPeers - gateway peers that do not list the Endpoint Picker
@@ -741,6 +795,9 @@ const (
 	// gateway peer does not support it: refused there (FailClose) or served
 	// without it (FailOpen).
 	ReasonEndpointPickerUnsupported = "EndpointPickerUnsupported"
+	// ReasonAuthNotSupported - the rule declares a credential policy and a
+	// gateway peer does not enforce it, so the rule is not sent there.
+	ReasonAuthNotSupported = "AuthNotSupported"
 	// ReasonInvalidProbeConfig - the health-monitor annotations are malformed.
 	ReasonInvalidProbeConfig = "InvalidProbeConfig"
 	// ReasonProbeModeChanged - the probe annotations retire a proberesp check

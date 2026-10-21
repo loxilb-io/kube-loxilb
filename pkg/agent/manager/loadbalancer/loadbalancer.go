@@ -1504,8 +1504,13 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 	}
 
 	// Within the gateway, only builds that list the feature apply the
-	// Endpoint Picker fields; the others drop them silently.
+	// credential policy and the Endpoint Picker fields; the others drop them
+	// silently.
 	if c.IsInferenceGateway() {
+		if err = checkCredentialPolicy(c, model); err != nil {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
 		if err = checkEndpointPicker(c, model); err != nil {
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 			return err
