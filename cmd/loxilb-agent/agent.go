@@ -31,6 +31,7 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppolicydefinition"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/egress"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/gatewayapi"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/jwtauthprofile"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loxiurl"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/meta"
@@ -38,12 +39,14 @@ import (
 	bgpCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions"
 	egressCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/egress-client/informers/externalversions"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
+	jwtCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/jwtauthprofile-client/informers/externalversions"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	klbCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
 
 	"k8s.io/client-go/informers"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	sigsInformer "sigs.k8s.io/gateway-api/pkg/client/informers/externalversions"
@@ -302,6 +305,32 @@ func run(o *Options) error {
 	informerFactory.Start(stopCh)
 
 	go lbManager.Run(stopCh)
+
+	// JWT auth profiles go on the gateway peers once the JWTAuthProfile CRD
+	// exists. Until then, and on a cluster without it, rules naming a profile
+	// go as they are and the gateway answers for the profile.
+	jwtCRDClient, err := k8s.CreateJWTAuthProfileClient(o.config.ClientConnection, "")
+	if err != nil {
+		return fmt.Errorf("error creating JWTAuthProfile client: %v", err)
+	}
+	jwtCRDInformerFactory := jwtCRDinformers.NewSharedInformerFactory(jwtCRDClient, informerDefaultResync)
+	jwtProfileManager := jwtauthprofile.NewManager(k8sClient, k8sExtClient, jwtCRDClient, jwtCRDInformerFactory, loxilbClients)
+	jwtProfileManager.SetOnChange(lbManager.QueueServicesUsingProfile)
+	lbManager.SetPeerBackHook(jwtProfileManager.PeerBack)
+	go func() {
+		if !jwtProfileManager.WaitForCRD(stopCh) {
+			return
+		}
+		jwtCRDInformerFactory.Start(stopCh)
+		// Rules are held back for profiles only once the profiles are known;
+		// before the sync, every profile would read as missing.
+		if !cache.WaitForCacheSync(stopCh, jwtProfileManager.HasSynced) {
+			return
+		}
+		lbManager.SetJWTProfiles(jwtProfileManager)
+		jwtProfileManager.Run(stopCh)
+	}()
+
 	if o.config.EnableBGPCRDs {
 		bgpCRDInformerFactory.Start(stopCh)
 		go BgpPeerManager.Run(stopCh)

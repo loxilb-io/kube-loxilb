@@ -19,6 +19,7 @@ package k8s
 import (
 	bpgcrdclientset "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/clientset/versioned"
 	egresscrdclientset "github.com/loxilb-io/kube-loxilb/pkg/egress-client/clientset/versioned"
+	jwtcrdclientset "github.com/loxilb-io/kube-loxilb/pkg/jwtauthprofile-client/clientset/versioned"
 	klbcrdclientset "github.com/loxilb-io/kube-loxilb/pkg/klb-client/clientset/versioned"
 	apiextensionclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	clientset "k8s.io/client-go/kubernetes"
@@ -74,6 +75,16 @@ func CreateInferenceClient(config componentbaseconfig.ClientConnectionConfigurat
 	}
 
 	return infclientset.NewForConfig(kubeConfig)
+}
+
+// CreateJWTAuthProfileClient - client for jwtauthprofile.loxilb.io.
+func CreateJWTAuthProfileClient(config componentbaseconfig.ClientConnectionConfiguration, kubeAPIServerOverride string) (jwtcrdclientset.Interface, error) {
+	kubeConfig, err := BuildKubeConfig(config, kubeAPIServerOverride)
+	if err != nil {
+		return nil, err
+	}
+
+	return jwtcrdclientset.NewForConfig(kubeConfig)
 }
 
 // CreateClients creates kube clients from the given config.
