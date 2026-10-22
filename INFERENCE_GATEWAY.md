@@ -47,6 +47,17 @@ kube-loxilb drives both. A service that asks for any of these annotations while 
 upstream loxilb is rejected with an `InferenceGatewayRequired` Warning event on the Service rather
 than being silently downgraded.
 
+**Which gateway build.** A feature that a gateway build drops without a word is checked against the
+`features` that `GET /netlox/v1/version` lists, and a rule needing a feature an instance lacks is
+not sent there (see [Events and status](#events-and-status)): `"epp"` for the Endpoint Picker,
+`"api_key_auth"` and `"jwt_auth_profile"` for the credential annotations and `JWTAuthProfile`. The
+credential features are in loxilb-inference-gateway `main` from
+[#430](https://github.com/loxilb-io/loxilb-inference-gateway/pull/430) on. kube-loxilb also gives
+every rule on a gateway an id and reads the rule back by it after adding it. A build before #430
+does not take a new id for a rule it already holds, so the first time this kube-loxilb sends a rule
+that an older kube-loxilb added, the read-back finds nothing under the id and the rule is deleted
+and added again - once per rule, with a brief interruption. Upgrade the gateways first.
+
 **fullproxy and pod endpoints.** Endpoint selection and the KV-exact paths run in the userspace
 proxy, which only fullproxy traffic reaches, so these settings need
 <b>loxilb.io/lbmode: "fullproxy"</b> in practice. Selecting on cache locality, GPU state or a
