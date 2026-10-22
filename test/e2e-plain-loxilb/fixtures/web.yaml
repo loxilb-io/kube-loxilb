@@ -1,0 +1,18 @@
+# Two ports: two rules under one Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: plain
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: ep
+  ports:
+    - name: a
+      port: 18080
+      targetPort: 8080
+    - name: b
+      port: 18081
+      targetPort: 8080

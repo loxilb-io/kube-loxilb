@@ -1,0 +1,16 @@
+# Endpoints are pod addresses, so scaling the Deployment changes the rule.
+apiVersion: v1
+kind: Service
+metadata:
+  name: podnet
+  namespace: plain
+  annotations:
+    loxilb.io/usepodnetwork: "yes"
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: ep
+  ports:
+    - port: 18090
+      targetPort: 8080
