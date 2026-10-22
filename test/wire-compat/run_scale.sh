@@ -38,3 +38,5 @@ sleep 45; echo "[$TAG] after scale-in(1): $(wc -l < "$OUT/rec-$TAG.jsonl")"
 k -n l1 get svc -o json > "$OUT/svc-$TAG.json"
 kill "$AGENT_PID" 2>/dev/null; wait "$AGENT_PID" 2>/dev/null
 kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null
+
+echo "=== [$TAG] done: $(wc -l < "$OUT/rec-$TAG.jsonl") recorded requests ==="
