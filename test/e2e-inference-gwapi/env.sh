@@ -43,6 +43,9 @@ PG_IMAGE="${PG_IMAGE:-postgres:18.6}"
 # stage fails closed on an identity it has no store to look up. Same names as
 # the gateway's own cicd/ai-jwtauth scenario; the schema and roles come from
 # its scripts/aigw-db-bootstrap.sql, which build-igw.sh copies out.
+# Only the credential checks need it: IGW_KEYSTORE=no starts the gateways
+# without one, for a build whose store schema is not the one bootstrapped here.
+IGW_KEYSTORE="${IGW_KEYSTORE:-yes}"
 PG_DB=loxilb
 PG_OWNER=oamuser
 PG_OWNER_PW=oampass
@@ -71,15 +74,17 @@ node_addr() {
 }
 
 # run_igw <name> <address> <image> - a gateway container on the network, using
-# the API-key store. Older builds start a shell by default, so the entrypoint
-# is always named.
+# the API-key store unless IGW_KEYSTORE=no. Older builds start a shell by
+# default, so the entrypoint is always named.
 run_igw() {
+  local store=()
+  [[ "$IGW_KEYSTORE" == no ]] || store=(
+    --aikey-db-host "$PG_ADDR" --aikey-db-user "$PG_DP_USER" --aikey-db-name "$PG_DB"
+    --aikey-db-password-file /opt/e2e/aikey_password)
   docker rm -f "$1" >/dev/null 2>&1
   docker run -d --name "$1" --network "$NET" --ip "$2" --privileged --cap-add SYS_ADMIN \
     -v "$WORK/aikey_password:/opt/e2e/aikey_password:ro" \
-    --entrypoint /root/loxilb-io/loxilb/loxilb "$3" \
-    --aikey-db-host "$PG_ADDR" --aikey-db-user "$PG_DP_USER" --aikey-db-name "$PG_DB" \
-    --aikey-db-password-file /opt/e2e/aikey_password >/dev/null || return 1
+    --entrypoint /root/loxilb-io/loxilb/loxilb "$3" "${store[@]}" >/dev/null || return 1
   igw_vip "$1" "$2" && igw_routes "$1" && wait_rest "$2"
 }
 

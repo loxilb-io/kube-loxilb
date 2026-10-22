@@ -59,6 +59,29 @@ API-key store's bootstrap script out of the same commit; the store runs from `po
 The Endpoint Picker checks (5-6d, including 5c) also need `go`, a loxilb-inference-gateway checkout in `EPP_SRC`
 (its `cmd/epp-fake` becomes the stand-in picker), and an `IGW_IMAGE` whose `GET /version` lists
 `"epp"` in `features`. Without either, those checks report `[SKIPPED]` and the rest still run.
+The Endpoint Picker is not in loxilb-inference-gateway `main` yet; it is in the
+`inhogog2/loxilb-inference-gateway` fork's `codex/epp-phase1` branch, built as
+`nxinho/loxilb-epp:epp-cluster7` (from 2fb1f39e). That build lists only `"epp"`, so `run.sh` skips
+the credential checks with it, and its store schema need not match the bootstrap script here, so it
+runs without the API-key store:
+
+```bash
+git clone -b codex/epp-phase1 https://github.com/inhogog2/loxilb-inference-gateway _work/epp-src
+git -C _work/epp-src checkout 2fb1f39e   # the commit the image was built from
+IGW_IMAGE=nxinho/loxilb-epp:epp-cluster7 IGW_KEYSTORE=no EPP_SRC=$PWD/_work/epp-src \
+  GW_LBMODE=fullproxy EPP_ALONE=1 ./run.sh
+```
+
+`EPP_ALONE=1` works around a kube-loxilb limit: two InferencePools on one Gateway listener cannot
+share its address yet - the second pool's Service waits with `ExternalIPUnavailable`, naming the
+first, and never gets a rule. Checks 5-6d put the picker's pool beside the main one, so with it set
+the main pool's route is taken away for them and put back for 7-9.
+
+`GW_LBMODE=fullproxy` works around a defect of that build: deleting an L4 rule (any lbmode but
+fullproxy) aborts the gateway (`*** stack smashing detected ***` in `llb_del_map_elem_wval`, from
+`DpLBRuleDel`), standalone over REST as well. Here the only L4 rule is the Gateway's own ingress
+Service, deleted as soon as a pool claims its listener, and it takes the Gateway's annotations, so
+the Gateway is created as fullproxy. Builds from `main` need neither.
 
 ## Run
 
@@ -68,7 +91,8 @@ IGW_REPO=~/go/src/loxilb-io/loxilb-inference-gateway ./build-igw.sh   # gateway 
 ```
 
 `run.sh` survives the terminal that started it. It tears down any previous testbed, runs
-`config.sh`, `validation.sh` and `validation-auth.sh`, collects diagnostics, and writes
+`config.sh`, `validation.sh` and `validation-auth.sh` - the last only when the gateway lists both
+credential features, and reported as skipped otherwise - collects diagnostics, and writes
 `summary.txt` - what was tested, each stage's exit code, every `[FAIL]` and `[NOTE]` line, and
 `RESULT: PASS|FAIL` - then `done`. `_work/results/latest` points at the newest run. The testbed is
 left up afterwards; `KUBECONFIG=_work/kubeconfig` reaches it.
@@ -88,8 +112,10 @@ tagged by commit, so a rerun at the same commit reuses the image. `KLB_OLD_REV` 
 `474474c`, before rule ids) is built too, for the upgrade check.
 
 Useful variables: `IGW_IMAGE`, `IGW_OLD_IMAGE`, `KLB_REV`, `KLB_OLD_REV`, `SKIP_BUILD=1` (fail
-rather than build), `K3S_IMAGE`, `GIE_VERSION`, `GWAPI_VERSION`, `VIP_POOL`, `EPP_SRC`,
-`EPP_IMAGE` - see `env.sh` for the rest.
+rather than build), `IGW_KEYSTORE=no` (no API-key store), `GW_LBMODE` (the Gateway's lbmode),
+`EPP_ALONE=1` (the picker's pool alone on the listener),
+`K3S_IMAGE`, `GIE_VERSION`,
+`GWAPI_VERSION`, `VIP_POOL`, `EPP_SRC`, `EPP_IMAGE` - see `env.sh` for the rest.
 
 ## What is asserted
 
