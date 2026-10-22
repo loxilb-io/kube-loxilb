@@ -172,6 +172,15 @@ if ! epp_ready; then
   kubectl apply -f "$HERE/fixtures/inferencepool-failopen.yaml" -f "$HERE/fixtures/httproute-failclose.yaml" >/dev/null
   poll 90 kubectl -n llm get svc epp-required-inference || bad "FailOpen pool served" "not found after 90s"
 else
+  # EPP_ALONE=1 takes the main pool's route away for checks 5-6d. Two pools
+  # on one listener cannot share its address yet - the second waits with
+  # ExternalIPUnavailable and never gets a rule - so the picker's pool is
+  # given the listener to itself, and the main pool comes back for 7-9.
+  if [[ -n "${EPP_ALONE:-}" ]]; then
+    echo "  [NOTE] EPP_ALONE: route llm-route removed for checks 5-6d"
+    kubectl -n llm delete httproute llm-route >/dev/null
+    poll 90 bash -c "! kubectl -n llm get svc $POOL_SVC >/dev/null 2>&1" || bad "main pool's Service gone for EPP_ALONE"
+  fi
   EPP_ADDR="$(svc_ip epp):9002"
   EPP_DEST_IP=$(kubectl -n llm get deploy epp -o json | jq -r '.spec.template.spec.containers[0].args as $a
                   | $a[($a | index("-dest")) + 1]' | cut -d: -f1)
@@ -344,6 +353,16 @@ else
                            jq -r '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))
                                   | .serviceArguments.eppEndpoint // \"\"')\" ]]" ||
     bad "FailOpen pool served without the picker again" "got '$(rule_epp epp-required-inference)'"
+  if [[ -n "${EPP_ALONE:-}" ]]; then
+    # 7 removes the picker's pool; with it gone the main pool can take the
+    # listener back for 8-9.
+    kubectl -n llm delete httproute epp-route >/dev/null 2>&1
+    poll 90 bash -c "! kubectl -n llm get svc epp-required-inference >/dev/null 2>&1"
+    kubectl apply -f "$HERE/fixtures/httproute.yaml" >/dev/null
+    poll 90 bash -c "curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
+      jq -e '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_$POOL_SVC\"))' >/dev/null" ||
+      bad "main pool back after EPP_ALONE" "no rule after 90s"
+  fi
 fi
 
 echo "=== 7. removing the route removes the Service ==="

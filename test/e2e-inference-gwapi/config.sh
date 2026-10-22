@@ -29,13 +29,14 @@ say() { echo "### $*"; }
 die() { echo "!!! $*"; exit 1; }
 
 [[ -n "$IGW_IMAGE" ]] || die "no gateway image: run build-igw.sh or set IGW_IMAGE"
-[[ -f "$PG_BOOTSTRAP" ]] || die "no API-key store bootstrap script at $PG_BOOTSTRAP: run build-igw.sh or set PG_BOOTSTRAP"
+[[ "$IGW_KEYSTORE" == no || -f "$PG_BOOTSTRAP" ]] ||
+  die "no API-key store bootstrap script at $PG_BOOTSTRAP: run build-igw.sh, set PG_BOOTSTRAP, or IGW_KEYSTORE=no"
 docker image inspect "$IGW_IMAGE" >/dev/null 2>&1 || die "$IGW_IMAGE is not a local image"
 
 # build_klb <rev> - a kube-loxilb image of one commit, built from a clone so
 # the working tree does not leak into it.
 build_klb() {
-  local image src
+  local image src log
   image="$(klb_image "$1")" || return 1
   if docker image inspect "$image" >/dev/null 2>&1; then
     echo "reusing $image"
@@ -45,9 +46,12 @@ build_klb() {
   src="$WORK/klb-src"
   rm -rf "$src"
   git clone -q "$REPO" "$src" && git -C "$src" checkout -q "$(git -C "$REPO" rev-parse "$1")" || return 1
+  # Under run.sh the log is kept with the run, where the next one cannot
+  # overwrite it.
+  log="${DIAG:-$WORK}/build-$(klb_tag "$1").log"
   echo "building $image"
-  docker build --build-arg GIT_VERSION="$(klb_tag "$1")" -t "$image" "$src" > "$WORK/build-$(klb_tag "$1").log" 2>&1 || {
-    echo "build failed - see $WORK/build-$(klb_tag "$1").log"; return 1; }
+  docker build --build-arg GIT_VERSION="$(klb_tag "$1")" -t "$image" "$src" > "$log" 2>&1 || {
+    echo "build failed - see $log"; return 1; }
 }
 
 say "1. kube-loxilb images ($KLB_REV, and $KLB_OLD_REV for the upgrade check)"
@@ -64,17 +68,22 @@ docker network create "$NET" --subnet "$NET_SUBNET" --gateway "$NET_GATEWAY" \
 # The fixed addresses are taken before the cluster is created, so the node
 # cannot be given one of them.
 say "3. API-key store ($PG_IMAGE)"
-docker run -d --name e2e-pg --network "$NET" --ip "$PG_ADDR" \
-  -e POSTGRES_USER="$PG_OWNER" -e POSTGRES_PASSWORD="$PG_OWNER_PW" -e POSTGRES_DB="$PG_DB" \
-  "$PG_IMAGE" >/dev/null || die "PostgreSQL"
-for ((i = 0; i < 60; i++)); do
-  docker exec e2e-pg pg_isready -h 127.0.0.1 -U "$PG_OWNER" -d "$PG_DB" >/dev/null 2>&1 && break
-  sleep 1
-done
-docker cp "$PG_BOOTSTRAP" e2e-pg:/tmp/bootstrap.sql >/dev/null || die "bootstrap script"
-docker exec -e AIGW_DB_PASSWORD="$PG_DP_PW" -e AIGW_MGMT_DB_PASSWORD="$PG_MGMT_PW" e2e-pg \
-  psql -h 127.0.0.1 -U "$PG_OWNER" -d "$PG_DB" -q -f /tmp/bootstrap.sql || die "API-key store bootstrap"
-echo "$PG_DP_PW" > "$WORK/aikey_password"
+touch "$WORK/aikey_password"
+if [[ "$IGW_KEYSTORE" == no ]]; then
+  echo "skipped: IGW_KEYSTORE=no"
+else
+  docker run -d --name e2e-pg --network "$NET" --ip "$PG_ADDR" \
+    -e POSTGRES_USER="$PG_OWNER" -e POSTGRES_PASSWORD="$PG_OWNER_PW" -e POSTGRES_DB="$PG_DB" \
+    "$PG_IMAGE" >/dev/null || die "PostgreSQL"
+  for ((i = 0; i < 60; i++)); do
+    docker exec e2e-pg pg_isready -h 127.0.0.1 -U "$PG_OWNER" -d "$PG_DB" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  docker cp "$PG_BOOTSTRAP" e2e-pg:/tmp/bootstrap.sql >/dev/null || die "bootstrap script"
+  docker exec -e AIGW_DB_PASSWORD="$PG_DP_PW" -e AIGW_MGMT_DB_PASSWORD="$PG_MGMT_PW" e2e-pg \
+    psql -h 127.0.0.1 -U "$PG_OWNER" -d "$PG_DB" -q -f /tmp/bootstrap.sql || die "API-key store bootstrap"
+  echo "$PG_DP_PW" > "$WORK/aikey_password"
+fi
 
 say "4. gateways ($IGW_IMAGE) and the OIDC stub"
 run_igw igw1 "$IGW1_ADDR" "$IGW_IMAGE" || die "igw1"
@@ -126,7 +135,17 @@ fi
 
 say "9. workloads and gateway resources"
 kubectl apply -f "$HERE/fixtures/model-servers.yaml" >/dev/null
-kubectl apply -f "$HERE/fixtures/gatewayclass.yaml" -f "$HERE/fixtures/gateway.yaml" >/dev/null
+# GW_LBMODE gives the Gateway - and so its own ingress Service - that lbmode
+# from the start. With fullproxy, the gateways hold no L4 rule for the
+# listener, whose delete crashes the Endpoint Picker build (see README).
+kubectl apply -f "$HERE/fixtures/gatewayclass.yaml" >/dev/null
+python3 - "$HERE/fixtures/gateway.yaml" "${GW_LBMODE:-}" <<'PY' | kubectl apply -f - >/dev/null
+import sys, yaml
+gw = yaml.safe_load(open(sys.argv[1]))
+if sys.argv[2]:
+    gw["metadata"].setdefault("annotations", {})["loxilb.io/lbmode"] = sys.argv[2]
+yaml.safe_dump(gw, sys.stdout, sort_keys=False)
+PY
 kubectl -n llm rollout status deploy/vllm-qwen3 --timeout=180s >/dev/null || die "model servers"
 kubectl -n kube-system rollout status deploy/kube-loxilb --timeout=180s >/dev/null || die "kube-loxilb rollout"
 kubectl apply -f "$HERE/fixtures/inferencepool.yaml" -f "$HERE/fixtures/httproute.yaml" >/dev/null
