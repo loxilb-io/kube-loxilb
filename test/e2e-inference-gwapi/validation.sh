@@ -237,19 +237,26 @@ else
   kubectl -n llm patch deploy epp --type json -p \
     "[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/args\",\"value\":$(jq -c '. + ["-mode","hang"]' <<<"$EPP_ARGS")}]" >/dev/null
   kubectl -n llm rollout status deploy/epp --timeout=120s >/dev/null
-  if poll 30 bash -c "curl -s --max-time 8 -X POST http://$VIP:$GW_PORT/v1/chat/completions \
-                        -H 'Content-Type: application/json' -d '{\"model\":\"epp-check\",\"messages\":[]}' | grep -q epp_unavailable"; then
-    T=$(curl -s -o /dev/null -w '%{time_total}' --max-time 8 -X POST "http://$VIP:$GW_PORT/v1/chat/completions" \
-          -H 'Content-Type: application/json' -d '{"model":"epp-check","messages":[]}')
-    # At least the deadline (a refused dial would answer at once), and well
-    # under the default it replaced.
+  # Right after the rollout the picker's Service can still refuse, which is
+  # answered with the same 503 at once; what is measured is the first 503
+  # that waited, i.e. that met a picker that never answers.
+  hung_503() {
+    local out
+    out=$(curl -s -w ' %{time_total}' --max-time 8 -X POST "http://$VIP:$GW_PORT/v1/chat/completions" \
+            -H 'Content-Type: application/json' -d '{"model":"epp-check","messages":[]}')
+    T=${out##* }
+    grep -q epp_unavailable <<<"$out" && awk -v t="$T" 'BEGIN { exit !(t >= 0.5) }'
+  }
+  T=""
+  if poll 30 hung_503; then
+    # At least the deadline, and well under the default it replaced.
     if awk -v t="$T" 'BEGIN { exit !(t >= 0.9 && t < 2.5) }'; then
       ok "503 at the 1000 ms deadline (${T}s)"
     else
       bad "503 at the 1000 ms deadline" "took ${T}s"
     fi
   else
-    bad "503 epp_unavailable from a hanging picker" "got '$(ask epp-check)'"
+    bad "503 epp_unavailable from a hanging picker" "got '$(ask epp-check)' (last took ${T:-?}s)"
   fi
   kubectl -n llm patch deploy epp --type json -p \
     "[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/args\",\"value\":$EPP_ARGS}]" >/dev/null
