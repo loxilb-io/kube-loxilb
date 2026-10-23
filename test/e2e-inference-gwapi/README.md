@@ -69,13 +69,8 @@ runs without the API-key store:
 git clone -b codex/epp-phase1 https://github.com/inhogog2/loxilb-inference-gateway _work/epp-src
 git -C _work/epp-src checkout 2fb1f39e   # the commit the image was built from
 IGW_IMAGE=nxinho/loxilb-epp:epp-cluster7 IGW_KEYSTORE=no EPP_SRC=$PWD/_work/epp-src \
-  GW_LBMODE=fullproxy EPP_ALONE=1 ./run.sh
+  GW_LBMODE=fullproxy ./run.sh
 ```
-
-`EPP_ALONE=1` works around a kube-loxilb limit: two InferencePools on one Gateway listener cannot
-share its address yet - the second pool's Service waits with `ExternalIPUnavailable`, naming the
-first, and never gets a rule. Checks 5-6d put the picker's pool beside the main one, so with it set
-the main pool's route is taken away for them and put back for 7-9.
 
 `GW_LBMODE=fullproxy` works around a defect of that build: deleting an L4 rule (any lbmode but
 fullproxy) aborts the gateway (`*** stack smashing detected ***` in `llb_del_map_elem_wval`, from
@@ -113,7 +108,6 @@ tagged by commit, so a rerun at the same commit reuses the image. `KLB_OLD_REV` 
 
 Useful variables: `IGW_IMAGE`, `IGW_OLD_IMAGE`, `KLB_REV`, `KLB_OLD_REV`, `SKIP_BUILD=1` (fail
 rather than build), `IGW_KEYSTORE=no` (no API-key store), `GW_LBMODE` (the Gateway's lbmode),
-`EPP_ALONE=1` (the picker's pool alone on the listener),
 `K3S_IMAGE`, `GIE_VERSION`,
 `GWAPI_VERSION`, `VIP_POOL`, `EPP_SRC`, `EPP_IMAGE` - see `env.sh` for the rest.
 
@@ -137,6 +131,7 @@ rather than build), `IGW_KEYSTORE=no` (no API-key store), `GW_LBMODE` (the Gatew
 | 6b | creating that Service puts its address on the rule | the Service watch: nothing about the pool changed |
 | 6c | recreating it with a new cluster IP moves the rule to the new address | the address is followed, not cached |
 | 6d | switched to `FailClose`, deleting the Service keeps the pool's Service and rule, points the rule's `eppEndpoint` at `127.0.0.1:1`, and requests get `503 epp_unavailable` | an unresolvable reference is not served when FailClose forbids it, and clients get the 5xx the Inference Extension's conformance expects rather than a refused connection |
+| 6e | the picker's pool, with no model, beside the main pool on the same listener: a rule for each on the VIP:port, both Services on the listener's address, and requests for qwen3-32b and for any other model both answered by a pool pod | pools on one listener share its address and port, and are told apart by model |
 | 7 | deleting the route deletes the Service **and its loxilb rule** | ownership is tracked and cleaned up; a rule keyed by host and path is not reachable by the L4 tuple alone |
 | 8 | a request naming the model is answered by one of the pool's pods, and one naming another model is not | the rule carries traffic, and `model_name` selects rather than decorates |
 | 9 | deleting the pool's route leaves no pool rule on the VIP:port (the Gateway's own ingress Service takes the listener back, and its rule is left out) | `model_name` is part of loxilb's rule key and has to be sent on the delete — get it wrong and the rule outlives its Service, still bound and still answering |

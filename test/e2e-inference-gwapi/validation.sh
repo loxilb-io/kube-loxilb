@@ -172,15 +172,6 @@ if ! epp_ready; then
   kubectl apply -f "$HERE/fixtures/inferencepool-failopen.yaml" -f "$HERE/fixtures/httproute-failclose.yaml" >/dev/null
   poll 90 kubectl -n llm get svc epp-required-inference || bad "FailOpen pool served" "not found after 90s"
 else
-  # EPP_ALONE=1 takes the main pool's route away for checks 5-6d. Two pools
-  # on one listener cannot share its address yet - the second waits with
-  # ExternalIPUnavailable and never gets a rule - so the picker's pool is
-  # given the listener to itself, and the main pool comes back for 7-9.
-  if [[ -n "${EPP_ALONE:-}" ]]; then
-    echo "  [NOTE] EPP_ALONE: route llm-route removed for checks 5-6d"
-    kubectl -n llm delete httproute llm-route >/dev/null
-    poll 90 bash -c "! kubectl -n llm get svc $POOL_SVC >/dev/null 2>&1" || bad "main pool's Service gone for EPP_ALONE"
-  fi
   EPP_ADDR="$(svc_ip epp):9002"
   EPP_DEST_IP=$(kubectl -n llm get deploy epp -o json | jq -r '.spec.template.spec.containers[0].args as $a
                   | $a[($a | index("-dest")) + 1]' | cut -d: -f1)
@@ -353,17 +344,28 @@ else
                            jq -r '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_epp-required-inference\"))
                                   | .serviceArguments.eppEndpoint // \"\"')\" ]]" ||
     bad "FailOpen pool served without the picker again" "got '$(rule_epp epp-required-inference)'"
-  if [[ -n "${EPP_ALONE:-}" ]]; then
-    # 7 removes the picker's pool; with it gone the main pool can take the
-    # listener back for 8-9.
-    kubectl -n llm delete httproute epp-route >/dev/null 2>&1
-    poll 90 bash -c "! kubectl -n llm get svc epp-required-inference >/dev/null 2>&1"
-    kubectl apply -f "$HERE/fixtures/httproute.yaml" >/dev/null
-    poll 90 bash -c "curl -s --max-time 5 http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all |
-      jq -e '.lbAttr[]? | select(.serviceArguments.name|startswith(\"llm_$POOL_SVC\"))' >/dev/null" ||
-      bad "main pool back after EPP_ALONE" "no rule after 90s"
-  fi
 fi
+
+echo "=== 6e. two pools on one listener are both served ==="
+# The picker's pool sits on the main pool's listener with no model of its
+# own: the catch-all beside qwen3-32b. Both Services share the listener's
+# address and port, and the gateway tells the rules apart by model.
+two_rules() {
+  [[ "$(rules | jq --arg ip "$VIP" "[.lbAttr[]? | select(.serviceArguments.externalIP==\$ip and .serviceArguments.port==$GW_PORT)
+        | .serviceArguments.name | select(startswith(\"llm_$POOL_SVC\") or startswith(\"llm_epp-required-inference\"))] | length")" == 2 ]]
+}
+if poll 60 two_rules; then
+  ok "a rule for each pool on $VIP:$GW_PORT"
+else
+  bad "a rule for each pool on $VIP:$GW_PORT" "$(rules | jq -c '.lbAttr[]?.serviceArguments|{name,model_name}' 2>/dev/null | tr '\n' ' ')"
+fi
+check "both Services on the listener's address" \
+  "$(svc_json epp-required-inference | jq -r '.status.loadBalancer.ingress[0].hostname // .status.loadBalancer.ingress[0].ip')" "llb-$VIP"
+PODS=$(kubectl -n llm get pods -l app=vllm-qwen3 -o jsonpath='{.items[*].metadata.name}')
+ANSWER=$(ask qwen3-32b)
+if grep -qw "${ANSWER:-__none__}" <<<"$PODS"; then ok "qwen3-32b served (by $ANSWER)"; else bad "qwen3-32b served" "got '$ANSWER'"; fi
+ANSWER=$(ask any-other-model)
+if grep -qw "${ANSWER:-__none__}" <<<"$PODS"; then ok "another model served by the catch-all (by $ANSWER)"; else bad "another model served by the catch-all" "got '$ANSWER'"; fi
 
 echo "=== 7. removing the route removes the Service ==="
 kubectl -n llm delete httproute epp-route >/dev/null 2>&1
