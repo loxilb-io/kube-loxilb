@@ -37,6 +37,7 @@ var poolWarningReasons = map[string]bool{
 	ReasonAuthNotSupported:       true,
 	ReasonLoxiLBRejected:         true,
 	ReasonListenerAuthConflict:   true,
+	ReasonListenerRouteConflict:  true,
 	ReasonProfileNotFound:        true,
 	ReasonProfileNotProgrammed:   true,
 }

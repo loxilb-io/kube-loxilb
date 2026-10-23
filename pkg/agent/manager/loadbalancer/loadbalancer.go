@@ -236,6 +236,10 @@ type LbCacheEntry struct {
 	SIPPools        []*ippool.IPPool
 	SecIPs          []string
 	LbServicePairs  map[string]*LbServicePairEntry
+	// ListenerAddr - for a Service generated from an InferencePool, its
+	// Gateway's address: the listener's address and port are shared with the
+	// other pools there (listenerShare). "" for any other Service.
+	ListenerAddr string
 }
 
 type LbCacheTable map[string]*LbCacheEntry
@@ -896,6 +900,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				Inst:            zoneInstName,
 				ppv2En:          enProxyProtov2,
 				LbServicePairs:  make(map[string]*LbServicePairEntry),
+				ListenerAddr:    listenerAddrOf(svc),
 			}
 		}()
 
@@ -933,7 +938,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			klog.V(4).Infof("ingSvcPairs: %v", ingSvcPairs)
 			klog.V(4).Infof("hasExistingEIP: %v", hasExistingEIP)
 			for i, sp := range ingSvcPairs {
-				if sp.InRange && sp.IPAllocd {
+				if sp.InRange && sp.IPAllocd && !m.portInUse(cacheKey, sp.IPString, uint16(sp.Port), sp.Protocol) {
 					klog.Infof("Returning ip %s to free pool", sp.IPString)
 					ipPool.ReturnIPAddr(sp.IPString, sp.IdentIPAM)
 				}
@@ -1466,7 +1471,8 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 
 	for _, sp := range lbEntry.LbServicePairs {
 		if releaseAll {
-			if sp.InRange {
+			// A port the pools on one listener share goes back with the last.
+			if sp.InRange && !m.portInUse(cacheKey, sp.ExternalIP, sp.Port, sp.Protocol) {
 				ipPool.ReturnIPAddr(sp.ExternalIP, sp.IdentIPAM)
 			}
 			for idx, ingSecIP := range lbEntry.SecIPs {
@@ -2128,6 +2134,11 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 				}
 			}
 
+			if sp := m.listenerShare(cacheKey, lbCacheEntry, inSPair.Port, inSPair.Protocol); sp != nil {
+				sPairs = append(sPairs, SvcPair{inSPair.IPString, inSPair.Port, inSPair.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, inSPair.K8sSvcPort})
+				continue
+			}
+
 			if !poolReserved {
 				inRange, _, identStr = ipPool.CheckAndReserveIP(inSPair.IPString, cacheKey, uint32(inSPair.Port), inSPair.Protocol)
 			} else {
@@ -2164,6 +2175,12 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 					klog.V(4).Infof("getIngressSvcPairs: LB cache %s already has servicePairs: %v", cacheKey, sp)
 					continue checkServicePortLoop
 				}
+			}
+
+			// Another pool on the same Gateway listener has the port already.
+			if sp := m.listenerShare(cacheKey, lbCacheEntry, portNum, proto); sp != nil {
+				sPairs = append(sPairs, SvcPair{sp.ExternalIP, portNum, proto, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, port})
+				continue
 			}
 
 			if !poolReserved {

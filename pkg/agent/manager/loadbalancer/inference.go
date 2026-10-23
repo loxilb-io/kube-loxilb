@@ -817,6 +817,10 @@ const (
 	// ReasonListenerAuthConflict - the Service shares a listener with an older
 	// one that declares another credential policy, and is not served there.
 	ReasonListenerAuthConflict = "ListenerAuthConflict"
+	// ReasonListenerRouteConflict - the Service is generated from an
+	// InferencePool and shares a listener with an older pool serving the same
+	// model, and is not served there.
+	ReasonListenerRouteConflict = "ListenerRouteConflict"
 	// ReasonProfileNotFound - the rule names a JWT auth profile that has no
 	// JWTAuthProfile; it is sent nowhere until one is created.
 	ReasonProfileNotFound = "ProfileNotFound"
