@@ -34,6 +34,11 @@ import (
 // that declares another credential policy, and is not served there.
 var ErrListenerAuthConflict = errors.New("an older Service on the same listener declares another credential policy")
 
+// ErrListenerRouteConflict - the Service is generated from an InferencePool
+// and shares a listener with an older pool's Service serving the same model,
+// and is not served there.
+var ErrListenerRouteConflict = errors.New("an older pool on the same listener serves the same model")
+
 // listenerKey - one listener of loxilb-inference-gateway: address, port and
 // protocol. The gateway checks credentials once per listener, before a request
 // is matched to a rule by host, path or model.
@@ -51,11 +56,12 @@ func (l listenerKey) String() string {
 // is cached with, and the addresses it names or was given - loadBalancerIP,
 // staticIP, externalIPs, published ingress - on each of its ports.
 //
-// Several Services share a listener only through an address named outright:
-// a generated InferencePool Service names its Gateway's address, and the
-// address pool does not hand one address and port to two Services. The
-// declared addresses are read from the Service itself, so the answer does not
-// depend on which Services the cache has seen since kube-loxilb started.
+// Several Services share a listener through an address named outright: a
+// generated InferencePool Service names its Gateway's address, and the pools
+// on one listener share its port (listenerShare), which the address pool hands
+// to no other two Services. The declared addresses are
+// read from the Service itself, so the answer does not depend on which
+// Services the cache has seen since kube-loxilb started.
 func (m *Manager) listenersOf(svc *corev1.Service) map[listenerKey]bool {
 	listeners := map[listenerKey]bool{}
 
@@ -83,6 +89,32 @@ func (m *Manager) listenersOf(svc *corev1.Service) map[listenerKey]bool {
 // latter makes it own and strip X-Api-Key.
 func listenerPolicyOf(svc *corev1.Service) [2]string {
 	return [2]string{svc.Annotations[apiKeyAuthAnnotation], svc.Annotations[jwtAuthProfileAnnotation]}
+}
+
+// routeOf - what tells a pool's rule apart from the others on its listener:
+// the model it serves. Every pool on a listener has the same host (the
+// address) and path ("/"), so two pools naming the same model, or none, make
+// the same rule. ok is false for a Service not generated from a pool, whose
+// listener the address pool does not share.
+func routeOf(svc *corev1.Service) (model string, ok bool) {
+	if svc.Labels[inferencePoolLabel] == "" {
+		return "", false
+	}
+	return svc.Annotations[modelNameAnnotation], true
+}
+
+// conflictOf - why two Services on one listener cannot both be served there,
+// as the reason reported for the one that yields; "" when they can.
+func conflictOf(a, b *corev1.Service) string {
+	if listenerPolicyOf(a) != listenerPolicyOf(b) {
+		return ReasonListenerAuthConflict
+	}
+	ra, oka := routeOf(a)
+	rb, okb := routeOf(b)
+	if oka && okb && ra == rb {
+		return ReasonListenerRouteConflict
+	}
+	return ""
 }
 
 // declaresFullProxy - whether a Service's rules are fullproxy, the only mode
@@ -133,12 +165,15 @@ func (m *Manager) olderThan(a, b *corev1.Service) bool {
 
 // listenerVerdict - how a Service stands on the listeners it shares.
 type listenerVerdict struct {
-	// yieldTo - the older Service whose policy holds on a listener this one
-	// shares and disagrees on; nil if none.
+	// yieldTo - the older Service that holds a listener this one shares and
+	// conflicts on; nil if none.
 	yieldTo  *corev1.Service
 	listener listenerKey
-	// outranks - the younger Services that disagree with this one on a
-	// listener where this one's policy holds.
+	// reason - what the conflict is: ReasonListenerAuthConflict or
+	// ReasonListenerRouteConflict.
+	reason string
+	// outranks - the younger Services that conflict with this one on a
+	// listener where this one holds.
 	outranks []*corev1.Service
 }
 
@@ -146,9 +181,10 @@ type listenerVerdict struct {
 // listeners.
 //
 // On each listener the policy of the oldest fullproxy Service holds; a
-// Service declaring another one yields. This follows what the Services
-// declare, not what is installed, so neither the order the cache filled in
-// after a restart nor the order rules reached loxilb decides.
+// Service declaring another one yields. Of the pools on a listener that serve
+// the same model, the oldest is served and the others yield. This follows
+// what the Services declare, not what is installed, so neither the order the
+// cache filled in after a restart nor the order rules reached loxilb decides.
 func (m *Manager) judgeListeners(svc *corev1.Service) listenerVerdict {
 	var verdict listenerVerdict
 	if !m.declaresFullProxy(svc) || m.serviceLister == nil {
@@ -191,27 +227,43 @@ func (m *Manager) judgeListeners(svc *corev1.Service) listenerVerdict {
 		}
 	}
 
+	yield := func(to *corev1.Service, l listenerKey, reason string) {
+		if verdict.yieldTo == nil || m.olderThan(to, verdict.yieldTo) {
+			verdict.yieldTo, verdict.listener, verdict.reason = to, l, reason
+		}
+	}
 	for l, first := range oldest {
 		if m.olderThan(first, svc) && listenerPolicyOf(first) != policy {
-			if verdict.yieldTo == nil || m.olderThan(first, verdict.yieldTo) {
-				verdict.yieldTo, verdict.listener = first, l
-			}
+			yield(first, l, ReasonListenerAuthConflict)
+		}
+	}
+	// The same model is a conflict with any older pool on the listener, not
+	// only the oldest: unlike a policy, it does not follow from agreeing with
+	// the oldest.
+	for _, other := range rivals {
+		if m.olderThan(other, svc) && conflictOf(other, svc) == ReasonListenerRouteConflict {
+			yield(other, rivalOn[other][0], ReasonListenerRouteConflict)
 		}
 	}
 	if verdict.yieldTo != nil {
 		return verdict
 	}
 
-	// This one is the oldest wherever it disagrees with a rival, so the rival
-	// yields there.
+	// This one holds wherever it conflicts with a rival - it is the oldest
+	// where the policies differ, and older than a rival serving its model -
+	// so the rival yields there.
 	for _, other := range rivals {
-		if listenerPolicyOf(other) == policy {
-			continue
-		}
-		for _, l := range rivalOn[other] {
-			if first, ok := oldest[l]; !ok || m.olderThan(svc, first) {
+		switch conflictOf(svc, other) {
+		case ReasonListenerAuthConflict:
+			for _, l := range rivalOn[other] {
+				if first, ok := oldest[l]; !ok || m.olderThan(svc, first) {
+					verdict.outranks = append(verdict.outranks, other)
+					break
+				}
+			}
+		case ReasonListenerRouteConflict:
+			if m.olderThan(svc, other) {
 				verdict.outranks = append(verdict.outranks, other)
-				break
 			}
 		}
 	}
@@ -224,7 +276,8 @@ func (m *Manager) judgeListeners(svc *corev1.Service) listenerVerdict {
 //
 // A yielding Service is not sent to any peer, and what it already has on
 // them is deleted: the gateway would otherwise apply one of the two policies
-// to every rule on the listener, whichever was installed first. Its peers are
+// to every rule on the listener, whichever was installed first, or hold one
+// rule for two pools serving the same model, whichever was sent last. Its peers are
 // held, so the retry of a later sync puts the rules back once nothing on the
 // listener disagrees. Services it outranks that have not yielded yet, and
 // Services that yielded to it but no longer disagree, are queued to be
@@ -258,13 +311,23 @@ func (m *Manager) settleListeners(svc *corev1.Service, cacheKey string) (bool, e
 	}
 
 	rivalKey := GenKey(verdict.yieldTo.Namespace, verdict.yieldTo.Name)
+	cause := ErrListenerAuthConflict
+	if verdict.reason == ReasonListenerRouteConflict {
+		cause = ErrListenerRouteConflict
+	}
 	if m.yielding[cacheKey] != rivalKey {
 		m.yielding[cacheKey] = rivalKey
 		message := fmt.Sprintf("listener %s is shared with Service %s, which is older and declares another "+
 			"api_key_auth or jwt_auth_profile; the gateway checks one policy for every rule on a listener, "+
 			"so this Service is not served there until the two agree", verdict.listener, rivalKey)
+		if verdict.reason == ReasonListenerRouteConflict {
+			model, _ := routeOf(svc)
+			message = fmt.Sprintf("listener %s is shared with Service %s, which is older and serves the same model "+
+				"(%q); the gateway would hold one rule for both, so this Service is not served there until "+
+				"one of them changes or goes", verdict.listener, rivalKey, model)
+		}
 		klog.Errorf("service %s: %s", cacheKey, message)
-		m.recordServiceWarning(svc, ReasonListenerAuthConflict, message)
+		m.recordServiceWarning(svc, verdict.reason, message)
 	}
 
 	entry, ok := m.lbCache[cacheKey]
@@ -276,7 +339,7 @@ func (m *Manager) settleListeners(svc *corev1.Service, cacheKey string) (bool, e
 			return true, err
 		}
 	}
-	held := peerState{phase: peerHeld, err: errors.Wrapf(ErrListenerAuthConflict, "yields to %s", rivalKey)}
+	held := peerState{phase: peerHeld, err: errors.Wrapf(cause, "yields to %s", rivalKey)}
 	for _, sp := range entry.LbServicePairs {
 		sp.peers = make(map[string]peerState, len(m.LoxiClients.Clients))
 		for _, c := range m.LoxiClients.Clients {

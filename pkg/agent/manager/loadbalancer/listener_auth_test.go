@@ -271,3 +271,73 @@ func TestAddHoldsAServiceThatDisagreesOnItsListener(t *testing.T) {
 		t.Errorf("POSTed %d rules once the listener was free, want 1", n)
 	}
 }
+
+// poolOnListener - onListener for the Service of a pool serving model.
+func poolOnListener(name string, minutes int, model string) *corev1.Service {
+	svc := onListener(name, minutes, "", "")
+	svc.Labels = map[string]string{inferencePoolLabel: name}
+	if model != "" {
+		svc.Annotations[modelNameAnnotation] = model
+	}
+	return svc
+}
+
+// Pools on one listener are told apart by model. Of those serving the same
+// one, the oldest is served - even when it is not the oldest on the listener.
+func TestPoolsServingTheSameModelDoNotShareAListener(t *testing.T) {
+	a := poolOnListener("a", 0, "qwen")
+	b := poolOnListener("b", 1, "llama")
+	c := poolOnListener("c", 2, "llama")
+	m, _ := listenerManager(t, a, b, c)
+
+	if v := m.judgeListeners(b); v.yieldTo != nil {
+		t.Errorf("b yields to %s although no older pool serves llama", v.yieldTo.Name)
+	}
+	if v := m.judgeListeners(c); v.yieldTo == nil || v.yieldTo.Name != "b" || v.reason != ReasonListenerRouteConflict {
+		t.Errorf("c: yieldTo %v (%s), want b for %s", v.yieldTo, v.reason, ReasonListenerRouteConflict)
+	}
+	if v := m.judgeListeners(b); names(v.outranks) != "c" {
+		t.Errorf("b outranks %q, want c", names(v.outranks))
+	}
+	if v := m.judgeListeners(a); len(v.outranks) != 0 {
+		t.Errorf("a outranks %q although no other pool serves qwen", names(v.outranks))
+	}
+}
+
+// Two pools naming no model are both the listener's catch-all: one rule.
+func TestPoolsWithoutAModelConflict(t *testing.T) {
+	a := poolOnListener("a", 0, "")
+	b := poolOnListener("b", 1, "")
+	m, _ := listenerManager(t, a, b)
+
+	if v := m.judgeListeners(b); v.yieldTo == nil || v.reason != ReasonListenerRouteConflict {
+		t.Errorf("b: yieldTo %v (%s), want a for %s", v.yieldTo, v.reason, ReasonListenerRouteConflict)
+	}
+}
+
+// Services not generated from a pool are judged on their policy alone, as
+// before.
+func TestOtherServicesAreNotJudgedOnModel(t *testing.T) {
+	a := onListener("a", 0, "", "")
+	b := onListener("b", 1, "", "")
+	m, _ := listenerManager(t, a, b)
+
+	if v := m.judgeListeners(b); v.yieldTo != nil {
+		t.Errorf("b yields to %s on model", v.yieldTo.Name)
+	}
+}
+
+// A pool that yields says why, naming the older pool and the model.
+func TestRouteConflictIsReported(t *testing.T) {
+	a := poolOnListener("a", 0, "qwen")
+	b := poolOnListener("b", 1, "qwen")
+	m, recorder := listenerManager(t, a, b)
+
+	if yields, err := m.settleListeners(b, GenKey("llm", "b")); !yields || err != nil {
+		t.Fatalf("settleListeners = %v, %v; want it to yield", yields, err)
+	}
+	if len(recorder.events) != 1 || recorder.events[0].reason != ReasonListenerRouteConflict ||
+		!strings.Contains(recorder.events[0].message, "llm/a") || !strings.Contains(recorder.events[0].message, "qwen") {
+		t.Errorf("events = %+v, want one %s naming llm/a and qwen", recorder.events, ReasonListenerRouteConflict)
+	}
+}

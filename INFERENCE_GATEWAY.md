@@ -268,6 +268,13 @@ case and the traffic is black-holed.
 warning in the kube-loxilb log - unless it names an Endpoint Picker, which chooses among every target
 port, in which case it is refused.
 
+**Several pools on one listener.** The routes on one listener can send to several pools - a model
+each. Their Services share the listener's address and port, and the gateway tells their rules apart
+by model, the host and path being the same for all of them. The address and port stay allocated until
+the last of these Services goes. Two pools serving the same model, or two naming none, would make one
+rule: the older pool is served, and the other waits with a `ListenerRouteConflict` event until one of
+them changes or goes.
+
 **One Service per listener.** A pool reachable through several Gateway listeners gets one Service per
 listener, named `<pool>-inference-<gateway>-<listener>`; long names are truncated to the API server's
 63-character limit without letting two of them collapse onto one.
@@ -462,7 +469,7 @@ If the file is missing, loxilb logs `kv-router: tokenizer not available` once an
 Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the object as an event, so
 `kubectl describe` is the first place to look. On a Service generated from an InferencePool, the
 warnings about the pool's own configuration - `InvalidInferenceConfig`, `AuthNotSupported`,
-`ListenerAuthConflict`, `ProfileNotFound`, `ProfileNotProgrammed`, `LoxiLBRejected` - are repeated on
+`ListenerAuthConflict`, `ListenerRouteConflict`, `ProfileNotFound`, `ProfileNotProgrammed`, `LoxiLBRejected` - are repeated on
 the pool, naming the Service. A `JWTAuthProfile` carries its own, listed last.
 
 | Reason | Type | Meaning |
@@ -474,6 +481,7 @@ the pool, naming the Service. A `JWTAuthProfile` carries its own, listed last.
 | `ProfileNotFound` | Warning | The rule names a JWT auth profile that has no `JWTAuthProfile`. It is sent nowhere until one is created. |
 | `ProfileNotProgrammed` | Warning | The JWT auth profile is not on that loxilb instance yet. The rule goes there once it is. |
 | `ListenerAuthConflict` | Warning | The Service shares a listener with an older one that declares another `api-key-auth` or `jwt-auth-profile`. It is not served there until they agree. |
+| `ListenerRouteConflict` | Warning | The Service of an InferencePool shares a listener with an older pool's that serves the same model (or, like it, none): the gateway would hold one rule for both. It is not served there until one of them changes or goes. |
 | `AuthNotSupported` | Warning | The rule declares `api-key-auth` and a gateway instance does not list the matching version features, or stores the rule without the policy when it is read back. The rule is refused, or removed, there rather than served unauthenticated. |
 | `KvExactTokenizerRequired` | Normal | `kv-exact-mode` is on; names the tokenizer path loxilb will read. |
 | `LoxiLBRejected` | Warning | loxilb itself refused the value - an unknown cipher, an unregistered certificate id, a JWT auth profile the instance does not have, and so on. |
