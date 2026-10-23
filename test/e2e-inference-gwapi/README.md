@@ -61,22 +61,21 @@ The Endpoint Picker checks (5-6d, including 5c) also need `go`, a loxilb-inferen
 `"epp"` in `features`. Without either, those checks report `[SKIPPED]` and the rest still run.
 The Endpoint Picker is not in loxilb-inference-gateway `main` yet; it is in the
 `inhogog2/loxilb-inference-gateway` fork's `codex/epp-phase1` branch, built as
-`nxinho/loxilb-epp:epp-cluster7` (from 2fb1f39e). That build lists only `"epp"`, so `run.sh` skips
-the credential checks with it, and its store schema need not match the bootstrap script here, so it
-runs without the API-key store:
+`nxinho/loxilb-epp:epp-cluster8`. That build lists only `"epp"`, so `run.sh` skips the credential
+checks with it, and its store schema need not match the bootstrap script here, so it runs without
+the API-key store. The stand-in picker is built from 2fb1f39e, the commit the image's code is from
+(the image itself was built without git information):
 
 ```bash
 git clone -b codex/epp-phase1 https://github.com/inhogog2/loxilb-inference-gateway _work/epp-src
-git -C _work/epp-src checkout 2fb1f39e   # the commit the image was built from
-IGW_IMAGE=nxinho/loxilb-epp:epp-cluster7 IGW_KEYSTORE=no EPP_SRC=$PWD/_work/epp-src \
-  GW_LBMODE=fullproxy ./run.sh
+git -C _work/epp-src checkout 2fb1f39e
+IGW_IMAGE=nxinho/loxilb-epp:epp-cluster8 IGW_KEYSTORE=no EPP_SRC=$PWD/_work/epp-src ./run.sh
 ```
 
-`GW_LBMODE=fullproxy` works around a defect of that build: deleting an L4 rule (any lbmode but
-fullproxy) aborts the gateway (`*** stack smashing detected ***` in `llb_del_map_elem_wval`, from
-`DpLBRuleDel`), standalone over REST as well. Here the only L4 rule is the Gateway's own ingress
-Service, deleted as soon as a pool claims its listener, and it takes the Gateway's annotations, so
-the Gateway is created as fullproxy. Builds from `main` need neither.
+Use `epp-cluster8`, not `epp-cluster7`: the earlier build of the same code aborts on deleting any L4
+rule (`*** stack smashing detected ***` in `llb_del_map_elem_wval`), which here is the Gateway's own
+ingress Service giving its listener to a pool. `GW_LBMODE=fullproxy` - the Gateway, and so its
+ingress Service, created as fullproxy - kept the run going on that build.
 
 ## Run
 
