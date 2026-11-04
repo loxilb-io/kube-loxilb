@@ -18,6 +18,12 @@ var aiWireKeys = []string{
 	"session_header_name", "model_name", "trace_type", "cb_enable",
 	"ep_role", "nixl_port",
 	"eppEndpoint", "eppFailureMode", "eppTimeoutMs", "eppPlaintext",
+	"fc_mode", "fc_max_outstanding", "fc_ep_max_inflight", "fc_prefill_max_inflight",
+	"fc_decode_max_inflight", "fc_max_queue_depth", "fc_max_queue_wait_ms",
+	"fc_adaptive", "fc_ttft_target_ms", "fc_telemetry_stale_ms", "fc_warmup_ms",
+	"fc_tenant_max_share_pct", "fc_tenant_wake", "fc_expose_headers", "fc_llmd_headers",
+	"fc_wake_policy", "fc_band_weights", "fc_band_min_share_pct", "fc_critical_reserve_pct",
+	"fc_band_wait_ms", "fc_band_queue_pct", "fc_shed_queue",
 }
 
 func mustMarshal(t *testing.T, v any) string {
@@ -137,7 +143,8 @@ func TestStripGatewayFieldsLeavesSourceIntact(t *testing.T) {
 			ExternalIP: "10.0.0.1",
 			Port:       8080,
 			AIArgs: AIArgs{KvExactMode: KvExactModeZmq, PDDisaggMode: true,
-				EppEndpoint: "10.43.0.9:9002", EppFailureMode: EppFailureModeFailOpen, EppTimeoutMs: 5000, EppPlaintext: true},
+				EppEndpoint: "10.43.0.9:9002", EppFailureMode: EppFailureModeFailOpen, EppTimeoutMs: 5000, EppPlaintext: true,
+				FlowControlArgs: FlowControlArgs{FcMode: "enforce", FcMaxQueueDepth: 96, FcMaxQueueWaitMs: 15000}},
 		},
 		Endpoints: []LoadBalancerEndpoint{
 			{EndpointIP: "31.31.31.1", TargetPort: 8000, EpRole: EpRolePrefill, NixlPort: 9001},

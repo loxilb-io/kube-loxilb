@@ -807,6 +807,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		m.recordServiceWarning(svc, ReasonInvalidInferenceConfig, err.Error())
 		return err
 	}
+	m.recordFlowControlNotice(svc, aiArgs)
 
 	// Roles are per pod, so the endpoints have to be pods. In the default mode
 	// the endpoints are node addresses, where every pod on a node collapses

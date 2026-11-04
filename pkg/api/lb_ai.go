@@ -123,6 +123,12 @@ type AIArgs struct {
 	// Required by, and only valid with, "jwt" and "apikey-or-jwt"; the gateway
 	// refuses a name it has no profile for.
 	JwtAuthProfile string `json:"jwt_auth_profile,omitempty"`
+
+	// --- Capacity admission gate (flow control) ---
+
+	// FlowControlArgs - the fc_* fields. Embedded, so they stay flat on the
+	// wire and inside the comparison IsSet makes.
+	FlowControlArgs
 }
 
 // IsSet - whether any gateway-only field carries a value.
@@ -180,6 +186,14 @@ const (
 // JWT auth profile.
 func (a AIArgs) UsesJWTAuth() bool {
 	return a.APIKeyAuth == APIKeyAuthJWT || a.APIKeyAuth == APIKeyAuthAPIKeyOrJWT
+}
+
+// IsAIGatewayService - whether the gateway runs the rule as an AI-gateway
+// service: SSE mode, P/D disaggregation, or a credential policy that checks
+// something ("disabled" does not count). The capacity admission gate runs on
+// these only. Mirrors aiGwModeFor in the gateway's pkg/loxinet/rules.go.
+func (a AIArgs) IsAIGatewayService() bool {
+	return a.SseMode || a.PDDisaggMode || (a.APIKeyAuth != "" && a.APIKeyAuth != APIKeyAuthDisabled)
 }
 
 // UsesEndpointPicker - whether the rule hands endpoint selection to an EPP.
@@ -304,6 +318,10 @@ func (a AIArgs) ValidateServiceArgs(mode LbMode) error {
 	}
 	if a.BackendKeepaliveIntervalSec < 0 {
 		return fmt.Errorf("backend_keepalive_interval_sec must be >= 0, got %d", a.BackendKeepaliveIntervalSec)
+	}
+
+	if err := a.FlowControlArgs.validate(); err != nil {
+		return err
 	}
 
 	if err := a.validateCredentialPolicy(mode); err != nil {

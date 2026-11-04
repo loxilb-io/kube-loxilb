@@ -34,6 +34,7 @@ const inferencePoolLabel = "loxilb.io/inference-pool"
 // looks at; the generated Service is ours.
 var poolWarningReasons = map[string]bool{
 	ReasonInvalidInferenceConfig: true,
+	ReasonFlowControlIgnored:     true,
 	ReasonAuthNotSupported:       true,
 	ReasonLoxiLBRejected:         true,
 	ReasonListenerAuthConflict:   true,

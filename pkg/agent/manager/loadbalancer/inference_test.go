@@ -281,6 +281,34 @@ func TestGetAIArgsRejections(t *testing.T) {
 			sel:         api.LbSelRr,
 			defaultMode: uint16(api.LBModeFullProxy),
 		},
+		{
+			name:        "flow-control ceiling that is not an integer",
+			annotations: map[string]string{sseModeAnnotation: "true", fcMaxOutstandingAnnotation: "96k"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     `loxilb.io/fc-max-outstanding: "96k" is not an integer`,
+		},
+		{
+			name:        "flow-control mode the gateway does not know",
+			annotations: map[string]string{sseModeAnnotation: "true", fcModeAnnotation: "enabled"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "fc_mode must be one of off, observe, enforce or inherit",
+		},
+		{
+			name:        "flow-control queue without a wait window",
+			annotations: map[string]string{sseModeAnnotation: "true", fcMaxQueueDepthAnnotation: "96"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "fc_max_queue_wait_ms must be greater than 0 when fc_max_queue_depth is set",
+		},
+		{
+			name:        "flow-control band weights that are not a triple",
+			annotations: map[string]string{sseModeAnnotation: "true", fcBandWeightsAnnotation: "8,3,1"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "fc_band_weights must be three whole numbers critical:standard:sheddable",
+		},
 	}
 
 	for _, tt := range tests {
@@ -512,6 +540,134 @@ func TestGetAIArgsCredentialPolicy(t *testing.T) {
 	}
 	if want := (api.AIArgs{APIKeyAuth: api.APIKeyAuthJWT, JwtAuthProfile: "kc"}); got != want {
 		t.Errorf("AIArgs = %+v, want %+v", got, want)
+	}
+}
+
+// The flow-control annotations of a known-good gateway request reach the
+// payload as written, beside the KV-exact ones they were sent with.
+func TestGetAIArgsFlowControl(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		endPointSelAnnotation:         "chwbl",
+		modelNameAnnotation:           "Qwen/Qwen3-32B-FP8",
+		sseModeAnnotation:             "true",
+		kvExactModeAnnotation:         "3",
+		kvEngineTypeAnnotation:        "vllm",
+		kvBlockSizeAnnotation:         "16",
+		kvZmqPortAnnotation:           "5557",
+		kvWarmupSecAnnotation:         "30",
+		fcModeAnnotation:              "enforce",
+		fcEpMaxInflightAnnotation:     "32",
+		fcMaxOutstandingAnnotation:    "96",
+		fcMaxQueueDepthAnnotation:     "96",
+		fcMaxQueueWaitMsAnnotation:    "15000",
+		fcWarmupMsAnnotation:          "30000",
+		fcAdaptiveAnnotation:          "on",
+		fcTtftTargetMsAnnotation:      "5000",
+		fcExposeHeadersAnnotation:     "on",
+		fcWakePolicyAnnotation:        "weighted",
+		fcBandWeightsAnnotation:       "8:3:1",
+		fcTenantMaxSharePctAnnotation: "50",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelCHWBL)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+
+	want := api.FlowControlArgs{
+		FcMode:              "enforce",
+		FcEpMaxInflight:     32,
+		FcMaxOutstanding:    96,
+		FcMaxQueueDepth:     96,
+		FcMaxQueueWaitMs:    15000,
+		FcWarmupMs:          30000,
+		FcAdaptive:          "on",
+		FcTtftTargetMs:      5000,
+		FcExposeHeaders:     "on",
+		FcWakePolicy:        "weighted",
+		FcBandWeights:       "8:3:1",
+		FcTenantMaxSharePct: 50,
+	}
+	if got.FlowControlArgs != want {
+		t.Errorf("FlowControlArgs = %+v, want %+v", got.FlowControlArgs, want)
+	}
+	if got.KvExactMode != api.KvExactModeSingleRole || got.KvZmqPort != 5557 {
+		t.Errorf("KV-exact fields = %d/%d, want 3/5557", got.KvExactMode, got.KvZmqPort)
+	}
+	if notice := flowControlIgnoredNotice(svc, got); notice != "" {
+		t.Errorf("notice on an SSE Service = %q, want none", notice)
+	}
+}
+
+// Any credential policy that checks something makes the Service an
+// AI-gateway service too, so the gate goes out with it.
+func TestGetAIArgsFlowControlWithCredentialPolicy(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		apiKeyAuthAnnotation: api.APIKeyAuthRequired,
+		fcModeAnnotation:     "observe",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if got.FcMode != "observe" {
+		t.Errorf("FcMode = %q, want observe", got.FcMode)
+	}
+}
+
+// Without SSE mode, P/D or a checking credential policy the gateway never
+// consults the gate, so the settings are left out and the Service is told.
+// A Service with nothing else stays plain, and an inference Service keeps the
+// rest of its arguments.
+func TestGetAIArgsFlowControlWithoutAIGatewayService(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		want        api.AIArgs
+	}{
+		{
+			name:        "flow control only",
+			annotations: map[string]string{fcModeAnnotation: "enforce", fcMaxOutstandingAnnotation: "96"},
+		},
+		{
+			name: "beside a model name",
+			annotations: map[string]string{
+				modelNameAnnotation: "llama", fcModeAnnotation: "enforce", fcMaxOutstandingAnnotation: "96",
+			},
+			want: api.AIArgs{ModelName: "llama"},
+		},
+		{
+			name: "beside api-key-auth disabled",
+			annotations: map[string]string{
+				apiKeyAuthAnnotation: api.APIKeyAuthDisabled, fcModeAnnotation: "enforce", fcMaxOutstandingAnnotation: "96",
+			},
+			want: api.AIArgs{APIKeyAuth: api.APIKeyAuthDisabled},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := managerWithMode(0)
+			svc := aiSvc(tt.annotations)
+
+			got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+			if err != nil {
+				t.Fatalf("getAIArgs: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("AIArgs = %+v, want %+v", got, tt.want)
+			}
+
+			notice := flowControlIgnoredNotice(svc, got)
+			for _, want := range []string{fcModeAnnotation, fcMaxOutstandingAnnotation, sseModeAnnotation} {
+				if !strings.Contains(notice, want) {
+					t.Errorf("notice does not name %s: %q", want, notice)
+				}
+			}
+		})
 	}
 }
 

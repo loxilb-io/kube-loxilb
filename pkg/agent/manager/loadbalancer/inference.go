@@ -98,7 +98,51 @@ const (
 	// address and port has to declare the same pair.
 	apiKeyAuthAnnotation     = "loxilb.io/api-key-auth"
 	jwtAuthProfileAnnotation = "loxilb.io/jwt-auth-profile"
+
+	// --- Capacity admission gate (flow control) ---
+	//
+	// One annotation per fc_* field, named after it. The gateway runs the gate
+	// on AI-gateway services only, so these go out only with sse-mode,
+	// pd-disagg or a checking api-key-auth.
+	fcModeAnnotation               = "loxilb.io/fc-mode"
+	fcMaxOutstandingAnnotation     = "loxilb.io/fc-max-outstanding"
+	fcEpMaxInflightAnnotation      = "loxilb.io/fc-ep-max-inflight"
+	fcPrefillMaxInflightAnnotation = "loxilb.io/fc-prefill-max-inflight"
+	fcDecodeMaxInflightAnnotation  = "loxilb.io/fc-decode-max-inflight"
+	fcMaxQueueDepthAnnotation      = "loxilb.io/fc-max-queue-depth"
+	fcMaxQueueWaitMsAnnotation     = "loxilb.io/fc-max-queue-wait-ms"
+	fcAdaptiveAnnotation           = "loxilb.io/fc-adaptive"
+	fcTtftTargetMsAnnotation       = "loxilb.io/fc-ttft-target-ms"
+	fcTelemetryStaleMsAnnotation   = "loxilb.io/fc-telemetry-stale-ms"
+	fcWarmupMsAnnotation           = "loxilb.io/fc-warmup-ms"
+	fcTenantMaxSharePctAnnotation  = "loxilb.io/fc-tenant-max-share-pct"
+	fcTenantWakeAnnotation         = "loxilb.io/fc-tenant-wake"
+	fcExposeHeadersAnnotation      = "loxilb.io/fc-expose-headers"
+	fcLlmdHeadersAnnotation        = "loxilb.io/fc-llmd-headers"
+	fcWakePolicyAnnotation         = "loxilb.io/fc-wake-policy"
+	fcBandWeightsAnnotation        = "loxilb.io/fc-band-weights"
+	fcBandMinSharePctAnnotation    = "loxilb.io/fc-band-min-share-pct"
+	fcCriticalReservePctAnnotation = "loxilb.io/fc-critical-reserve-pct"
+	fcBandWaitMsAnnotation         = "loxilb.io/fc-band-wait-ms"
+	fcBandQueuePctAnnotation       = "loxilb.io/fc-band-queue-pct"
+	fcShedQueueAnnotation          = "loxilb.io/fc-shed-queue"
 )
+
+// fcAnnotations - every flow-control annotation, in the order they are named
+// when they are not sent.
+var fcAnnotations = []string{
+	fcModeAnnotation,
+	fcMaxOutstandingAnnotation, fcEpMaxInflightAnnotation,
+	fcPrefillMaxInflightAnnotation, fcDecodeMaxInflightAnnotation,
+	fcMaxQueueDepthAnnotation, fcMaxQueueWaitMsAnnotation,
+	fcAdaptiveAnnotation, fcTtftTargetMsAnnotation, fcTelemetryStaleMsAnnotation,
+	fcWarmupMsAnnotation,
+	fcTenantMaxSharePctAnnotation, fcTenantWakeAnnotation,
+	fcExposeHeadersAnnotation, fcLlmdHeadersAnnotation,
+	fcWakePolicyAnnotation, fcBandWeightsAnnotation, fcBandMinSharePctAnnotation,
+	fcCriticalReservePctAnnotation, fcBandWaitMsAnnotation, fcBandQueuePctAnnotation,
+	fcShedQueueAnnotation,
+}
 
 // Endpoint health-monitor annotations.
 //
@@ -157,7 +201,7 @@ func getEndpointProbe(svc *corev1.Service) (api.EndpointProbe, error) {
 
 // aiAnnotations - every annotation handled by getAIArgs, used to tell "the user
 // asked for inference routing" from "the user asked for nothing".
-var aiAnnotations = []string{
+var aiAnnotations = append([]string{
 	modelNameAnnotation, sseModeAnnotation, sessionHeaderNameAnnotation,
 	maxStreamDurationAnnotation, backendKeepaliveIntervalAnnotation,
 	traceTypeAnnotation, cbEnableAnnotation,
@@ -174,7 +218,7 @@ var aiAnnotations = []string{
 	eppEndpointAnnotation, eppFailureModeAnnotation, eppTimeoutMsAnnotation,
 	eppPlaintextAnnotation,
 	apiKeyAuthAnnotation, jwtAuthProfileAnnotation,
-}
+}, fcAnnotations...)
 
 // hasAIAnnotation - whether the service asks for anything gateway-specific,
 // counting the gateway-only endpoint selectors as well.
@@ -303,6 +347,29 @@ func (m *Manager) getAIArgs(svc *corev1.Service, lbMode int, sel api.EpSelect) (
 	aiArgs.APIKeyAuth = svc.Annotations[apiKeyAuthAnnotation]
 	aiArgs.JwtAuthProfile = svc.Annotations[jwtAuthProfileAnnotation]
 
+	aiArgs.FcMode = svc.Annotations[fcModeAnnotation]
+	aiArgs.FcMaxOutstanding = intVal(fcMaxOutstandingAnnotation)
+	aiArgs.FcEpMaxInflight = intVal(fcEpMaxInflightAnnotation)
+	aiArgs.FcPrefillMaxInflight = intVal(fcPrefillMaxInflightAnnotation)
+	aiArgs.FcDecodeMaxInflight = intVal(fcDecodeMaxInflightAnnotation)
+	aiArgs.FcMaxQueueDepth = intVal(fcMaxQueueDepthAnnotation)
+	aiArgs.FcMaxQueueWaitMs = intVal(fcMaxQueueWaitMsAnnotation)
+	aiArgs.FcAdaptive = svc.Annotations[fcAdaptiveAnnotation]
+	aiArgs.FcTtftTargetMs = intVal(fcTtftTargetMsAnnotation)
+	aiArgs.FcTelemetryStaleMs = intVal(fcTelemetryStaleMsAnnotation)
+	aiArgs.FcWarmupMs = intVal(fcWarmupMsAnnotation)
+	aiArgs.FcTenantMaxSharePct = intVal(fcTenantMaxSharePctAnnotation)
+	aiArgs.FcTenantWake = svc.Annotations[fcTenantWakeAnnotation]
+	aiArgs.FcExposeHeaders = svc.Annotations[fcExposeHeadersAnnotation]
+	aiArgs.FcLlmdHeaders = svc.Annotations[fcLlmdHeadersAnnotation]
+	aiArgs.FcWakePolicy = svc.Annotations[fcWakePolicyAnnotation]
+	aiArgs.FcBandWeights = svc.Annotations[fcBandWeightsAnnotation]
+	aiArgs.FcBandMinSharePct = svc.Annotations[fcBandMinSharePctAnnotation]
+	aiArgs.FcCriticalReservePct = intVal(fcCriticalReservePctAnnotation)
+	aiArgs.FcBandWaitMs = svc.Annotations[fcBandWaitMsAnnotation]
+	aiArgs.FcBandQueuePct = svc.Annotations[fcBandQueuePctAnnotation]
+	aiArgs.FcShedQueue = svc.Annotations[fcShedQueueAnnotation]
+
 	if len(errs) > 0 {
 		return api.AIArgs{}, errs[0]
 	}
@@ -318,6 +385,14 @@ func (m *Manager) getAIArgs(svc *corev1.Service, lbMode int, sel api.EpSelect) (
 		aiArgs.EppFailureMode = ""
 		aiArgs.EppTimeoutMs = 0
 		aiArgs.EppPlaintext = false
+	}
+
+	// Outside an AI-gateway service the gateway stores the gate's settings and
+	// never consults them. Kept, they would make an otherwise plain Service
+	// gateway-only, with an inference routing key, for settings that change
+	// nothing. recordFlowControlNotice tells the Service.
+	if !aiArgs.IsAIGatewayService() {
+		aiArgs.FlowControlArgs = api.FlowControlArgs{}
 	}
 
 	mode := m.effectiveLbMode(lbMode)
@@ -801,6 +876,10 @@ const (
 	// ReasonKvExactTokenizerRequired - the rule uses KV-exact routing, which
 	// needs a tokenizer staged inside loxilb that kube-loxilb cannot see.
 	ReasonKvExactTokenizerRequired = "KvExactTokenizerRequired"
+	// ReasonFlowControlIgnored - flow-control annotations on a Service that is
+	// not an AI-gateway service, where loxilb never consults them; they are
+	// not sent.
+	ReasonFlowControlIgnored = "FlowControlIgnored"
 	// ReasonGPUMonitoringDisabled - the rule selects GPU-aware routing on a
 	// loxilb instance where that mode is not armed.
 	ReasonGPUMonitoringDisabled = "GPUMonitoringDisabled"
@@ -924,6 +1003,45 @@ func (m *Manager) recordTokenizerNotice(svc *corev1.Service, aiArgs api.AIArgs) 
 
 	klog.Infof("service %s/%s: %s", svc.Namespace, svc.Name, notice)
 	m.recordServiceEvent(svc, corev1.EventTypeNormal, ReasonKvExactTokenizerRequired, notice)
+}
+
+// flowControlIgnoredNotice - which flow-control annotations getAIArgs left out
+// because the Service is not an AI-gateway service, or "" when none were.
+func flowControlIgnoredNotice(svc *corev1.Service, aiArgs api.AIArgs) string {
+	if aiArgs.IsAIGatewayService() {
+		return ""
+	}
+
+	var ignored []string
+	for _, key := range fcAnnotations {
+		if svc.Annotations[key] != "" {
+			ignored = append(ignored, key)
+		}
+	}
+	if len(ignored) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("%s are not sent: loxilb runs its capacity admission gate only on an AI-gateway service, "+
+		"so on this one it would never consult them. Set %s: \"true\" (or %s, or an %s other than %q) to gate its requests",
+		strings.Join(ignored, ", "), sseModeAnnotation, pdDisaggAnnotation, apiKeyAuthAnnotation, api.APIKeyAuthDisabled)
+}
+
+// recordFlowControlNotice - report flow-control annotations left out of the
+// rule.
+//
+// Said on every sync rather than when a rule is programmed: leaving them out
+// changes nothing in the rule, so adding them to a Service that already has
+// one programs nothing and would otherwise go unanswered. The event recorder
+// folds the repeats.
+func (m *Manager) recordFlowControlNotice(svc *corev1.Service, aiArgs api.AIArgs) {
+	notice := flowControlIgnoredNotice(svc, aiArgs)
+	if notice == "" {
+		return
+	}
+
+	klog.Warningf("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+	m.recordServiceWarning(svc, ReasonFlowControlIgnored, notice)
 }
 
 // recordProbeNotices - report the two things about a probe configuration that
