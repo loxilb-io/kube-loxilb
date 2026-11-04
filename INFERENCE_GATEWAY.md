@@ -33,6 +33,7 @@ tooling in the cluster, or when an Endpoint Picker (for example llm-d's) should 
   - [Endpoint Picker annotations](#endpoint-picker-annotations)
   - [Credential annotations](#credential-annotations)
   - [JWT auth profiles](#jwt-auth-profiles)
+  - [Flow-control annotations](#flow-control-annotations)
   - [Endpoint selection](#endpoint-selection)
   - [Annotations that are not inference-specific](#annotations-that-are-not-inference-specific)
 - [Requirements outside Kubernetes](#requirements-outside-kubernetes)
@@ -408,6 +409,74 @@ against it answer 503 until they are fetched, so change it when traffic allows. 
 from the instances only once no rule names it: delete the routes and pools first. Until then the
 delete waits (`ProfileInUse`).
 
+### Flow-control annotations
+
+loxilb's capacity admission gate bounds how many inference requests execute on a pool at once, how
+many may wait for a turn, and which waiter goes next. Each annotation is one `fc_*` field of the rule,
+passed as written; leaving one out runs on the instance's own default (its `LLB_FC_*` environment).
+On a pool, write them on the InferencePool; they are copied onto the Service it generates. The
+gateway's [flow-control guide](https://github.com/loxilb-io/loxilb-inference-gateway/blob/main/docs/load-balancing/23-ai-admission-flow-control.md)
+has what each one does.
+
+loxilb runs the gate only on an AI-gateway service: one with `sse-mode`, `pd-disagg`, or an
+`api-key-auth` other than `"disabled"`. On any other Service these annotations would be stored and
+never consulted, so they are not sent and the Service gets a `FlowControlIgnored` warning.
+
+```yaml
+metadata:
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+    loxilb.io/usepodnetwork: "yes"
+    loxilb.io/model-name: "Qwen/Qwen3-32B-FP8"
+    loxilb.io/sse-mode: "true"              # what makes it an AI-gateway service
+    loxilb.io/fc-mode: "enforce"
+    loxilb.io/fc-max-outstanding: "96"      # the pool
+    loxilb.io/fc-ep-max-inflight: "32"      # each endpoint
+    loxilb.io/fc-max-queue-depth: "96"
+    loxilb.io/fc-max-queue-wait-ms: "15000"
+    loxilb.io/fc-adaptive: "on"
+    loxilb.io/fc-ttft-target-ms: "5000"
+    loxilb.io/fc-warmup-ms: "30000"
+    loxilb.io/fc-expose-headers: "on"
+```
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/fc-mode</b> | `"enforce"` refuses or queues a request over a ceiling, `"observe"` only counts what it would have done, `"off"` bypasses the gate, `"inherit"` runs on the instance default. |
+| <b>loxilb.io/fc-max-outstanding</b> | Executing requests on the whole pool, 0..100000. |
+| <b>loxilb.io/fc-ep-max-inflight</b> | Executing requests per endpoint, 0..100000. |
+| <b>loxilb.io/fc-prefill-max-inflight</b> | Prefill legs per endpoint under `pd-disagg`, 0..100000. |
+| <b>loxilb.io/fc-decode-max-inflight</b> | Decode legs per endpoint under `pd-disagg`, 0..100000. |
+| <b>loxilb.io/fc-max-queue-depth</b> | Requests that may wait for a turn instead of being refused with 429, 0..65536. Each waiting request holds its client connection, about 1 MiB. |
+| <b>loxilb.io/fc-max-queue-wait-ms</b> | The longest a request waits before it is answered 504, 0..3600000. Required with a queue depth. |
+| <b>loxilb.io/fc-adaptive</b> | `"on"` lowers the pool ceiling while endpoints report backpressure and raises it back as they recover. `"off"` / `"inherit"`. |
+| <b>loxilb.io/fc-ttft-target-ms</b> | With `fc-adaptive`, a time to first token over this counts as backpressure, 0..3600000. |
+| <b>loxilb.io/fc-telemetry-stale-ms</b> | How long scraped endpoint telemetry is trusted, 0..3600000. |
+| <b>loxilb.io/fc-warmup-ms</b> | An endpoint back in service ramps its ceilings up over this window, 0..3600000. |
+| <b>loxilb.io/fc-tenant-max-share-pct</b> | The most of the ceiling and the queue one tenant may hold, 0..100. Inert without a pool ceiling (`fc-max-outstanding`). |
+| <b>loxilb.io/fc-tenant-wake</b> | Order inside a band: `"fifo"` or `"rr"` across tenants. `"inherit"`. |
+| <b>loxilb.io/fc-expose-headers</b> | `"on"` adds `X-Loxilb-Admission-Inflight`, `-Queued` and `-Limit` to admitted responses. `"off"` / `"inherit"`. |
+| <b>loxilb.io/fc-llmd-headers</b> | `"on"` honours the llm-d TTL header and forwards the admitted class and tenant as `x-llm-d-inference-objective` and `x-llm-d-inference-fairness-id`. `"off"` / `"inherit"`. |
+| <b>loxilb.io/fc-wake-policy</b> | Which priority band a freed unit wakes: `"strict"` (highest first) or `"weighted"` (by `fc-band-weights`). `"inherit"`. |
+| <b>loxilb.io/fc-band-weights</b> | `"critical:standard:sheddable"` credits per round for `weighted`, e.g. `"8:3:1"`: each 1..62, at most 64 together, or `"0:0:0"`. |
+| <b>loxilb.io/fc-band-min-share-pct</b> | Each band's floor under contention, as `critical:standard:sheddable` percentages, at most 100 together. |
+| <b>loxilb.io/fc-critical-reserve-pct</b> | Percent of the ceiling no other band may take, even while critical is idle, 0..100. |
+| <b>loxilb.io/fc-band-wait-ms</b> | Each band's wait window as `critical:standard:sheddable`, inside `fc-max-queue-wait-ms`. |
+| <b>loxilb.io/fc-band-queue-pct</b> | Each band's share of the queue depth as `critical:standard:sheddable` percentages. |
+| <b>loxilb.io/fc-shed-queue</b> | `"on"` lets sheddable requests wait, evicted by higher bands when the queue is full. Needs a queue depth. `"off"` / `"inherit"`. |
+
+kube-loxilb checks what a single annotation can say on its own - the values above, the ranges, the
+three-number shape of a band triple, and a queue depth without a wait - and refuses those with
+`InvalidInferenceConfig`. The rules between the band annotations, and `fc-shed-queue` without a queue
+(which may come from the instance's environment), are loxilb's to judge; a refusal comes back as
+`LoxiLBRejected`.
+
+No version feature says which of these a gateway build has, and a build that predates a field drops
+it without a word. The band settings (`fc-wake-policy`, `fc-band-*`, `fc-critical-reserve-pct`,
+`fc-shed-queue`, `fc-tenant-wake` and `fc-llmd-headers`) entered loxilb-inference-gateway `main` in
+October 2026, after the others; `fc_effective` on `GET /netlox/v1/config/loadbalancer` shows what an
+instance runs on.
+
 ### Endpoint selection
 
 `loxilb.io/epselect` is not new, but three of its values are: `chwbl`, `gpuaware` and `wrr-hash` exist
@@ -468,7 +537,7 @@ If the file is missing, loxilb logs `kv-router: tokenizer not available` once an
 
 Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the object as an event, so
 `kubectl describe` is the first place to look. On a Service generated from an InferencePool, the
-warnings about the pool's own configuration - `InvalidInferenceConfig`, `AuthNotSupported`,
+warnings about the pool's own configuration - `InvalidInferenceConfig`, `FlowControlIgnored`, `AuthNotSupported`,
 `ListenerAuthConflict`, `ListenerRouteConflict`, `ProfileNotFound`, `ProfileNotProgrammed`, `LoxiLBRejected` - are repeated on
 the pool, naming the Service. A `JWTAuthProfile` carries its own, listed last.
 
@@ -483,6 +552,7 @@ the pool, naming the Service. A `JWTAuthProfile` carries its own, listed last.
 | `ListenerAuthConflict` | Warning | The Service shares a listener with an older one that declares another `api-key-auth` or `jwt-auth-profile`. It is not served there until they agree. |
 | `ListenerRouteConflict` | Warning | The Service of an InferencePool shares a listener with an older pool's that serves the same model (or, like it, none): the gateway would hold one rule for both. It is not served there until one of them changes or goes. |
 | `AuthNotSupported` | Warning | The rule declares `api-key-auth` and a gateway instance does not list the matching version features, or stores the rule without the policy when it is read back. The rule is refused, or removed, there rather than served unauthenticated. |
+| `FlowControlIgnored` | Warning | `fc-*` annotations on a Service that is not an AI-gateway service, where loxilb never consults them. They are not sent; names them. |
 | `KvExactTokenizerRequired` | Normal | `kv-exact-mode` is on; names the tokenizer path loxilb will read. |
 | `LoxiLBRejected` | Warning | loxilb itself refused the value - an unknown cipher, an unregistered certificate id, a JWT auth profile the instance does not have, and so on. |
 | `ExternalIPUnavailable` | Warning | No external address and port could be allocated yet: another Service holds that port on the pool's address, or the pool is out of addresses. Names the holder when there is one; the Service is retried until it is released. |
