@@ -92,7 +92,7 @@ func TestGetByIDReadsTheCheckedFields(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"serviceArguments":{"id":"abc","externalIP":"192.168.0.13","port":8080,` +
 			`"protocol":"tcp","mode":4,"security":0,"egress":false,"host":"192.168.0.13","path_prefix":"/",` +
-			`"model_name":"qwen3","kvEngineType":"sglang","api_key_auth":"jwt","jwt_auth_profile":"kc",` +
+			`"model_name":"qwen3","kvEngineType":"sglang","kvModelProfile":"qwen3-v1","api_key_auth":"jwt","jwt_auth_profile":"kc",` +
 			`"backend_protocol":"http1","halfCloseEffective":{"mode":"x"}},"endpoints":[{"endpointIP":"10.0.0.1"}]}`))
 	})
 
@@ -102,7 +102,7 @@ func TestGetByIDReadsTheCheckedFields(t *testing.T) {
 	}
 	want := RuleReadBack{ID: "abc", ExternalIP: "192.168.0.13", Port: 8080, Protocol: "tcp", Mode: LBModeFullProxy,
 		Host: "192.168.0.13", PathPrefix: "/", ModelName: "qwen3", KvEngineType: "sglang",
-		APIKeyAuth: "jwt", JwtAuthProfile: "kc"}
+		KvModelProfile: "qwen3-v1", APIKeyAuth: "jwt", JwtAuthProfile: "kc"}
 	if *got != want {
 		t.Errorf("GetByID = %+v, want %+v", *got, want)
 	}

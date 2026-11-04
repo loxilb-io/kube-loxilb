@@ -188,6 +188,13 @@ func TestGetAIArgsRejections(t *testing.T) {
 			wantErr:     "kv-engine-type must be one of",
 		},
 		{
+			name:        "model profile without kv-exact",
+			annotations: map[string]string{kvModelProfileAnnotation: "qwen3-32b-fp8-v1", sseModeAnnotation: "true"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "kvModelProfile is meaningless without kvExactMode",
+		},
+		{
 			name:        "epp outside fullproxy",
 			annotations: map[string]string{eppEndpointAnnotation: "10.43.0.9:9002"},
 			lbMode:      int(api.LBModeDefault),
@@ -556,6 +563,7 @@ func TestGetAIArgsFlowControl(t *testing.T) {
 		kvBlockSizeAnnotation:         "16",
 		kvZmqPortAnnotation:           "5557",
 		kvWarmupSecAnnotation:         "30",
+		kvModelProfileAnnotation:      "qwen3-32b-fp8-v1",
 		fcModeAnnotation:              "enforce",
 		fcEpMaxInflightAnnotation:     "32",
 		fcMaxOutstandingAnnotation:    "96",
@@ -592,8 +600,9 @@ func TestGetAIArgsFlowControl(t *testing.T) {
 	if got.FlowControlArgs != want {
 		t.Errorf("FlowControlArgs = %+v, want %+v", got.FlowControlArgs, want)
 	}
-	if got.KvExactMode != api.KvExactModeSingleRole || got.KvZmqPort != 5557 {
-		t.Errorf("KV-exact fields = %d/%d, want 3/5557", got.KvExactMode, got.KvZmqPort)
+	if got.KvExactMode != api.KvExactModeSingleRole || got.KvZmqPort != 5557 || got.KvModelProfile != "qwen3-32b-fp8-v1" {
+		t.Errorf("KV-exact fields = %d/%d/%q, want 3/5557/qwen3-32b-fp8-v1",
+			got.KvExactMode, got.KvZmqPort, got.KvModelProfile)
 	}
 	if notice := flowControlIgnoredNotice(svc, got); notice != "" {
 		t.Errorf("notice on an SSE Service = %q, want none", notice)

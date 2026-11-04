@@ -9,7 +9,7 @@ import (
 // aiWireKeys - every gateway-only key that must never reach plain loxilb.
 var aiWireKeys = []string{
 	"kvExactMode", "kvZmqPort", "kvBlockSize", "kvHashAlgo", "kvEngineType",
-	"kvDpRankCount", "kvWarmupSec",
+	"kvDpRankCount", "kvWarmupSec", "kvModelProfile",
 	"chwbl_prefix_hash_level", "chwbl_mean_load_factor", "chwbl_replication",
 	"chwbl_prefix_hash_flags", "chwbl_enable_cache_salt",
 	"pd_disagg_mode", "pd_cache_aware_mode", "pd_cache_threshold",
@@ -142,7 +142,7 @@ func TestStripGatewayFieldsLeavesSourceIntact(t *testing.T) {
 		Service: LoadBalancerService{
 			ExternalIP: "10.0.0.1",
 			Port:       8080,
-			AIArgs: AIArgs{KvExactMode: KvExactModeZmq, PDDisaggMode: true,
+			AIArgs: AIArgs{KvExactMode: KvExactModeZmq, PDDisaggMode: true, KvModelProfile: "qwen3-32b-fp8-v1",
 				EppEndpoint: "10.43.0.9:9002", EppFailureMode: EppFailureModeFailOpen, EppTimeoutMs: 5000, EppPlaintext: true,
 				FlowControlArgs: FlowControlArgs{FcMode: "enforce", FcMaxQueueDepth: 96, FcMaxQueueWaitMs: 15000}},
 		},
@@ -333,6 +333,17 @@ func TestAIArgsValidate(t *testing.T) {
 			args:    AIArgs{KvExactMode: KvExactModeZmq},
 			mode:    LBModeFullProxy,
 			wantErr: "use kvExactMode=3 for a single pool",
+		},
+		{
+			name: "model profile on single-role kv-exact",
+			args: AIArgs{KvExactMode: KvExactModeSingleRole, KvModelProfile: "qwen3-32b-fp8-v1"},
+			mode: LBModeFullProxy,
+		},
+		{
+			name:    "model profile without kv-exact",
+			args:    AIArgs{KvModelProfile: "qwen3-32b-fp8-v1", SseMode: true},
+			mode:    LBModeFullProxy,
+			wantErr: "kvModelProfile is meaningless without kvExactMode",
 		},
 		{
 			name:    "kv-exact out of range",

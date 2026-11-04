@@ -44,6 +44,11 @@ type AIArgs struct {
 	// the handler casts the value straight through to the data plane. Send an
 	// explicit value if warmup matters.
 	KvWarmupSec int64 `json:"kvWarmupSec,omitempty"`
+	// KvModelProfile - ID of the gateway's ModelPromptProfile the rule binds
+	// to. Naming one makes the rule strict: the gateway refuses it unless the
+	// profile is published and admits model_name. Needs KvExactMode 1 or 3.
+	// Immutable once the rule exists; changing it requires delete + recreate.
+	KvModelProfile string `json:"kvModelProfile,omitempty"`
 
 	// --- CHWBL (only meaningful with sel=chwbl(8) or sel=wrr-hash(10)) ---
 
@@ -273,6 +278,10 @@ func (a AIArgs) ValidateServiceArgs(mode LbMode) error {
 
 	if a.KvExactMode == KvExactModeZmq && !a.PDDisaggMode {
 		return fmt.Errorf("kv-exact zmq mode requires pd_disagg_mode=true (use kvExactMode=3 for a single pool)")
+	}
+
+	if a.KvModelProfile != "" && a.KvExactMode == KvExactModeOff {
+		return fmt.Errorf("kvModelProfile is meaningless without kvExactMode (no KV-exact tier; omit it)")
 	}
 
 	if err := kvEngineConfigValidate(a.KvEngineType, a.KvDpRankCount); err != nil {

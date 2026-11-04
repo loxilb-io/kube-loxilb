@@ -64,6 +64,7 @@ type RuleReadBack struct {
 	Security       int32  `json:"security"`
 	Egress         bool   `json:"egress"`
 	KvEngineType   string `json:"kvEngineType"`
+	KvModelProfile string `json:"kvModelProfile"`
 	APIKeyAuth     string `json:"api_key_auth"`
 	JwtAuthProfile string `json:"jwt_auth_profile"`
 }

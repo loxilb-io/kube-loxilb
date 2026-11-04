@@ -141,6 +141,35 @@ func TestReadBackReplacesARuleTheGatewayWouldNotChange(t *testing.T) {
 	}
 }
 
+// The model profile is not changed in place either: a peer that was down while
+// it changed refuses the new one with 409 and keeps the old.
+func TestReadBackReplacesAStaleModelProfile(t *testing.T) {
+	gw := authGateway(t)
+	peer := gw.client(t)
+	m := &Manager{}
+	lb := plainModel()
+	lb.Service.KvExactMode = api.KvExactModeSingleRole
+	lb.Service.KvModelProfile = "qwen3-v2"
+	if err := m.installLB(peer, lb, false); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+
+	gw.mu.Lock()
+	for _, rule := range gw.rules {
+		rule["kvModelProfile"] = "qwen3-v1" // what the peer kept from before
+	}
+	gw.createAnswers = []fakeAnswer{{status: http.StatusConflict,
+		result: "lbrule-exist error: cant modify rule kv model profile (delete and recreate)"}}
+	gw.mu.Unlock()
+
+	if err := m.installLB(peer, lb, false); err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if got := gw.storedRule(t); got["kvModelProfile"] != "qwen3-v2" {
+		t.Errorf("stored kvModelProfile %v, want qwen3-v2", got["kvModelProfile"])
+	}
+}
+
 // A gateway without the id-only rebind keeps a rule installed before ids
 // under its minted id and answers 409: the read-back finds nothing under the
 // new id and adds the rule again, once.

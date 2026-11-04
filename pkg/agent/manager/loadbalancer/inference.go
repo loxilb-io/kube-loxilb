@@ -74,13 +74,14 @@ const (
 	pdBalanceAbsThresholdAnnotation = "loxilb.io/pd-balance-abs-threshold"
 
 	// --- KV-cache exact routing ---
-	kvExactModeAnnotation   = "loxilb.io/kv-exact-mode"
-	kvZmqPortAnnotation     = "loxilb.io/kv-zmq-port"
-	kvBlockSizeAnnotation   = "loxilb.io/kv-block-size"
-	kvHashAlgoAnnotation    = "loxilb.io/kv-hash-algo"
-	kvEngineTypeAnnotation  = "loxilb.io/kv-engine-type"
-	kvDpRankCountAnnotation = "loxilb.io/kv-dp-rank-count"
-	kvWarmupSecAnnotation   = "loxilb.io/kv-warmup-sec"
+	kvExactModeAnnotation    = "loxilb.io/kv-exact-mode"
+	kvZmqPortAnnotation      = "loxilb.io/kv-zmq-port"
+	kvBlockSizeAnnotation    = "loxilb.io/kv-block-size"
+	kvHashAlgoAnnotation     = "loxilb.io/kv-hash-algo"
+	kvEngineTypeAnnotation   = "loxilb.io/kv-engine-type"
+	kvDpRankCountAnnotation  = "loxilb.io/kv-dp-rank-count"
+	kvWarmupSecAnnotation    = "loxilb.io/kv-warmup-sec"
+	kvModelProfileAnnotation = "loxilb.io/kv-model-profile"
 
 	// --- Endpoint Picker (Gateway API Inference Extension EPP) ---
 	//
@@ -210,7 +211,7 @@ var aiAnnotations = append([]string{
 	chwblEnableCacheSaltAnnotation,
 	kvExactModeAnnotation, kvZmqPortAnnotation, kvBlockSizeAnnotation,
 	kvHashAlgoAnnotation, kvEngineTypeAnnotation, kvDpRankCountAnnotation,
-	kvWarmupSecAnnotation,
+	kvWarmupSecAnnotation, kvModelProfileAnnotation,
 	pdDisaggAnnotation, pdPrefillSelectorAnnotation, pdDecodeSelectorAnnotation,
 	pdPrefillNixlPortAnnotation, pdDecodeNixlPortAnnotation,
 	pdCacheAwareAnnotation, pdCacheThresholdAnnotation, pdSessionTTLAnnotation,
@@ -314,6 +315,7 @@ func (m *Manager) getAIArgs(svc *corev1.Service, lbMode int, sel api.EpSelect) (
 	aiArgs.TraceType = svc.Annotations[traceTypeAnnotation]
 	aiArgs.KvHashAlgo = svc.Annotations[kvHashAlgoAnnotation]
 	aiArgs.KvEngineType = svc.Annotations[kvEngineTypeAnnotation]
+	aiArgs.KvModelProfile = svc.Annotations[kvModelProfileAnnotation]
 
 	aiArgs.SseMode = boolVal(sseModeAnnotation)
 	aiArgs.CbEnable = boolVal(cbEnableAnnotation)

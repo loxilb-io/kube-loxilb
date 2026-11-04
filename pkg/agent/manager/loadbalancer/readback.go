@@ -152,6 +152,7 @@ func ruleDiff(sent *api.LoadBalancerService, got *api.RuleReadBack) []string {
 	differ("security", sent.Security == got.Security)
 	differ("egress", sent.Egress == got.Egress)
 	differ("kvEngineType", kvEngineOf(sent.KvEngineType) == kvEngineOf(got.KvEngineType))
+	differ("kvModelProfile", sent.KvModelProfile == got.KvModelProfile)
 	differ("api_key_auth", sent.APIKeyAuth == got.APIKeyAuth)
 	differ("jwt_auth_profile", sent.JwtAuthProfile == got.JwtAuthProfile)
 
