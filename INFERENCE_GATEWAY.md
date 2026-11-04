@@ -315,6 +315,7 @@ need <b>loxilb.io/lbmode: "fullproxy"</b> and a loxilb-inference-gateway peer.
 | <b>loxilb.io/kv-zmq-port</b> | Engine event socket port. Default 5557. |
 | <b>loxilb.io/kv-warmup-sec</b> | Warmup window in seconds. The gateway's swagger documents a default of 30 but no code applies it, so set this explicitly if warmup matters. |
 | <b>loxilb.io/kv-hash-algo</b> | `"sha256_cbor"`, `"xxhash_cbor"` or `"sha256_sglang"`. Best omitted: loxilb then derives it from the engine type and the pair can never be incoherent. |
+| <b>loxilb.io/kv-model-profile</b> | ID of a model-prompt profile published on the gateway, e.g. `"qwen3-32b-fp8-v1"`. Binds the rule to it strictly: the gateway refuses the rule (`LoxiLBRejected`) unless the profile is published and admits the `model-name`. Needs `kv-exact-mode`. The gateway does not change it in place; kube-loxilb deletes and re-adds the rule when the annotation changes. |
 
 ### Prefill/decode annotations
 
