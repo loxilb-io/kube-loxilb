@@ -259,7 +259,9 @@ the ingress service lets it go.
 `endpointPickerRef` need the **v1.6.0** CRDs or later - v1.5.0 and earlier make the field required.
 
 **Where the annotations come from.** Only `loxilb.io/*` annotations are copied - first the pool's,
-then the route's, so the same pool served through two routes can be tuned per route. Everything in
+then the route's, so the same pool served through two routes on different listeners can be tuned
+per route. Routes on the same listener share that listener's one Service: the first route by name
+is the one read, and the others' `loxilb.io/*` annotations are ignored with a warning. Everything in
 [Annotation reference](#annotation-reference) can be set in either place.
 
 **What the translation imposes.** `loxilb.io/usepodnetwork` is forced to `"yes"` - inference routing
@@ -282,8 +284,8 @@ rule: the older pool is served, and the other waits with a `ListenerRouteConflic
 them changes or goes.
 
 **One Service per listener.** A pool reachable through several Gateway listeners gets one Service per
-listener, named `<pool>-inference-<gateway>-<listener>`; long names are truncated to the API server's
-63-character limit without letting two of them collapse onto one.
+listener, named `<pool>-inference-<gateway namespace>-<gateway>-<listener>`; long names are truncated
+to the API server's 63-character limit without letting two of them collapse onto one.
 
 For a worked, runnable version of this path - k3s, a real gateway container, and the assertions that
 prove the rule carries traffic - see [test/e2e-inference-gwapi](test/e2e-inference-gwapi/README.md).
