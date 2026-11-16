@@ -465,7 +465,16 @@ func (m *InferencePoolManager) enqueueRoutePools(obj interface{}) {
 	}
 }
 
-// poolsReferencedBy - every InferencePool a route sends traffic to.
+// poolsReferencedBy - every InferencePool in its own namespace that a route
+// sends traffic to.
+//
+// A reference into another namespace is not followed. The Gateway API makes
+// such a backendRef valid only with a ReferenceGrant from the target
+// namespace, and none is checked here; following it anyway let a route create
+// a Service in the pool's namespace that put the pool's pods on the route's
+// Gateway, carrying the route's loxilb settings over the pool's. Such
+// references are reported by crossNamespacePoolRefs; this one is called from
+// event handlers and stays quiet.
 func poolsReferencedBy(route *v1.HTTPRoute) []InferencePoolQueueEntry {
 	seen := map[InferencePoolQueueEntry]bool{}
 	var entries []InferencePoolQueueEntry
@@ -475,13 +484,11 @@ func poolsReferencedBy(route *v1.HTTPRoute) []InferencePoolQueueEntry {
 			if classifyBackendRef(backendRef.BackendObjectReference) != backendInferencePool {
 				continue
 			}
-
-			namespace := route.Namespace
-			if backendRef.Namespace != nil {
-				namespace = string(*backendRef.Namespace)
+			if backendRef.Namespace != nil && string(*backendRef.Namespace) != route.Namespace {
+				continue
 			}
 
-			entry := InferencePoolQueueEntry{Namespace: namespace, Name: string(backendRef.Name)}
+			entry := InferencePoolQueueEntry{Namespace: route.Namespace, Name: string(backendRef.Name)}
 			if !seen[entry] {
 				seen[entry] = true
 				entries = append(entries, entry)
@@ -490,6 +497,32 @@ func poolsReferencedBy(route *v1.HTTPRoute) []InferencePoolQueueEntry {
 	}
 
 	return entries
+}
+
+// crossNamespacePoolRefs - the InferencePool backendRefs of a route that
+// poolsReferencedBy does not follow, as namespace/name.
+func crossNamespacePoolRefs(route *v1.HTTPRoute) []string {
+	seen := map[string]bool{}
+	var refs []string
+
+	for _, rule := range route.Spec.Rules {
+		for _, backendRef := range rule.BackendRefs {
+			if classifyBackendRef(backendRef.BackendObjectReference) != backendInferencePool {
+				continue
+			}
+			if backendRef.Namespace == nil || string(*backendRef.Namespace) == route.Namespace {
+				continue
+			}
+
+			ref := string(*backendRef.Namespace) + "/" + string(backendRef.Name)
+			if !seen[ref] {
+				seen[ref] = true
+				refs = append(refs, ref)
+			}
+		}
+	}
+
+	return refs
 }
 
 // WaitForInferencePoolCRD - block until the InferencePool CRD exists.

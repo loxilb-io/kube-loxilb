@@ -19,6 +19,7 @@ package gatewayapi
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	netv1 "k8s.io/api/networking/v1"
@@ -180,6 +181,14 @@ func (h *HTTPRouteManager) reconcile(namespace, name string) error {
 func (h *HTTPRouteManager) createHTTPRoute(httpRoute *v1.HTTPRoute) error {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
+
+	// Said here, once per route, rather than where the references are
+	// resolved: that runs from event handlers, once per pool and listener.
+	if refs := crossNamespacePoolRefs(httpRoute); len(refs) > 0 {
+		klog.Warningf("HTTPRoute %s/%s: InferencePool backendRefs into another namespace are not served (%s); "+
+			"the route and the pool have to be in the same namespace",
+			httpRoute.Namespace, httpRoute.Name, strings.Join(refs, ", "))
+	}
 
 	// find all parent resources
 	for _, parentRef := range httpRoute.Spec.ParentRefs {

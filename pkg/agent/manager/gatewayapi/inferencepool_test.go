@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	v1 "sigs.k8s.io/gateway-api/apis/v1"
+	sigsv1lister "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1"
 	infv1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
@@ -283,6 +284,7 @@ func TestPoolsReferencedBy(t *testing.T) {
 	poolGroup := v1.Group(inferencePoolGroup)
 	poolKind := v1.Kind(inferencePoolKind)
 	otherNs := v1.Namespace("other")
+	ownNs := v1.Namespace("llm")
 
 	route := &v1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "llm"},
@@ -297,8 +299,12 @@ func TestPoolsReferencedBy(t *testing.T) {
 				{BackendRef: v1.BackendRef{BackendObjectReference: v1.BackendObjectReference{Name: "nginx"}}},
 			}},
 			{BackendRefs: []v1.HTTPBackendRef{
+				// Another namespace - not followed.
 				{BackendRef: v1.BackendRef{BackendObjectReference: v1.BackendObjectReference{
 					Group: &poolGroup, Kind: &poolKind, Name: "pool-b", Namespace: &otherNs}}},
+				// The route's own namespace, spelled out - followed.
+				{BackendRef: v1.BackendRef{BackendObjectReference: v1.BackendObjectReference{
+					Group: &poolGroup, Kind: &poolKind, Name: "pool-c", Namespace: &ownNs}}},
 			}},
 		}},
 	}
@@ -306,7 +312,7 @@ func TestPoolsReferencedBy(t *testing.T) {
 	got := poolsReferencedBy(route)
 	want := []InferencePoolQueueEntry{
 		{Namespace: "llm", Name: "pool-a"},
-		{Namespace: "other", Name: "pool-b"},
+		{Namespace: "llm", Name: "pool-c"},
 	}
 
 	if len(got) != len(want) {
@@ -316,6 +322,56 @@ func TestPoolsReferencedBy(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("entry %d = %v, want %v", i, got[i], want[i])
 		}
+	}
+
+	if refs := crossNamespacePoolRefs(route); len(refs) != 1 || refs[0] != "other/pool-b" {
+		t.Errorf("crossNamespacePoolRefs = %v, want [other/pool-b]", refs)
+	}
+}
+
+// crossNamespaceRoute - a route in "apps" sending to the pool llm/vllm-qwen3
+// through the Gateway llm/inference-gw.
+func crossNamespaceRoute() *v1.HTTPRoute {
+	llm := v1.Namespace("llm")
+	route := poolRoute("apps", "apps-route", "vllm-qwen3", v1.ParentReference{Name: "inference-gw", Namespace: &llm})
+	route.Spec.Rules[0].BackendRefs[0].Namespace = &llm
+	return route
+}
+
+// A route cannot put another namespace's pods on its Gateway: without a
+// ReferenceGrant check, following the reference would create a Service in the
+// pool's namespace carrying the route's loxilb settings.
+func TestCrossNamespacePoolReferenceMakesNoService(t *testing.T) {
+	m := reconcileManager(testPool(nil))
+	m.httpRouteLister = sigsv1lister.NewHTTPRouteLister(newIndexer(crossNamespaceRoute()))
+
+	if err := m.reconcile("llm", "vllm-qwen3"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	for _, svc := range ownedServices(t, m) {
+		t.Errorf("a route in another namespace made Service %s/%s for the pool", svc.Namespace, svc.Name)
+	}
+}
+
+// Nor does such a route take the listener away from the ingress service.
+func TestCrossNamespacePoolReferenceClaimsNoListener(t *testing.T) {
+	gateway := &v1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "inference-gw", Namespace: "llm"},
+		Spec: v1.GatewaySpec{
+			Listeners: []v1.Listener{{Name: "http", Port: 80, Protocol: v1.HTTPProtocolType}},
+		},
+	}
+
+	gm := &GatewayManager{httpRouteLister: sigsv1lister.NewHTTPRouteLister(newIndexer(crossNamespaceRoute()))}
+	if claimed := gm.listenersClaimedByInferencePools(gateway); len(claimed) != 0 {
+		t.Errorf("a route in another namespace claimed listeners %v", claimed)
+	}
+
+	// The same route in the pool's namespace still claims the listener.
+	gm.httpRouteLister = sigsv1lister.NewHTTPRouteLister(newIndexer(
+		poolRoute("llm", "llm-route", "vllm-qwen3", v1.ParentReference{Name: "inference-gw"})))
+	if claimed := gm.listenersClaimedByInferencePools(gateway); !claimed["http"] {
+		t.Errorf("a route in the pool's namespace did not claim the listener: %v", claimed)
 	}
 }
 
