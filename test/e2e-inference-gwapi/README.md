@@ -103,7 +103,7 @@ EPP_SRC=~/src/loxilb-inference-gateway IGW_IMAGE=<gateway with "epp"> ./config.s
 
 kube-loxilb is built from a clone at `KLB_REV` (default `HEAD`), not from the working tree, and
 tagged by commit, so a rerun at the same commit reuses the image. `KLB_OLD_REV` (default
-`474474c`, before rule ids) is built too, for the upgrade check.
+`f4a687d`, before rule ids) is built too, for the upgrade check.
 
 Useful variables: `IGW_IMAGE`, `IGW_OLD_IMAGE`, `KLB_REV`, `KLB_OLD_REV`, `SKIP_BUILD=1` (fail
 rather than build), `IGW_KEYSTORE=no` (no API-key store), `GW_LBMODE` (the Gateway's lbmode),

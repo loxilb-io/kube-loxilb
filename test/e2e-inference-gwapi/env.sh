@@ -56,7 +56,7 @@ PG_BOOTSTRAP="${PG_BOOTSTRAP:-$WORK/igw-db-bootstrap.sql}"
 
 # kube-loxilb under test, and the one before rule ids for the upgrade check.
 KLB_REV="${KLB_REV:-HEAD}"
-KLB_OLD_REV="${KLB_OLD_REV:-474474c}"
+KLB_OLD_REV="${KLB_OLD_REV:-f4a687d}"
 
 OIDC_ISSUER="http://$OIDC_ADDR/realms/e2e"
 OIDC_AUDIENCE="${OIDC_AUDIENCE:-kube-e2e}"
