@@ -4,7 +4,9 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	tk "github.com/loxilb-io/loxilib"
 	"github.com/pkg/errors"
@@ -196,5 +198,34 @@ func TestAddLeavesAPeerThatIsDownToItsReturn(t *testing.T) {
 	}
 	if st := m.lbCache[GenKey("llm", "web")].LbServicePairs; len(st) != 1 {
 		t.Fatalf("pairs = %d, want 1", len(st))
+	}
+}
+
+// A disaggregated Service whose pod cache cannot sync fails its sync instead
+// of holding the cache lock, and it is not blamed on the Service.
+func TestAddGivesUpOnAnUnsyncedPodCache(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	peer := gw.client(t)
+	peer.IsAlive = true
+	m, svc := addHarness(t, peer)
+	svc.Annotations = pdAnnotations()
+
+	m.pdPods = newPDPodWatcher(m.kubeClient, 0, m.enqueueServicesForPod)
+	stop := make(chan struct{})
+	m.pdPods.SetStopCh(stop)
+	t.Cleanup(func() { close(stop) })
+	blockPodList(t, m)
+	setPodCacheSyncTimeout(t, 200*time.Millisecond)
+
+	err := returnsWithin(t, 3*time.Second, func() error { return m.addLoadBalancer(svc) })
+	if !errors.Is(err, errPodCacheNotSynced) {
+		t.Fatalf("addLoadBalancer = %v, want %v", err, errPodCacheNotSynced)
+	}
+
+	recorder := m.eventRecorder.(*record.FakeRecorder)
+	for len(recorder.Events) > 0 {
+		if event := <-recorder.Events; strings.Contains(event, ReasonInvalidInferenceConfig) {
+			t.Errorf("an unsynced pod cache was reported as a configuration error: %s", event)
+		}
 	}
 }

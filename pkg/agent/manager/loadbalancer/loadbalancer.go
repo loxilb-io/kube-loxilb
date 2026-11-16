@@ -846,6 +846,13 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	pdRoles, err := m.resolvePDRoles(context.Background(), svc, aiArgs)
+	if errors.Is(err, errPodCacheNotSynced) {
+		// Not a configuration error, so no InvalidInferenceConfig event: the
+		// pod informer keeps trying, and the retry goes through once it has
+		// synced.
+		klog.Warningf("service %s/%s: P/D endpoint roles not resolved yet: %v", svc.Namespace, svc.Name, err)
+		return err
+	}
 	if err != nil {
 		klog.Errorf("Failed to resolve P/D endpoint roles for service %s/%s: %v", svc.Namespace, svc.Name, err)
 		m.recordServiceWarning(svc, ReasonInvalidInferenceConfig, err.Error())

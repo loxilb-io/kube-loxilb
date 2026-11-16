@@ -18,11 +18,13 @@ package loadbalancer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -67,7 +69,22 @@ type pdPodWatcher struct {
 type pdPodWatch struct {
 	lister corelisters.PodLister
 	synced cache.InformerSynced
+	// gaveUp - a wait for this cache has timed out. Later callers do not wait
+	// again until it has synced: each wait holds the cache lock, and a cache
+	// that missed one deadline is likely to miss the next.
+	gaveUp atomic.Bool
 }
+
+// pdCacheSyncTimeout - how long a reconcile waits for a new pod cache to sync.
+// The worker holds the cache lock meanwhile, so every other Service waits as
+// well. A var so tests can shorten it.
+var pdCacheSyncTimeout = 5 * time.Second
+
+// errPodCacheNotSynced - the pod cache behind prefill/decode roles has not
+// synced: the API server cannot be reached, or pods cannot be listed in the
+// namespace. Not the Service's fault; the informer keeps trying and the sync
+// is retried.
+var errPodCacheNotSynced = errors.New("the pod cache has not synced")
 
 func newPDPodWatcher(kubeClient clientset.Interface, resync time.Duration, onPodUpdate func(oldPod, newPod *corev1.Pod)) *pdPodWatcher {
 	return &pdPodWatcher{
@@ -92,10 +109,16 @@ var neverClosed = make(chan struct{})
 
 // Lister - the pod cache for this namespace and scope, started on first use.
 //
-// Blocks until the cache has synced. That gate matters: a disaggregated
-// reconcile served from an unsynced cache sees no pods, derives no prefill and
-// no decode endpoints, and loxilb rejects the rule - which would happen on
-// every controller restart.
+// Waits for the cache to sync. That gate matters: a disaggregated reconcile
+// served from an unsynced cache sees no pods, derives no prefill and no decode
+// endpoints, and loxilb rejects the rule - which would happen on every
+// controller restart.
+//
+// The wait is bounded by pdCacheSyncTimeout, and once one has timed out the
+// next callers do not wait at all until the cache has synced: the caller holds
+// the cache lock, and a cache that cannot sync - no pod list rights in the
+// namespace, an API server that is down - stopped every Service sync and the
+// peer re-sync behind it. Either way the answer is errPodCacheNotSynced.
 func (w *pdPodWatcher) Lister(ctx context.Context, namespace, scope string) (corelisters.PodLister, error) {
 	key := namespace + "|" + scope
 
@@ -107,8 +130,20 @@ func (w *pdPodWatcher) Lister(ctx context.Context, namespace, scope string) (cor
 	}
 	w.mu.Unlock()
 
+	if watch.gaveUp.Load() {
+		if !watch.synced() {
+			return nil, fmt.Errorf("namespace %s: %w", namespace, errPodCacheNotSynced)
+		}
+		watch.gaveUp.Store(false)
+		return watch.lister, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, pdCacheSyncTimeout)
+	defer cancel()
+
 	if !cache.WaitForCacheSync(ctx.Done(), watch.synced) {
-		return nil, fmt.Errorf("timed out syncing the pod cache for namespace %s", namespace)
+		watch.gaveUp.Store(true)
+		return nil, fmt.Errorf("namespace %s, waited %v: %w", namespace, pdCacheSyncTimeout, errPodCacheNotSynced)
 	}
 
 	return watch.lister, nil

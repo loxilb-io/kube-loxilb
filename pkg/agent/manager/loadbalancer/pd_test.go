@@ -3,7 +3,10 @@ package loadbalancer
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 
@@ -612,5 +616,100 @@ func TestRecordTokenizerNoticeEmitsNormalEvent(t *testing.T) {
 	case event := <-recorder.Events:
 		t.Errorf("unexpected event for a non-KV-exact rule: %s", event)
 	default:
+	}
+}
+
+// blockPodList - fail every pod list until the returned switch is turned off,
+// so a pod cache cannot sync: what a namespace without pod list/watch rights,
+// or an API server that is down, looks like to the informer.
+func blockPodList(t *testing.T, m *Manager) *atomic.Bool {
+	t.Helper()
+
+	var blocked atomic.Bool
+	blocked.Store(true)
+	m.kubeClient.(*k8sfake.Clientset).PrependReactor("list", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if blocked.Load() {
+			return true, nil, fmt.Errorf("pods is forbidden")
+		}
+		return false, nil, nil
+	})
+
+	return &blocked
+}
+
+// returnsWithin - f's result, failing the test if f has not returned by d.
+func returnsWithin[T any](t *testing.T, d time.Duration, f func() T) T {
+	t.Helper()
+
+	done := make(chan T, 1)
+	go func() { done <- f() }()
+
+	select {
+	case v := <-done:
+		return v
+	case <-time.After(d):
+		t.Fatalf("still waiting after %v", d)
+		var zero T
+		return zero
+	}
+}
+
+// setPodCacheSyncTimeout - pdCacheSyncTimeout for the rest of the test.
+func setPodCacheSyncTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+
+	old := pdCacheSyncTimeout
+	pdCacheSyncTimeout = d
+	t.Cleanup(func() { pdCacheSyncTimeout = old })
+}
+
+// A pod cache that cannot sync must not hold the reconcile - and with it the
+// cache lock every Service sync takes - forever. It is waited for once; later
+// syncs fail at once until it has synced, and then go through.
+func TestResolvePDRolesGivesUpOnAnUnsyncedCache(t *testing.T) {
+	m := pdManager(t,
+		pdPod("vllm-prefill-0", "10.244.1.10", map[string]string{"llm-role": "prefill"}),
+		pdPod("vllm-decode-0", "10.244.2.10", map[string]string{"llm-role": "decode"}),
+	)
+	blocked := blockPodList(t, m)
+	setPodCacheSyncTimeout(t, 200*time.Millisecond)
+
+	svc := aiSvc(pdAnnotations())
+	aiArgs, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	resolve := func() error {
+		_, err := m.resolvePDRoles(context.Background(), svc, aiArgs)
+		return err
+	}
+
+	if err := returnsWithin(t, 3*time.Second, resolve); !errors.Is(err, errPodCacheNotSynced) {
+		t.Fatalf("resolvePDRoles = %v, want %v", err, errPodCacheNotSynced)
+	}
+
+	// Waited for once: a deadline that would now hold the test for a minute
+	// is not waited out.
+	setPodCacheSyncTimeout(t, time.Minute)
+	if err := returnsWithin(t, 2*time.Second, resolve); !errors.Is(err, errPodCacheNotSynced) {
+		t.Fatalf("second resolvePDRoles = %v, want %v at once", err, errPodCacheNotSynced)
+	}
+
+	// Pods listable again: the informer's own retry syncs the cache, and the
+	// next reconcile resolves. Its back-off can take a few seconds.
+	blocked.Store(false)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		roles, err := m.resolvePDRoles(context.Background(), svc, aiArgs)
+		if err == nil {
+			if len(roles) != 2 {
+				t.Errorf("after the cache synced got roles %v, want the prefill and the decode pod", roles)
+			}
+			break
+		}
+		if !errors.Is(err, errPodCacheNotSynced) || time.Now().After(deadline) {
+			t.Fatalf("resolvePDRoles after pods became listable = %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
