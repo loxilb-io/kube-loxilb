@@ -71,10 +71,13 @@ func (g *GPUAPI) GetModel() LoxiModel {
 // that comes from the serving engine or DCGM, not from the Kubernetes API.
 // Flipping the switch alone would enter GPU-aware mode against an empty stats
 // map, which is worse than leaving it off.
+//
+// A non-200 answer is an *APIError, never a status: read as one, its JSON
+// error body is Enabled=false, which callers take for a disarmed peer.
 func (g *GPUAPI) Status(ctx context.Context) (*GPUStatusModel, error) {
 	statusModel := &GPUStatusModel{}
 
-	resp := g.client.GET(g.resource).SubResource("status").Do(ctx).UnMarshal(statusModel)
+	resp := g.client.GET(g.resource).SubResource("status").Do(ctx).requireOK().UnMarshal(statusModel)
 	if resp.err != nil {
 		return nil, resp.err
 	}

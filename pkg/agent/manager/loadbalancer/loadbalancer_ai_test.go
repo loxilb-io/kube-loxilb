@@ -27,6 +27,10 @@ type fakeLoxiLB struct {
 	// gpuStatus is served from /config/gpu/status; nil makes the endpoint fail,
 	// standing in for a peer that cannot answer.
 	gpuStatus *api.GPUStatusModel
+	// gpuStatusError, when set, answers /config/gpu/status with this status,
+	// an application/json Content-Type and a JSON error body - the failure a
+	// go-swagger server sends, which a client can mistake for a status.
+	gpuStatusError int
 
 	// ruleStatus is served from the per-rule status sub-resource; nil answers
 	// 404, standing in for a rule this peer does not have.
@@ -124,6 +128,12 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			_ = json.NewEncoder(w).Encode(&v)
 
 		case r.URL.Path == "/netlox/v1/config/gpu/status":
+			if f.gpuStatusError != 0 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(f.gpuStatusError)
+				_, _ = fmt.Fprintf(w, `{"code":%d,"message":%q}`, f.gpuStatusError, http.StatusText(f.gpuStatusError))
+				return
+			}
 			if f.gpuStatus == nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
@@ -495,6 +505,23 @@ func TestInstallLBAllowsGPUAwareWhenStatusUnreadable(t *testing.T) {
 	gw.lastBody(t)
 }
 
+// An error answer with a JSON body is as unreadable as no answer. Read as a
+// status it was Enabled=false, and the rule was refused as "disarmed".
+func TestInstallLBAllowsGPUAwareOnAJSONError(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+			gw.gpuStatusError = status
+
+			m := &Manager{}
+			if err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false); err != nil {
+				t.Fatalf("installLB refused on HTTP %d from the status endpoint: %v", status, err)
+			}
+			gw.lastBody(t)
+		})
+	}
+}
+
 // The pre-flight is scoped to sel=gpuaware, so every other rule costs nothing.
 func TestInstallLBSkipsGPUCheckForOtherSelectors(t *testing.T) {
 	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
@@ -576,6 +603,31 @@ func TestReportGPUDisarmedQuietWhenUnreachable(t *testing.T) {
 	case event := <-recorder.Events:
 		t.Errorf("unexpected event for an unreadable status: %s", event)
 	default:
+	}
+}
+
+// Nor must an error answer with a JSON body, which used to read as disarmed.
+func TestReportGPUDisarmedQuietOnAJSONError(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+			gw.gpuStatusError = status
+
+			recorder := record.NewFakeRecorder(4)
+			m := &Manager{
+				eventRecorder: recorder,
+				LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+				gpuArmed:      map[string]bool{},
+			}
+
+			m.reportGPUDisarmed(pdService())
+
+			select {
+			case event := <-recorder.Events:
+				t.Errorf("unexpected event for HTTP %d from the status endpoint: %s", status, event)
+			default:
+			}
+		})
 	}
 }
 

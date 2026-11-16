@@ -136,6 +136,14 @@ func (l *LoxiClient) DetectFlavor(ctx context.Context) {
 // Reports whether the query succeeded.
 func (l *LoxiClient) RefreshFlavor(ctx context.Context) bool {
 	versionModel, err := l.Version().Get(ctx, "")
+	if IsNotFound(err) {
+		// An upstream loxilb older than the version endpoint: plain loxilb,
+		// as an answer without `product` is. Any other failure - 401, 5xx -
+		// says nothing about the binary and is retried; this one would be
+		// retried on every health tick for good.
+		klog.V(4).Infof("loxilb-lb(%s): no version endpoint, taking it for plain loxilb", l.Host)
+		versionModel, err = &VersionModel{}, nil
+	}
 	if err != nil {
 		klog.V(4).Infof("loxilb-lb(%s): version query failed, keeping the previous answer: %v", l.Host, err)
 		return false

@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -278,5 +280,123 @@ func TestOnHealthyQuietWhenTheLateAnswerIsUnchanged(t *testing.T) {
 	mu.Unlock()
 	if c.onHealthy() {
 		t.Error("the late answer equals the one the re-sync used; no second announcement")
+	}
+}
+
+// jsonError - fail the way a go-swagger server does: the status, an
+// application/json Content-Type and a JSON body. The header has to be set
+// before WriteHeader, which sends it; without it the client never mistakes
+// the body for a model, and the failure goes unnoticed in a test.
+func jsonError(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, `{"code":%d,"message":%q}`, status, http.StatusText(status))
+}
+
+// A failure with a JSON body is still a failure. A GET's status went
+// unchecked, so {"code":500,...} unmarshalled into an empty VersionModel and
+// the peer read as plain loxilb until it next came back from down.
+func TestDetectFlavorJSONErrorStaysUndetected(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				jsonError(w, status)
+			}))
+			defer srv.Close()
+
+			c := newTestLoxiClient(t, srv)
+			c.DetectFlavor(context.Background())
+
+			if c.FlavorDetected() {
+				t.Errorf("HTTP %d with a JSON body was taken for an answer (product %q)", status, c.Product())
+			}
+		})
+	}
+}
+
+// The same failure on a peer already known as the gateway keeps that answer.
+func TestRefreshFlavorJSONErrorKeepsPreviousAnswer(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var fail atomic.Bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if fail.Load() {
+					jsonError(w, status)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"product":"loxilb-inference-gateway","features":["epp"]}`))
+			}))
+			defer srv.Close()
+
+			c := newTestLoxiClient(t, srv)
+			c.DetectFlavor(context.Background())
+
+			fail.Store(true)
+			if c.RefreshFlavor(context.Background()) {
+				t.Errorf("RefreshFlavor reported success for HTTP %d", status)
+			}
+			if !c.IsInferenceGateway() || !c.SupportsFeature(FeatureEndpointPicker) {
+				t.Errorf("HTTP %d replaced the previous answer (product %q)", status, c.Product())
+			}
+		})
+	}
+}
+
+// 404 is the exception: an upstream loxilb old enough to have no /version
+// answers it, and has always been read as plain loxilb. Retrying would ask
+// such a peer every health tick for good.
+func TestDetectFlavorNotFoundIsPlainLoxilb(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jsonError(w, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := newTestLoxiClient(t, srv)
+	if !c.RefreshFlavor(context.Background()) {
+		t.Error("a 404 from /version is an answer, RefreshFlavor must report success")
+	}
+	if !c.FlavorDetected() || c.IsInferenceGateway() {
+		t.Errorf("a 404 from /version must read as plain loxilb (detected %v, product %q)", c.FlavorDetected(), c.Product())
+	}
+}
+
+// A JSON-bodied failure on the way up leaves the refresh pending, so the next
+// tick asks again and the late answer is announced.
+func TestOnHealthyRetriesAfterAJSONError(t *testing.T) {
+	var fail atomic.Bool
+	var calls atomic.Int32
+	fail.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if fail.Load() {
+			jsonError(w, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"product":"loxilb-inference-gateway","features":["epp"]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestLoxiClient(t, srv)
+	if !c.onHealthy() {
+		t.Fatal("coming up must announce the peer")
+	}
+	if c.FlavorDetected() {
+		t.Fatalf("the version query failed, nothing should be cached (product %q)", c.Product())
+	}
+
+	before := calls.Load()
+	c.onHealthy()
+	if calls.Load() == before {
+		t.Fatal("the next healthy tick did not ask /version again")
+	}
+
+	fail.Store(false)
+	if !c.onHealthy() {
+		t.Error("the late answer differs from the re-sync's (none), so the peer must be announced again")
+	}
+	if !c.IsInferenceGateway() {
+		t.Errorf("the late answer was not stored (product %q)", c.Product())
 	}
 }

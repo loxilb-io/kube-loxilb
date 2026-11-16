@@ -57,16 +57,9 @@ func (l *LoadBalancerAPI) Status(ctx context.Context, externalIP string, port ui
 		"status",
 	)
 
-	resp := l.client.GET(l.resource).SubResource(subResource).Do(ctx)
-	if resp.err != nil {
-		return nil, resp.err
-	}
-	if resp.statusCode != http.StatusOK {
-		return nil, &APIError{StatusCode: resp.statusCode, Message: resultMessage(resp.body, resp.statusCode)}
-	}
-
 	statusModel := &LoadBalancerStatusModel{}
-	if resp = resp.UnMarshal(statusModel); resp.err != nil {
+	resp := l.client.GET(l.resource).SubResource(subResource).Do(ctx).requireOK().UnMarshal(statusModel)
+	if resp.err != nil {
 		return nil, resp.err
 	}
 

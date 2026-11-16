@@ -67,10 +67,13 @@ func (v *VersionAPI) GetModel() LoxiModel {
 
 // Get - fetch version/flavor information. The endpoint takes no sub-resource,
 // so the name argument is ignored; it exists to keep the LoxiAPI-ish shape.
+//
+// A non-200 answer is an *APIError, never a model: read as one, its JSON
+// error body has no `product`, which is the signal for plain loxilb.
 func (v *VersionAPI) Get(ctx context.Context, name string) (*VersionModel, error) {
 	versionModel := &VersionModel{}
 
-	resp := v.client.GET(v.resource).Do(ctx).UnMarshal(versionModel)
+	resp := v.client.GET(v.resource).Do(ctx).requireOK().UnMarshal(versionModel)
 	if resp.err != nil {
 		return nil, resp.err
 	}

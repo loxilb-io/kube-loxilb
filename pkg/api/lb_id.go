@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha1"
 	"fmt"
-	"net/http"
 	"path"
 	"strconv"
 	"strings"
@@ -82,16 +81,9 @@ func (r *ruleReadBackModel) GetKeyStruct() LoxiModel {
 // A rule not stored under the id answers 404, returned as such: a GET
 // otherwise unmarshals the error body into zero values without complaint.
 func (l *LoadBalancerAPI) GetByID(ctx context.Context, id string) (*RuleReadBack, error) {
-	resp := l.client.GET(l.resource).SubResource(path.Join("id", id)).Do(ctx)
-	if resp.err != nil {
-		return nil, resp.err
-	}
-	if resp.statusCode != http.StatusOK {
-		return nil, &APIError{StatusCode: resp.statusCode, Message: resultMessage(resp.body, resp.statusCode)}
-	}
-
 	model := &ruleReadBackModel{}
-	if resp = resp.UnMarshal(model); resp.err != nil {
+	resp := l.client.GET(l.resource).SubResource(path.Join("id", id)).Do(ctx).requireOK().UnMarshal(model)
+	if resp.err != nil {
 		return nil, resp.err
 	}
 
