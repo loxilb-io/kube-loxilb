@@ -203,6 +203,11 @@ spec:
 The generated Service is named `<pool>-inference`, sits on the Gateway's address, and selects the
 pool's pods. What it carries and what the translation decides for you is below.
 
+**The route and the pool share a namespace.** A backendRef naming an `InferencePool` in another
+namespace is not served - the Gateway API allows one only with a ReferenceGrant, which kube-loxilb
+does not check - and the route is logged with a warning. The Gateway can be anywhere its listeners
+admit the route from.
+
 **An Endpoint Picker, when the pool names one.** Without `endpointPickerRef`, loxilb selects
 endpoints itself with the `epselect` algorithm. With it, the gateway asks the picker (an
 [Endpoint Picker](https://github.com/kubernetes-sigs/gateway-api-inference-extension/blob/main/docs/proposals/004-endpoint-picker-protocol/README.md)
