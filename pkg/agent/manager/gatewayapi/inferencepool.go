@@ -837,6 +837,21 @@ func (m *InferencePoolManager) findTargets(ctx context.Context, pool *infv1.Infe
 		return routes[i].Name < routes[j].Name
 	})
 
+	// One target per listener: the generated Service stands for a listener,
+	// not for a route. Two routes on one listener used to be two targets
+	// under one Service name, and each reconcile wrote that Service once per
+	// route - every write a drift for the next, every update event queueing
+	// the pool again, without end.
+	//
+	// The routes are sorted, so the first one on a listener is kept and the
+	// choice does not move. That is safe only because poolsReferencedBy
+	// follows no reference from another namespace, so every route here shares
+	// the pool's namespace. Following such references - with ReferenceGrant
+	// support, say - would let a route from a namespace sorting earlier put
+	// its annotations on this pool's Service, and which route wins would have
+	// to be decided again.
+	kept := map[listenerKey]int{}
+
 	var targets []poolTarget
 	for _, route := range routes {
 		if !routeReferencesPool(route, pool) {
@@ -863,6 +878,18 @@ func (m *InferencePoolManager) findTargets(ctx context.Context, pool *infv1.Infe
 				continue
 			}
 
+			key := listenerKey{namespace: gateway.Namespace, gateway: gateway.Name, listener: listener.Name}
+			if i, seen := kept[key]; seen {
+				if !reflect.DeepEqual(loxilbAnnotationsOf(targets[i].routeAnnotations), loxilbAnnotationsOf(route.Annotations)) {
+					klog.Warningf("InferencePool %s/%s: HTTPRoutes %s and %s attach to listener %s of gateway %s/%s "+
+						"with different loxilb.io/ annotations; the listener has one Service, so those of %s are ignored",
+						pool.Namespace, pool.Name, targets[i].routeName, route.Name,
+						listener.Name, gateway.Namespace, gateway.Name, route.Name)
+				}
+				continue
+			}
+			kept[key] = len(targets)
+
 			targets = append(targets, poolTarget{
 				gateway:          gateway,
 				listener:         listener,
@@ -873,6 +900,20 @@ func (m *InferencePoolManager) findTargets(ctx context.Context, pool *infv1.Infe
 	}
 
 	return targets, nil
+}
+
+// listenerKey - one Gateway listener, which is what a generated Service serves.
+type listenerKey struct {
+	namespace string
+	gateway   string
+	listener  v1.SectionName
+}
+
+// loxilbAnnotationsOf - the loxilb settings among annotations.
+func loxilbAnnotationsOf(annotations map[string]string) map[string]string {
+	out := map[string]string{}
+	copyLoxilbAnnotations(annotations, out)
+	return out
 }
 
 func routeReferencesPool(route *v1.HTTPRoute, pool *infv1.InferencePool) bool {
@@ -954,11 +995,23 @@ func (m *InferencePoolManager) buildServices(pool *infv1.InferencePool, targets 
 
 	multi := len(targets) > 1
 	services := make([]*corev1.Service, 0, len(targets))
+	names := make(map[string]bool, len(targets))
 	for _, target := range targets {
 		svc, err := m.buildService(pool, target, multi, picker)
 		if err != nil {
 			return nil, err
 		}
+		if names[svc.Name] {
+			// Two Services under one name overwrite each other on every
+			// reconcile. findTargets keeps one target per listener, but the
+			// hyphen-joined name can still meet another: gateway "a-b" with
+			// listener "c" against gateway "a" with listener "b-c".
+			klog.Errorf("InferencePool %s/%s: the Service for listener %s of gateway %s/%s would be named %s "+
+				"like another listener's; that listener is not served",
+				pool.Namespace, pool.Name, target.listener.Name, target.gateway.Namespace, target.gateway.Name, svc.Name)
+			continue
+		}
+		names[svc.Name] = true
 		services = append(services, svc)
 	}
 
@@ -1007,7 +1060,9 @@ func (m *InferencePoolManager) buildService(pool *infv1.InferencePool, target po
 //
 // Precedence is pool, then route, then the values this translation has to
 // impose. Route last because the route is the more specific statement: the
-// same pool served through two routes can be tuned per route.
+// same pool served through two routes on different listeners can be tuned per
+// route. Routes on one listener share its one Service, and only the first by
+// name is read (see findTargets).
 //
 // The Endpoint Picker's address and failure mode are imposed from the pool's
 // endpointPickerRef. The picker's deadline and transport (epp-timeout-ms,
@@ -1090,12 +1145,14 @@ func copyLoxilbAnnotations(src, dst map[string]string) {
 	}
 }
 
-// serviceNameFor - "<pool>-inference", with the target appended when the pool
-// is served on more than one listener.
+// serviceNameFor - "<pool>-inference", with the listener appended as
+// "-<gateway namespace>-<gateway>-<listener>" when the pool is served on more
+// than one. The namespace is there because Gateways of one name in two
+// namespaces are two listeners.
 func serviceNameFor(poolName string, target poolTarget, multi bool) string {
 	name := poolName + serviceSuffix
 	if multi {
-		name = fmt.Sprintf("%s-%s-%s", name, target.gateway.Name, target.listener.Name)
+		name = fmt.Sprintf("%s-%s-%s-%s", name, target.gateway.Namespace, target.gateway.Name, target.listener.Name)
 	}
 
 	return truncateName(name)

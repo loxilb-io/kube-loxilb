@@ -218,7 +218,7 @@ func TestServiceNameFor(t *testing.T) {
 	if got := serviceNameFor("vllm-qwen3", target, false); got != "vllm-qwen3-inference" {
 		t.Errorf("single target name = %q", got)
 	}
-	if got := serviceNameFor("vllm-qwen3", target, true); got != "vllm-qwen3-inference-inference-gw-http" {
+	if got := serviceNameFor("vllm-qwen3", target, true); got != "vllm-qwen3-inference-llm-inference-gw-http" {
 		t.Errorf("multi target name = %q", got)
 	}
 
@@ -326,6 +326,42 @@ func TestPoolsReferencedBy(t *testing.T) {
 
 	if refs := crossNamespacePoolRefs(route); len(refs) != 1 || refs[0] != "other/pool-b" {
 		t.Errorf("crossNamespacePoolRefs = %v, want [other/pool-b]", refs)
+	}
+}
+
+// Two routes on one listener are one target: the Service stands for the
+// listener. The route first by name is the one kept.
+func TestFindTargetsOneTargetPerListener(t *testing.T) {
+	m := reconcileManager(testPool(nil))
+	m.httpRouteLister = sigsv1lister.NewHTTPRouteLister(newIndexer(
+		poolRoute("llm", "llm-route-b", "vllm-qwen3", v1.ParentReference{Name: "inference-gw"}),
+		poolRoute("llm", "llm-route", "vllm-qwen3", v1.ParentReference{Name: "inference-gw"}),
+	))
+
+	targets, err := m.findTargets(context.Background(), testPool(nil))
+	if err != nil {
+		t.Fatalf("findTargets: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("got %d targets for one listener, want 1", len(targets))
+	}
+	if targets[0].routeName != "llm-route" {
+		t.Errorf("kept the target of route %q, want the first by name, llm-route", targets[0].routeName)
+	}
+}
+
+// The last line of defence: whatever the targets, no two Services share a name.
+func TestBuildServicesNeverRepeatsAName(t *testing.T) {
+	services, err := testManager().buildServices(testPool(nil), []poolTarget{testTarget(nil), testTarget(nil)}, pickerResolution{})
+	if err != nil {
+		t.Fatalf("buildServices: %v", err)
+	}
+	if len(services) != 1 {
+		names := make([]string, 0, len(services))
+		for _, svc := range services {
+			names = append(names, svc.Name)
+		}
+		t.Errorf("got Services %v for two targets with one name, want one", names)
 	}
 }
 

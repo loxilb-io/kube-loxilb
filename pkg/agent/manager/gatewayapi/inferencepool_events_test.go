@@ -2,6 +2,7 @@ package gatewayapi
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -173,6 +174,86 @@ func TestEnqueueOwnerPool(t *testing.T) {
 // Before, a status write every couple of seconds covered for these by
 // accident. Now the events have to: a Service deleted by hand comes back, and
 // a readdressed Gateway moves the Service with it.
+// Two routes on one listener gave two targets one Service name, so every
+// reconcile wrote the Service once per route, each write a drift for the next
+// and an update event queueing the pool again. Nothing changing, a second
+// reconcile has to find nothing to write.
+func TestReconcileSettlesWithTwoRoutesOnOneListener(t *testing.T) {
+	m := reconcileManager(testPool(nil))
+	m.httpRouteLister = sigsv1lister.NewHTTPRouteLister(newIndexer(
+		poolRoute("llm", "llm-route", "vllm-qwen3", v1.ParentReference{Name: "inference-gw"}),
+		poolRoute("llm", "llm-route-b", "vllm-qwen3", v1.ParentReference{Name: "inference-gw"}),
+	))
+
+	if err := m.reconcile("llm", "vllm-qwen3"); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	before := serviceUpdates(m)
+	if err := m.reconcile("llm", "vllm-qwen3"); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if n := serviceUpdates(m) - before; n != 0 {
+		t.Errorf("an unchanged second reconcile updated Services %d time(s), want 0", n)
+	}
+
+	services := ownedServices(t, m)
+	if len(services) != 1 || services[0].Name != "vllm-qwen3-inference" {
+		t.Fatalf("want one Service named vllm-qwen3-inference, got %+v", serviceNames(services))
+	}
+	if got := services[0].Annotations["parent-http-route"]; got != "llm-route" {
+		t.Errorf("parent-http-route = %q, want the first route by name, llm-route", got)
+	}
+}
+
+// Gateways of one name in two namespaces are two listeners, and the Service
+// names have to tell them apart.
+func TestReconcileSeparatesSameNamedGateways(t *testing.T) {
+	ctx := context.Background()
+	m := reconcileManager(testPool(nil))
+
+	for i, ns := range []string{"gw-a", "gw-b"} {
+		gw := &v1.Gateway{
+			ObjectMeta: metav1.ObjectMeta{Name: "inference-gw", Namespace: ns},
+			Spec: v1.GatewaySpec{
+				GatewayClassName: "loxilb.io/loxilb",
+				Listeners:        []v1.Listener{{Name: "http", Port: 80, Protocol: v1.HTTPProtocolType}},
+			},
+			Status: v1.GatewayStatus{Addresses: []v1.GatewayStatusAddress{{Value: fmt.Sprintf("123.123.123.%d", 10+i)}}},
+		}
+		if _, err := m.sigsClient.GatewayV1().Gateways(ns).Create(ctx, gw, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create gateway: %v", err)
+		}
+	}
+	gwA, gwB := v1.Namespace("gw-a"), v1.Namespace("gw-b")
+	route := poolRoute("llm", "llm-route", "vllm-qwen3", v1.ParentReference{Name: "inference-gw", Namespace: &gwA})
+	route.Spec.ParentRefs = append(route.Spec.ParentRefs, v1.ParentReference{Name: "inference-gw", Namespace: &gwB})
+	m.httpRouteLister = sigsv1lister.NewHTTPRouteLister(newIndexer(route))
+
+	if err := m.reconcile("llm", "vllm-qwen3"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	services := ownedServices(t, m)
+	if len(services) != 2 || services[0].Name == services[1].Name {
+		t.Fatalf("want two Services with different names, got %v", serviceNames(services))
+	}
+	addresses := map[string]bool{}
+	for _, svc := range services {
+		addresses[svc.Spec.LoadBalancerIP] = true
+	}
+	if !addresses["123.123.123.10"] || !addresses["123.123.123.11"] {
+		t.Errorf("the Services do not sit on both Gateways' addresses: %v", addresses)
+	}
+}
+
+func serviceNames(services []corev1.Service) []string {
+	names := make([]string, 0, len(services))
+	for _, svc := range services {
+		names = append(names, svc.Name)
+	}
+	return names
+}
+
 func TestReconcileRecovers(t *testing.T) {
 	ctx := context.Background()
 
