@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
@@ -132,8 +133,24 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 		return false
 	}
 
+	seen := map[string]struct{}{}
+	addEP := func(ip string) {
+		if _, dup := seen[ip]; dup {
+			return
+		}
+		seen[ip] = struct{}{}
+		epList = append(epList, ip)
+	}
+
 	for _, pod := range podList.Items {
 		if pod.Spec.HostNetwork {
+			continue
+		}
+		// Only running pods can serve: this drops pods that finished (e.g. the source virt-launcher pod
+		// of a completed live migration, which keeps matching the selector as "Completed") or that are
+		// being deleted.
+		if pod.Status.Phase != corev1.PodRunning || pod.DeletionTimestamp != nil {
+			klog.V(4).Infof("GetMultusEndpoints: skipping pod %s/%s (phase=%s, deleting=%t)", pod.Namespace, pod.Name, pod.Status.Phase, pod.DeletionTimestamp != nil)
 			continue
 		}
 
@@ -141,6 +158,7 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 		if !ok {
 			continue
 		}
+		vmiName, isVirtLauncher := VirtLauncherVMIName(&pod)
 
 		klog.V(4).Infof("GetMultusEndpoints: inspecting pod %s/%s, networks=%s", pod.Namespace, pod.Name, multusNetworkListStr)
 
@@ -191,6 +209,24 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 				continue
 			}
 
+			// KubeVirt VM: the address the guest actually uses on this network comes from the VMI status
+			// (guest agent / pod cache), which also covers guests with static addresses on networks
+			// without IPAM. Without RBAC for kubevirt.io or on any error, fall back to the annotation.
+			if isVirtLauncher {
+				vmIPs, found, err := VMIEndpointIPs(ctx, kubeClient, pod.Namespace, vmiName, podMultusNetName, addrType)
+				if err != nil {
+					klog.V(4).Infof("GetMultusEndpoints: pod %s/%s: %v; using network-status", pod.Namespace, pod.Name, err)
+				} else if found {
+					if len(vmIPs) == 0 {
+						klog.V(4).Infof("GetMultusEndpoints: vmi %s/%s has no address on %s yet", pod.Namespace, vmiName, podMultusNetName)
+					}
+					for _, ip := range vmIPs {
+						addEP(ip)
+					}
+					continue
+				}
+			}
+
 			foundStatus := false
 
 			for _, ns := range networkStatusList {
@@ -199,7 +235,7 @@ func GetMultusEndpoints(kubeClient clientset.Interface, svcNs, selectorLabelStr 
 					if len(ns.Ips) > 0 {
 						for _, ip := range ns.Ips {
 							if AddrInFamily(addrType, ip) {
-								epList = append(epList, ip)
+								addEP(ip)
 							}
 						}
 					}
