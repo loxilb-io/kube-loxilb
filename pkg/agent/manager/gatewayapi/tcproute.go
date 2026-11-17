@@ -271,6 +271,16 @@ func (tr *TCPRouteManager) findListener(gateway *v1.Gateway, parentRef v1.Parent
 }
 
 func (tr *TCPRouteManager) reconcileService(ctx context.Context, backendRef v1.BackendRef, tcpRoute *v1alpha2.TCPRoute, gateway *v1.Gateway, listener *v1.Listener) error {
+	// The backend of an L4 route is a Service. Anything else - an
+	// InferencePool included, since inference routing is HTTP - would be
+	// turned into a Service reference that names an object of a different
+	// kind, so refuse instead of guessing.
+	if kind := classifyBackendRef(backendRef.BackendObjectReference); kind != backendService {
+		klog.Warningf("TCPRoute %s/%s: backendRef %s is not a Service - skipping",
+			tcpRoute.Namespace, tcpRoute.Name, backendRefDescription(backendRef.BackendObjectReference))
+		return nil
+	}
+
 	serviceBehaviour := tcpRoute.Labels["serviceBehaviour"]
 	if serviceBehaviour == "" {
 		serviceBehaviour = tcpRouteRuleServiceCreate

@@ -31,6 +31,7 @@ import (
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/bgppolicydefinition"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/egress"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/gatewayapi"
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/jwtauthprofile"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loadbalancer"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/loxiurl"
 	"github.com/loxilb-io/kube-loxilb/pkg/agent/manager/meta"
@@ -38,15 +39,18 @@ import (
 	bgpCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/bgp-client/informers/externalversions"
 	egressCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/egress-client/informers/externalversions"
 	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
+	jwtCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/jwtauthprofile-client/informers/externalversions"
 	"github.com/loxilb-io/kube-loxilb/pkg/k8s"
 	klbCRDinformers "github.com/loxilb-io/kube-loxilb/pkg/klb-client/informers/externalversions"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/log"
 
 	"k8s.io/client-go/informers"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	sigsInformer "sigs.k8s.io/gateway-api/pkg/client/informers/externalversions"
+	infinformer "sigs.k8s.io/gateway-api-inference-extension/client-go/informers/externalversions"
 
 	tk "github.com/loxilb-io/loxilib"
 )
@@ -301,6 +305,32 @@ func run(o *Options) error {
 	informerFactory.Start(stopCh)
 
 	go lbManager.Run(stopCh)
+
+	// JWT auth profiles go on the gateway peers once the JWTAuthProfile CRD
+	// exists. Until then, and on a cluster without it, rules naming a profile
+	// go as they are and the gateway answers for the profile.
+	jwtCRDClient, err := k8s.CreateJWTAuthProfileClient(o.config.ClientConnection, "")
+	if err != nil {
+		return fmt.Errorf("error creating JWTAuthProfile client: %v", err)
+	}
+	jwtCRDInformerFactory := jwtCRDinformers.NewSharedInformerFactory(jwtCRDClient, informerDefaultResync)
+	jwtProfileManager := jwtauthprofile.NewManager(k8sClient, k8sExtClient, jwtCRDClient, jwtCRDInformerFactory, loxilbClients)
+	jwtProfileManager.SetOnChange(lbManager.QueueServicesUsingProfile)
+	lbManager.SetPeerBackHook(jwtProfileManager.PeerBack)
+	go func() {
+		if !jwtProfileManager.WaitForCRD(stopCh) {
+			return
+		}
+		jwtCRDInformerFactory.Start(stopCh)
+		// Rules are held back for profiles only once the profiles are known;
+		// before the sync, every profile would read as missing.
+		if !cache.WaitForCacheSync(stopCh, jwtProfileManager.HasSynced) {
+			return
+		}
+		lbManager.SetJWTProfiles(jwtProfileManager)
+		jwtProfileManager.Run(stopCh)
+	}()
+
 	if o.config.EnableBGPCRDs {
 		bgpCRDInformerFactory.Start(stopCh)
 		go BgpPeerManager.Run(stopCh)
@@ -331,22 +361,74 @@ func run(o *Options) error {
 		gatewayManager := gatewayapi.NewGatewayManager(
 			k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
 
-		tcpRouteManager := gatewayapi.NewTCPRouteManager(
-			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
-
-		udpRouteManager := gatewayapi.NewUDPRouteManager(
-			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
-
 		httpRouteManager := gatewayapi.NewHTTPRouteManager(
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+
+		// Built before the shared factory starts, because it registers an
+		// HTTPRoute handler on it: an InferencePool only learns which Gateway
+		// serves it from the route that references it.
+		var inferencePoolManager *gatewayapi.InferencePoolManager
+		var infInformerFactory infinformer.SharedInformerFactory
+		if o.config.EnableInferenceExtension {
+			infClient, err := k8s.CreateInferenceClient(o.config.ClientConnection, "")
+			if err != nil {
+				return fmt.Errorf("error creating inference extension client: %v", err)
+			}
+
+			infInformerFactory = infinformer.NewSharedInformerFactory(infClient, informerDefaultResync)
+			inferencePoolManager = gatewayapi.NewInferencePoolManager(
+				k8sClient, k8sExtClient, sigsClient, infClient, networkConfig, informerFactory, sigsInformerFactory, infInformerFactory)
+			// The pool manager's informer, shared: what the loadbalancer
+			// manager reports on a generated Service reaches its pool too.
+			lbManager.SetInferencePoolLister(infInformerFactory.Inference().V1().InferencePools().Lister())
+		}
 
 		sigsInformerFactory.Start(stopCh)
 
 		go gatewayClassManager.Run(stopCh)
 		go gatewayManager.Run(stopCh)
-		go tcpRouteManager.Run(stopCh)
-		go udpRouteManager.Run(stopCh)
+
+		// TCPRoute and UDPRoute are watched at v1alpha2, the only version the
+		// gateway-api module of this build has for them. Gateway API v1.6 CRDs
+		// serve them at v1 only, where that watch fails on every retry; such a
+		// cluster gets one log line instead and no route manager. The manager
+		// is built only once the version is known to be served, so its
+		// informer is registered late and the factory is started again for it.
+		startRouteManager := func(crdName string, newManager func() interface{ Run(<-chan struct{}) }) {
+			go func() {
+				served, ok := gatewayapi.WaitForServedVersion(stopCh, k8sExtClient, crdName, gatewayapi.RouteWatchVersion)
+				if !ok {
+					return
+				}
+				if !served {
+					klog.Infof("%s does not serve %s, the only version this build watches; its routes are not handled",
+						crdName, gatewayapi.RouteWatchVersion)
+					return
+				}
+				manager := newManager()
+				sigsInformerFactory.Start(stopCh)
+				manager.Run(stopCh)
+			}()
+		}
+		startRouteManager(gatewayapi.TCPRouteCRDName, func() interface{ Run(<-chan struct{}) } {
+			return gatewayapi.NewTCPRouteManager(k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+		})
+		startRouteManager(gatewayapi.UDPRouteCRDName, func() interface{ Run(<-chan struct{}) } {
+			return gatewayapi.NewUDPRouteManager(k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+		})
 		go httpRouteManager.Run(stopCh)
+
+		if inferencePoolManager != nil {
+			go func() {
+				// The extension's CRDs are installed separately, so start
+				// watching only once they exist.
+				if !inferencePoolManager.WaitForInferencePoolCRD(stopCh) {
+					return
+				}
+				infInformerFactory.Start(stopCh)
+				inferencePoolManager.Run(stopCh)
+			}()
+		}
 	}
 
 	<-stopCh

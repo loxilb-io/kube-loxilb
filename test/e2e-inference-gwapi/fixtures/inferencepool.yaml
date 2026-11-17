@@ -1,0 +1,14 @@
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: vllm-qwen3
+  namespace: llm
+  annotations:
+    loxilb.io/epselect: "chwbl"
+    loxilb.io/model-name: "qwen3-32b"
+spec:
+  selector:
+    matchLabels:
+      app: vllm-qwen3
+  targetPorts:
+    - number: 8000

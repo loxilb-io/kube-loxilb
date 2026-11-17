@@ -22,9 +22,11 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,9 +38,12 @@ import (
 	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
@@ -127,6 +132,33 @@ type Manager struct {
 	ClientPurgeCh       chan *api.LoxiClient
 	ClientSelMasterCh   chan bool
 	ClientDeadCh        chan struct{}
+	eventRecorder       record.EventRecorder
+	pdPods              *pdPodWatcher
+
+	// gpuArmed - last observed GPU arming state per peer, so the reconcile
+	// check reports the edge into disarmed rather than every observation.
+	gpuArmedMu sync.Mutex
+	gpuArmed   map[string]bool
+
+	// lbCacheMu guards lbCache. The worker holds it for a whole sync; the
+	// lifecycle goroutine takes it when a peer comes back up, to forget that
+	// peer's standing. Unguarded, the two met in "concurrent map iteration and
+	// map write", which ends the process.
+	lbCacheMu sync.Mutex
+
+	// poolLister - an infv1lister.InferencePoolLister, stored once the
+	// inference extension is on; see SetInferencePoolLister.
+	poolLister atomic.Value
+
+	// yielding - Services kept off their listeners by an older one declaring
+	// another credential policy, by cache key, to the key of that one.
+	yielding map[string]string
+
+	// jwtProfiles - a jwtProfilesHolder, once JWTAuthProfiles are managed;
+	// see SetJWTProfiles.
+	jwtProfiles atomic.Value
+	// peerBackHook - a peerBackHook; see SetPeerBackHook.
+	peerBackHook atomic.Value
 }
 
 type LbArgs struct {
@@ -152,6 +184,11 @@ type LbArgs struct {
 	egress              bool
 	mtlsFrontend        *api.MtlsFrontend
 	mtlsBackend         *api.MtlsBackend
+	aiArgs              api.AIArgs
+	pdRoles             map[string]pdEndpointRole
+	endpointProbe       api.EndpointProbe
+	gatewayArgs         api.GatewayArgs
+	gatewayLists        api.GatewayTLSLists
 }
 
 type LbModelEnt struct {
@@ -166,30 +203,43 @@ type LbServicePairEntry struct {
 	InRange     bool
 	IdentIPAM   string
 	LbModelList []api.LoadBalancerModel
+
+	// peers - each peer's standing with these rules, by peer host. A peer
+	// without an entry has not been tried since it came (back) up.
+	peers map[string]peerState
 }
 
 type LbCacheEntry struct {
-	LbMode         int
-	Timeout        int
-	ActCheck       bool
-	PrefLocal      bool
-	ppv2En         bool
-	egress         bool
-	Inst           string
-	Addr           string
-	State          string
-	NodeLabel      string
-	ProbeType      string
-	ProbePort      uint16
-	ProbeReq       string
-	ProbeResp      string
-	ProbeTimeo     uint32
-	ProbeRetries   int
-	EpSelect       api.EpSelect
-	IPPool         *ippool.IPPool
-	SIPPools       []*ippool.IPPool
-	SecIPs         []string
-	LbServicePairs map[string]*LbServicePairEntry
+	LbMode          int
+	Timeout         int
+	ActCheck        bool
+	PrefLocal       bool
+	ppv2En          bool
+	egress          bool
+	Inst            string
+	Addr            string
+	State           string
+	NodeLabel       string
+	ProbeType       string
+	ProbePort       uint16
+	ProbeReq        string
+	ProbeResp       string
+	ProbeTimeo      uint32
+	ProbeRetries    int
+	EpSelect        api.EpSelect
+	RuleStatus      map[string]string
+	AIArgs          api.AIArgs
+	EndpointProbe   api.EndpointProbe
+	GatewayArgs     api.GatewayArgs
+	GatewayTLSLists api.GatewayTLSLists
+	IPPool          *ippool.IPPool
+	SIPPools        []*ippool.IPPool
+	SecIPs          []string
+	LbServicePairs  map[string]*LbServicePairEntry
+	// ListenerAddr - for a Service generated from an InferencePool, its
+	// Gateway's address: the listener's address and port are shared with the
+	// other pools there (listenerShare). "" for any other Service.
+	ListenerAddr string
 }
 
 type LbCacheTable map[string]*LbCacheEntry
@@ -249,8 +299,15 @@ func NewLoadBalancerManager(
 	nodeInformer := informerFactory.Core().V1().Nodes()
 	endpointSliceInformer := informerFactory.Discovery().V1().EndpointSlices()
 
+	// Events are how a rejected configuration reaches the user who wrote the
+	// annotation; a log line on the agent does not.
+	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
+	eventRecorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "kube-loxilb"})
+
 	manager := &Manager{
 		kubeClient:          kubeClient,
+		eventRecorder:       eventRecorder,
 		LoxiClients:         loxiClients,
 		LoxiPeerClients:     loxiPeerClients,
 		ipPoolTbl:           ipPoolTbl,
@@ -264,7 +321,7 @@ func NewLoadBalancerManager(
 		nodeListerSynced:    nodeInformer.Informer().HasSynced,
 		endpointSliceLister: endpointSliceInformer.Lister(),
 		endpointSliceSynced: endpointSliceInformer.Informer().HasSynced,
-		instAddrApplyCh:     make(chan struct{}),
+		instAddrApplyCh:     make(chan struct{}, 1),
 		loxiInstAddrMap:     make(map[string]net.IP),
 		zoneInstRoleMap:     make(map[string]*LoxiInstRole),
 		ClientAliveCh:       make(chan *api.LoxiClient, 50),
@@ -280,6 +337,11 @@ func NewLoadBalancerManager(
 		name := api.GenZoneInstName(networkConfig.Zone, i)
 		manager.zoneInstRoleMap[name] = &LoxiInstRole{instID: i}
 	}
+
+	// Pod roles feed prefill/decode disaggregation. The watcher registers no
+	// informer until a service actually asks for it.
+	manager.pdPods = newPDPodWatcher(kubeClient, resyncPeriod, manager.enqueueServicesForPod)
+	manager.gpuArmed = make(map[string]bool)
 
 	serviceInformer.Informer().AddEventHandlerWithResyncPeriod(
 		cache.ResourceEventHandlerFuncs{
@@ -339,6 +401,8 @@ func (m *Manager) Run(stopCh <-chan struct{}) {
 		return
 	}
 
+	m.pdPods.SetStopCh(stopCh)
+
 	go m.manageLoxiLbLifeCycle(stopCh)
 
 	for i := 0; i < defaultWorkers; i++ {
@@ -368,12 +432,19 @@ func (m *Manager) processNextWorkItem() bool {
 		m.queue.Forget(key)
 	} else {
 		m.queue.AddRateLimited(key)
-		klog.Errorf("Error syncing LoadBalancer %s, requeuing. Error: %v", key, err)
+		if errors.Is(err, errPeersPending) {
+			klog.V(2).Infof("LoadBalancer %s: %v, retrying", key, err)
+		} else {
+			klog.Errorf("Error syncing LoadBalancer %s, requeuing. Error: %v", key, err)
+		}
 	}
 	return true
 }
 
 func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
+	m.lbCacheMu.Lock()
+	defer m.lbCacheMu.Unlock()
+
 	startTime := time.Now()
 	defer func() {
 		klog.V(4).Infof("Finished syncing LoadBalancer service %s. (%v)", lb.Name, time.Since(startTime))
@@ -385,7 +456,11 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 	svcName := lb.Name
 	svc, err := m.serviceLister.Services(svcNs).Get(svcName)
 	if err != nil {
-		return m.deleteLoadBalancer(svcNs, svcName, true)
+		if err := m.deleteLoadBalancer(svcNs, svcName, true); err != nil {
+			return err
+		}
+		m.releaseYielders(GenKey(svcNs, svcName))
+		return nil
 	}
 	return m.addLoadBalancer(svc)
 }
@@ -705,20 +780,84 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		epSelect = api.LbSelLeastConnections
 	case "n2":
 		epSelect = api.LbSelN2
-	case "n2det":
-		epSelect = api.LbSelN2DET
 	case "n3":
 		epSelect = api.LbSelN3
+	case "chwbl":
+		epSelect = api.LbSelCHWBL
+	case "gpuaware":
+		epSelect = api.LbSelGPUAware
+	case "wrr-hash", "wrrhash":
+		epSelect = api.LbSelWRRHash
 	case "rr":
 		epSelect = api.LbSelRr
 	case "roundrobin":
 		epSelect = api.LbSelRr
 	default:
+		if eps != "" {
+			klog.Warningf("service %s/%s: unknown %s value %q - falling back to round-robin",
+				svc.Namespace, svc.Name, endPointSelAnnotation, eps)
+		}
 		epSelect = api.LbSelRr
+	}
+
+	// Check for loxilb specific annotations - loxilb-inference-gateway routing
+	aiArgs, err := m.getAIArgs(svc, lbMode, epSelect)
+	if err != nil {
+		klog.Errorf("Failed to get inference-gateway config for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidInferenceConfig, err.Error())
+		return err
+	}
+	m.recordFlowControlNotice(svc, aiArgs)
+
+	// Roles are per pod, so the endpoints have to be pods. In the default mode
+	// the endpoints are node addresses, where every pod on a node collapses
+	// into one entry and the prefill/decode split cannot be represented.
+	if aiArgs.PDDisaggMode && !usePodNet && !needMultusEP && !useExternalEndpoint {
+		err := fmt.Errorf("%s needs pod endpoints - set %s: \"yes\", or use a multus network",
+			pdDisaggAnnotation, usePodNetworkAnnotation)
+		klog.Errorf("Failed to configure P/D for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidInferenceConfig, err.Error())
+		return err
+	}
+
+	// Check for loxilb specific annotations - endpoint health monitor
+	endpointProbe, err := getEndpointProbe(svc)
+	if err != nil {
+		klog.Errorf("Failed to get probe config for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidProbeConfig, err.Error())
+		return err
+	}
+
+	// Check for loxilb specific annotations - gateway-only service arguments
+	gatewayArgs, gatewayLists, err := m.getGatewayArgs(svc)
+	if err != nil {
+		klog.Errorf("Failed to get gateway service args for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidGatewayArgs, err.Error())
+		return err
 	}
 
 	cacheKey := GenKey(svc.Namespace, svc.Name)
 	lbCacheEntry, added := m.lbCache[cacheKey]
+
+	// The gateway checks one credential policy per listener. A Service that
+	// disagrees with an older one on a shared listener is not programmed.
+	if yields, err := m.settleListeners(svc, cacheKey); yields || err != nil {
+		return err
+	}
+
+	pdRoles, err := m.resolvePDRoles(context.Background(), svc, aiArgs)
+	if errors.Is(err, errPodCacheNotSynced) {
+		// Not a configuration error, so no InvalidInferenceConfig event: the
+		// pod informer keeps trying, and the retry goes through once it has
+		// synced.
+		klog.Warningf("service %s/%s: P/D endpoint roles not resolved yet: %v", svc.Namespace, svc.Name, err)
+		return err
+	}
+	if err != nil {
+		klog.Errorf("Failed to resolve P/D endpoint roles for service %s/%s: %v", svc.Namespace, svc.Name, err)
+		m.recordServiceWarning(svc, ReasonInvalidInferenceConfig, err.Error())
+		return err
+	}
 
 	endpointIPs, err := m.getEndpoints(svc, usePodNet, useExternalEndpoint, needMultusEP, epAddrType, matchNodeLabel)
 	if err != nil {
@@ -745,26 +884,31 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				}
 			}
 			addNewLbCacheEntryChan <- &LbCacheEntry{
-				LbMode:         lbMode,
-				ActCheck:       livenessCheck,
-				PrefLocal:      prefLocal,
-				Timeout:        timeout,
-				State:          "Added",
-				NodeLabel:      matchNodeLabel,
-				ProbeType:      probeType,
-				ProbePort:      uint16(probePort),
-				ProbeReq:       probeReq,
-				ProbeResp:      probeResp,
-				ProbeTimeo:     probeTimeout,
-				ProbeRetries:   probeRetries,
-				EpSelect:       epSelect,
-				Addr:           addrType,
-				SecIPs:         []string{},
-				IPPool:         ipPool,
-				SIPPools:       sipPools,
-				Inst:           zoneInstName,
-				ppv2En:         enProxyProtov2,
-				LbServicePairs: make(map[string]*LbServicePairEntry),
+				LbMode:          lbMode,
+				ActCheck:        livenessCheck,
+				PrefLocal:       prefLocal,
+				Timeout:         timeout,
+				State:           "Added",
+				NodeLabel:       matchNodeLabel,
+				ProbeType:       probeType,
+				ProbePort:       uint16(probePort),
+				ProbeReq:        probeReq,
+				ProbeResp:       probeResp,
+				ProbeTimeo:      probeTimeout,
+				ProbeRetries:    probeRetries,
+				EpSelect:        epSelect,
+				AIArgs:          aiArgs,
+				EndpointProbe:   endpointProbe,
+				GatewayArgs:     gatewayArgs,
+				GatewayTLSLists: gatewayLists,
+				Addr:            addrType,
+				SecIPs:          []string{},
+				IPPool:          ipPool,
+				SIPPools:        sipPools,
+				Inst:            zoneInstName,
+				ppv2En:          enProxyProtov2,
+				LbServicePairs:  make(map[string]*LbServicePairEntry),
+				ListenerAddr:    listenerAddrOf(svc),
 			}
 		}()
 
@@ -802,7 +946,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			klog.V(4).Infof("ingSvcPairs: %v", ingSvcPairs)
 			klog.V(4).Infof("hasExistingEIP: %v", hasExistingEIP)
 			for i, sp := range ingSvcPairs {
-				if sp.InRange && sp.IPAllocd {
+				if sp.InRange && sp.IPAllocd && !m.portInUse(cacheKey, sp.IPString, uint16(sp.Port), sp.Protocol) {
 					klog.Infof("Returning ip %s to free pool", sp.IPString)
 					ipPool.ReturnIPAddr(sp.IPString, sp.IdentIPAM)
 				}
@@ -819,6 +963,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}()
 
 	if err != nil {
+		if errors.Is(err, ErrExternalIPUnavailable) {
+			m.recordServiceWarning(svc, ReasonExternalIPUnavailable, err.Error())
+		}
 		return errors.Wrap(err, "getIngressSvcPairs return error")
 	}
 
@@ -942,6 +1089,43 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		klog.Infof("%s: EpSelect update", cacheKey)
 	}
 
+	if gatewayArgs != m.lbCache[cacheKey].GatewayArgs {
+		m.lbCache[cacheKey].GatewayArgs = gatewayArgs
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: gateway service args update", cacheKey)
+	}
+
+	// Equal() rather than !=, since these carry slices.
+	if !gatewayLists.Equal(m.lbCache[cacheKey].GatewayTLSLists) {
+		m.lbCache[cacheKey].GatewayTLSLists = gatewayLists
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: gateway TLS list update", cacheKey)
+	}
+
+	if endpointProbe != m.lbCache[cacheKey].EndpointProbe {
+		m.lbCache[cacheKey].EndpointProbe = endpointProbe
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: endpoint probe update", cacheKey)
+	}
+
+	if aiArgs != m.lbCache[cacheKey].AIArgs {
+		m.lbCache[cacheKey].AIArgs = aiArgs
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: inference-gateway args update", cacheKey)
+	}
+
 	if enProxyProtov2 != m.lbCache[cacheKey].ppv2En {
 		m.lbCache[cacheKey].ppv2En = enProxyProtov2
 		update = true
@@ -971,6 +1155,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		ingSecSvcPairs, err := m.getIngressSecSvcPairs(svc, numSecondarySvc, m.lbCache[cacheKey])
 		if err != nil {
 			retIPAMOnErr = true
+			if errors.Is(err, ErrExternalIPUnavailable) {
+				m.recordServiceWarning(svc, ReasonExternalIPUnavailable, err.Error())
+			}
 			return errors.Wrap(err, "getIngressSecSvcPairs return error")
 		}
 
@@ -989,8 +1176,20 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	// Checked every reconcile, not only when programming: the mode can be
+	// disarmed after the rule exists, and nothing about the rule changes when
+	// it is. Scoped to gpuaware services, so no other service pays for it.
+	if epSelect == api.LbSelGPUAware {
+		m.reportGPUDisarmed(svc)
+	}
+
+	// What loxilb says about the rules that already exist. Same shape, and
+	// before the early return below, since a rule can go unhealthy without its
+	// configuration changing at all.
+	m.syncRuleStatus(svc, cacheKey)
+
 	if !update {
-		update = m.checkUpdateEndpoints(svc, cacheKey, endpointIPs, useExternalEndpoint) || m.checkUpdateExternalIP(ingSvcPairs, svc)
+		update = m.checkUpdateEndpoints(svc, cacheKey, endpointIPs, pdRoles, useExternalEndpoint) || m.checkUpdateExternalIP(ingSvcPairs, svc)
 	}
 
 	if !update {
@@ -999,6 +1198,12 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			retIPAMOnErr = true
 		}
 		ingSvcPairs = nil
+
+		// Nothing about the Service changed, but a peer may still lack its
+		// rules: refused, failed, missing, or back up since the last sync.
+		if m.retryPeers(cacheKey) {
+			return errPeersPending
+		}
 		return nil
 	} else {
 		if needDelete {
@@ -1023,6 +1228,13 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if !hasExistingEIP {
 			svc.Status.LoadBalancer.Ingress = nil
 		}
+		// Said here rather than on every reconcile: this is the point where a
+		// rule is actually programmed.
+		m.recordTokenizerNotice(svc, aiArgs)
+		m.recordProbeNotices(svc, endpointProbe)
+		m.recordGatewayArgNotices(svc)
+		m.recordEndpointPickerNotices(svc, aiArgs)
+
 		klog.Infof("%s: Added(%v) Update(%v) needDelete(%v)", cacheKey, added, update, needDelete)
 		klog.Infof("Endpoint IP Pairs %v", endpointIPs)
 		klog.Infof("Secondary IP Pairs %v", m.lbCache[cacheKey].SecIPs)
@@ -1031,8 +1243,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// Get private IP for the service (respects staticIP annotation)
 	privateIPStr := m.getServicePrivateIP(svc)
 
+	pending := false
 	for _, ingSvcPair := range ingSvcPairs {
-		var errChList []chan error
 		lbArgs := LbArgs{
 			externalIP:          ingSvcPair.IPString,
 			livenessCheck:       m.lbCache[cacheKey].ActCheck,
@@ -1053,6 +1265,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			useExternalEndpoint: useExternalEndpoint,
 			mtlsFrontend:        mtlsFrontend,
 			mtlsBackend:         mtlsBackend,
+			aiArgs:              m.lbCache[cacheKey].AIArgs,
+			pdRoles:             pdRoles,
+			endpointProbe:       m.lbCache[cacheKey].EndpointProbe,
+			gatewayArgs:         m.lbCache[cacheKey].GatewayArgs,
+			gatewayLists:        m.lbCache[cacheKey].GatewayTLSLists,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -1075,28 +1292,38 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			return errors.Wrap(err, "makeLoxiLoadBalancerModel return error")
 		}
 
-		for _, client := range m.LoxiClients.Clients {
-			ch := make(chan error)
-			go func(c *api.LoxiClient, h chan error) {
-				err := m.installLB(c, lbModel, m.lbCache[cacheKey].PrefLocal)
-				h <- err
-			}(client, ch)
-
-			errChList = append(errChList, ch)
-		}
+		clients := m.LoxiClients.Clients
+		errs := m.installOnPeers(clients, lbModel, m.lbCache[cacheKey].PrefLocal)
 
 		var loxilbAPIErr error
 		errCount := 0
-		for _, errCh := range errChList {
-			err := <-errCh
+		for _, err := range errs {
 			if err != nil {
 				loxilbAPIErr = err
 				errCount++
 			}
 		}
-		if loxilbAPIErr != nil && errCount >= len(m.LoxiClients.Clients) {
+		if reason := refusalReason(loxilbAPIErr); reason != "" {
+			m.recordServiceWarning(svc, reason, loxilbAPIErr.Error())
+		}
+		// loxilb rejected the request itself. Retrying it unchanged will fail
+		// the same way, so the person who wrote the Service has to see the
+		// reason - and loxilb already sends one. A 5xx is not reported: that is
+		// the peer's problem and the next reconcile retries it.
+		if api.IsClientError(loxilbAPIErr) {
+			m.recordServiceWarning(svc, ReasonLoxiLBRejected, loxilbAPIErr.Error())
+		}
+
+		if loxilbAPIErr != nil && errCount >= len(clients) {
 			retIPAMOnErr = true
 			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
+		}
+
+		// Some peer has it, so the Service is served and keeps its address.
+		// The peers that do not are recorded and tried again on their own.
+		sp.peers = peerStatesOf(clients, errs)
+		if peersPending(clients, sp.peers) {
+			pending = true
 		}
 
 		sp.LbModelList = append(sp.LbModelList, lbModel)
@@ -1113,6 +1340,9 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		time.Sleep(1 * time.Second)
 	}
 
+	if pending {
+		return errPeersPending
+	}
 	return nil
 }
 
@@ -1222,29 +1452,23 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 		var errChList []chan error
 		for _, lb := range sp.LbModelList {
 			for _, loxiClient := range m.LoxiClients.Clients {
-				ch := make(chan error)
+				// Buffered, so the sender never waits on the reader.
+				ch := make(chan error, 1)
 				errChList = append(errChList, ch)
 
 				go func(client *api.LoxiClient, ch chan error, lbModel api.LoadBalancerModel) {
-					klog.Infof("loxilb-lb(%s): delete lb %v", client.Host, lbModel)
-					if m.networkConfig.AppendEPs {
-						lbModel.Service.Oper = api.LBOPDetach
-						ch <- client.LoadBalancer().Create(context.Background(), &lbModel)
-					} else {
-						ch <- client.LoadBalancer().Delete(context.Background(), &lbModel)
-					}
+					ch <- m.deleteLB(client, lbModel)
 				}(loxiClient, ch, lb)
 			}
 		}
 
-		var err error
-
+		// Every answer is read, not just up to the first failure: the pair is
+		// only gone once every peer has answered, and an unread result used to
+		// leave its goroutine blocked on the send for good.
 		for _, errCh := range errChList {
-			err = <-errCh
-			if err != nil {
+			if err := <-errCh; err != nil {
 				isError = true
 				rErr = err
-				break
 			}
 		}
 	}
@@ -1255,7 +1479,8 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 
 	for _, sp := range lbEntry.LbServicePairs {
 		if releaseAll {
-			if sp.InRange {
+			// A port the pools on one listener share goes back with the last.
+			if sp.InRange && !m.portInUse(cacheKey, sp.ExternalIP, sp.Port, sp.Protocol) {
 				ipPool.ReturnIPAddr(sp.ExternalIP, sp.IdentIPAM)
 			}
 			for idx, ingSecIP := range lbEntry.SecIPs {
@@ -1272,7 +1497,43 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 	return nil
 }
 
+// deleteRequestTimeout - how long one peer gets to answer a delete. The REST
+// client has no timeout of its own, and the worker waits for every answer, so
+// a peer that accepts the connection and never replies would otherwise stop
+// every Service from being processed. A var so tests can shorten it.
+var deleteRequestTimeout = 5 * time.Second
+
+// deleteLB - remove one rule from one peer.
+//
+// A rule the peer does not have is already where the caller wants it: the
+// peer refused it when it was added, or an earlier attempt reached this peer
+// even though the attempt as a whole failed. Reading that 404 as a failure
+// kept the Service's cache entry and address held for good, since every retry
+// got the same answer.
+func (m *Manager) deleteLB(client *api.LoxiClient, lbModel api.LoadBalancerModel) error {
+	ctx, cancel := context.WithTimeout(context.Background(), deleteRequestTimeout)
+	defer cancel()
+
+	klog.Infof("loxilb-lb(%s): delete lb %v", client.Host, lbModel)
+
+	var err error
+	if m.networkConfig.AppendEPs {
+		lbModel.Service.Oper = api.LBOPDetach
+		err = client.LoadBalancer().Create(ctx, &lbModel)
+	} else {
+		err = client.LoadBalancer().Delete(ctx, &lbModel)
+	}
+	if api.IsNotFound(err) {
+		klog.V(2).Infof("loxilb-lb(%s): lb %v already absent", client.Host, lbModel)
+		return nil
+	}
+
+	return err
+}
+
 func (m *Manager) DeleteAllLoadBalancer() {
+	m.lbCacheMu.Lock()
+	defer m.lbCacheMu.Unlock()
 
 	klog.Infof("Len %d", len(m.lbCache))
 	for _, lbEntry := range m.lbCache {
@@ -1319,12 +1580,69 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 			model.Endpoints = lb.Endpoints
 		}
 	}
-	if err = c.LoadBalancer().Create(ctx, model); err != nil {
-		if !strings.Contains(err.Error(), "exist") {
+
+	// Flavor gating. The same lb value is fanned out to every client in the
+	// pool, and a pool may mix loxilb-inference-gateway with plain upstream
+	// loxilb, so gateway-only fields are removed per client rather than per
+	// model. This must run after the prefLocal branch above, which re-aliases
+	// model.Endpoints back onto the caller's slice.
+	if !c.IsInferenceGateway() {
+		if model.Service.AIArgs.IsSet() || model.Service.Sel.IsInferenceGatewayOnly() {
+			// Refuse loudly. Silently downgrading to non-AI routing would look
+			// like success while serving the wrong traffic policy.
+			err = fmt.Errorf("inference-gateway routing requested but loxilb-lb(%s) is plain loxilb: %w", c.Host, ErrInferenceGatewayRequired)
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
-		} else {
-			err = nil
+			return err
 		}
+		api.StripGatewayFields(model)
+	}
+
+	// Within the gateway, only builds that list the feature apply the
+	// credential policy and the Endpoint Picker fields; the others drop them
+	// silently.
+	if c.IsInferenceGateway() {
+		if err = checkCredentialPolicy(c, model); err != nil {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
+		if err = m.checkProfile(c, model); err != nil {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
+		if err = checkEndpointPicker(c, model); err != nil {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
+		// Known by a stable id, so it can be read back below. Set on this
+		// peer's copy only: plain peers never see it.
+		model.Service.ID = api.RuleID(&model.Service)
+	}
+
+	// sel=gpuaware is armed instance-wide, not by the rule, so a peer that
+	// accepts this rule may still select as CHWBL. That state is readable.
+	if model.Service.Sel == api.LbSelGPUAware && c.IsInferenceGateway() {
+		if err = m.checkGPUAware(ctx, c); err != nil {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
+	}
+
+	if err = c.LoadBalancer().Create(ctx, model); err != nil {
+		// Re-creating a rule that is already there is the normal steady state,
+		// and loxilb answers 409 for it. Keyed on the status rather than on the
+		// wording, which the peer keeps adding to.
+		if api.IsConflict(err) {
+			err = nil
+		} else {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+		}
+	}
+
+	// A gateway can answer success for a rule it did not store as sent; read it
+	// back. Not with appended endpoints: there the rule is shared with other
+	// clusters, and putting it right means deleting it.
+	if err == nil && c.IsInferenceGateway() && (m.networkConfig == nil || !m.networkConfig.AppendEPs) {
+		err = m.readBack(c, model)
 	}
 
 	if err == nil {
@@ -1353,7 +1671,7 @@ func (m *Manager) getNodeEndpointsWithLabel(addrType string, matchLabel string) 
 	for _, node := range nodes {
 		addr, err := m.getNodeAddress(*node, addrType)
 		if err != nil {
-			klog.Errorf(err.Error())
+			klog.Error(err)
 			continue
 		}
 		klog.V(4).Infof("getNodeEndpointsWithLabel: found node %s with label %s", addr, matchLabel)
@@ -1382,7 +1700,7 @@ func (m *Manager) getNodeEndpointsWithLabelWithKey(addrType string, key, matchLa
 	for _, node := range nodes {
 		addr, err := m.getNodeAddress(*node, addrType)
 		if err != nil {
-			klog.Errorf(err.Error())
+			klog.Error(err)
 			continue
 		}
 		klog.V(4).Infof("getNodeEndpointsWithLabelWithKey: found node %s with label %s:%s", addr, key, matchLabel)
@@ -1500,7 +1818,7 @@ func (m *Manager) getEndpointsForLB(nodes []*corev1.Node, addrType string, nodeM
 	for _, node := range nodes {
 		addr, err := m.getNodeAddress(*node, addrType)
 		if err != nil {
-			klog.Errorf(err.Error())
+			klog.Error(err)
 			continue
 		}
 		if len(nodeMatchList) > 0 && !k8s.MatchNodeinNodeList(addr, nodeMatchList) {
@@ -1528,7 +1846,29 @@ func (m *Manager) checkUpdateExternalIP(ingSvcPairs []SvcPair, svc *corev1.Servi
 	return false
 }
 
-func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, endpointIPs []string, matchPorts bool) bool {
+// derivedEndpoint - the part of an endpoint kube-loxilb derives itself rather
+// than reading back from loxilb.
+//
+// The change detector compares these rather than addresses, because a pod
+// relabelled in place keeps its address: the endpoint set looks identical and
+// the write would be skipped while loxilb still holds the old role. Any future
+// pod-derived field belongs in this struct and is then covered for free.
+type derivedEndpoint struct {
+	IP       string
+	EpRole   int32
+	NixlPort int32
+}
+
+func derivedEndpointOf(ep api.LoadBalancerEndpoint) derivedEndpoint {
+	return derivedEndpoint{IP: ep.EndpointIP, EpRole: ep.EpRole, NixlPort: ep.NixlPort}
+}
+
+func wantedDerivedEndpoint(ip string, pdRoles map[string]pdEndpointRole) derivedEndpoint {
+	role := pdRoles[ip]
+	return derivedEndpoint{IP: ip, EpRole: role.Role, NixlPort: role.NixlPort}
+}
+
+func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, endpointIPs []string, pdRoles map[string]pdEndpointRole, matchPorts bool) bool {
 	var update bool
 
 	if matchPorts {
@@ -1540,11 +1880,14 @@ func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, end
 			return true
 		}
 		for _, endpoint := range endpointIPs {
+			pdRole := pdRoles[endpoint]
 			for _, tport := range tports {
 				loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
 					EndpointIP: endpoint,
 					TargetPort: uint16(tport),
 					Weight:     1,
+					EpRole:     pdRole.Role,
+					NixlPort:   pdRole.NixlPort,
 				})
 			}
 		}
@@ -1556,8 +1899,8 @@ func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, end
 					for _, endpoint := range loxiEndpointModelList {
 						found := false
 						for _, oldEp := range lb.Endpoints {
-							if oldEp.EndpointIP == endpoint.EndpointIP &&
-								oldEp.TargetPort == endpoint.TargetPort {
+							if oldEp.TargetPort == endpoint.TargetPort &&
+								derivedEndpointOf(oldEp) == derivedEndpointOf(endpoint) {
 								found = true
 								break
 							}
@@ -1583,9 +1926,10 @@ func (m *Manager) checkUpdateEndpoints(svc *corev1.Service, cacheKey string, end
 			if len(endpointIPs) == len(lb.Endpoints) {
 				nEps := 0
 				for _, ep := range endpointIPs {
+					want := wantedDerivedEndpoint(ep, pdRoles)
 					found := false
 					for _, oldEp := range lb.Endpoints {
-						if ep == oldEp.EndpointIP {
+						if want == derivedEndpointOf(oldEp) {
 							found = true
 							nEps++
 							break
@@ -1798,6 +2142,11 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 				}
 			}
 
+			if sp := m.listenerShare(cacheKey, lbCacheEntry, inSPair.Port, inSPair.Protocol); sp != nil {
+				sPairs = append(sPairs, SvcPair{inSPair.IPString, inSPair.Port, inSPair.Protocol, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, inSPair.K8sSvcPort})
+				continue
+			}
+
 			if !poolReserved {
 				inRange, _, identStr = ipPool.CheckAndReserveIP(inSPair.IPString, cacheKey, uint32(inSPair.Port), inSPair.Protocol)
 			} else {
@@ -1836,13 +2185,23 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 				}
 			}
 
+			// Another pool on the same Gateway listener has the port already.
+			if sp := m.listenerShare(cacheKey, lbCacheEntry, portNum, proto); sp != nil {
+				sPairs = append(sPairs, SvcPair{sp.ExternalIP, portNum, proto, sp.InRange, sp.StaticIP, sp.IdentIPAM, false, port})
+				continue
+			}
+
 			if !poolReserved {
 				newIP, identIPAM = ipPool.GetNewIPAddr(cacheKey, uint32(portNum), proto)
 				if newIP == nil {
-					errMsg := fmt.Sprintf("failed to generate external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
-					klog.Errorf(errMsg)
-					klog.Exit("kube-loxilb cant run optimally anymore")
-					return nil, errors.New(errMsg), hasExtIPAllocated
+					// Not fatal: with one shared address, a port is often
+					// held for a moment by a Service on its way out - an
+					// ingress service giving a listener up to an
+					// InferencePool, say. The pairs gathered so far go back
+					// to the caller, which returns what this call allocated.
+					err := m.externalIPUnavailable(ipPool, cacheKey, portNum, proto)
+					klog.Warning(err.Error())
+					return sPairs, err, hasExtIPAllocated
 				}
 
 				klog.V(4).Infof("getIngressSvcPairs: service %s :%s generated new externalIP: %s", cacheKey, identIPAM, newIP.String())
@@ -1864,6 +2223,43 @@ func (m *Manager) getIngressSvcPairs(service *corev1.Service, lbCacheEntry *LbCa
 		}
 	}
 	return sPairs, nil, hasExtIPAllocated
+}
+
+// ErrExternalIPUnavailable - no address could be allocated for a port, either
+// because another Service holds it or because the pool is exhausted. The
+// Service is retried; a holder on its way out releases it.
+var ErrExternalIPUnavailable = errors.New("external IP unavailable")
+
+// externalIPUnavailable - the error for a failed allocation, naming the
+// Services that hold the port on an address of the pool when there are any.
+func (m *Manager) externalIPUnavailable(pool *ippool.IPPool, cacheKey string, port int32, proto string) error {
+	holders := m.externalIPHolders(pool, cacheKey, port, proto)
+	if len(holders) == 0 {
+		return fmt.Errorf("no external IP for %s %d/%s: pool %s has no address left for it; retrying: %w",
+			cacheKey, port, proto, pool.CIDR, ErrExternalIPUnavailable)
+	}
+	return fmt.Errorf("no external IP for %s %d/%s: pool %s gives that port to %s; retrying until it is released: %w",
+		cacheKey, port, proto, pool.CIDR, strings.Join(holders, ", "), ErrExternalIPUnavailable)
+}
+
+// externalIPHolders - the other Services this manager has given port/proto on
+// an address of pool.
+func (m *Manager) externalIPHolders(pool *ippool.IPPool, self string, port int32, proto string) []string {
+	var holders []string
+	for key, entry := range m.lbCache {
+		if key == self {
+			continue
+		}
+		for _, sp := range entry.LbServicePairs {
+			ip := net.ParseIP(sp.ExternalIP)
+			if sp.Port == uint16(port) && sp.Protocol == proto && ip != nil && pool.Contains(ip) {
+				holders = append(holders, key)
+				break
+			}
+		}
+	}
+	sort.Strings(holders)
+	return holders
 }
 
 // returnSecondaryIPs
@@ -1909,10 +2305,10 @@ func (m *Manager) getIngressSecSvcPairs(service *corev1.Service, numSecondary in
 						rpool := sipPools[j]
 						rpool.ReturnIPAddr(sPairs[j].IPString, sPairs[j].IdentIPAM)
 					}
-					errMsg := fmt.Sprintf("failed to generate secondary external IP. %s:%d:%s already used for %s", cacheKey, portNum, proto, identIPAM)
-					klog.Errorf(errMsg)
-					klog.Exit("kube-loxilb cant run optimally anymore")
-					return nil, errors.New(errMsg)
+					err := fmt.Errorf("no secondary external IP for %s %d/%s in pool %s (ident %q); retrying: %w",
+						cacheKey, portNum, proto, pool.CIDR, identIPAM, ErrExternalIPUnavailable)
+					klog.Warning(err.Error())
+					return nil, err
 				}
 				newsp := SvcPair{newIP.String(), portNum, proto, true, false, identIPAM, true, port}
 				sPairs = append(sPairs, newsp)
@@ -1969,11 +2365,18 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 				return api.LoadBalancerModel{}, errors.New("no endpoints to make lbmodel")
 			}
 
+			// Zero value when the service is not disaggregated, which leaves
+			// ep_role and nixl_port out of the payload entirely.
+			pdRole := lbArgs.pdRoles[endpoint]
+
 			for _, tport := range tports {
 				loxiEndpointModelList = append(loxiEndpointModelList, api.LoadBalancerEndpoint{
-					EndpointIP: endpoint,
-					TargetPort: uint16(tport),
-					Weight:     1,
+					EndpointIP:    endpoint,
+					TargetPort:    uint16(tport),
+					Weight:        1,
+					EpRole:        pdRole.Role,
+					NixlPort:      pdRole.NixlPort,
+					EndpointProbe: lbArgs.endpointProbe,
 				})
 			}
 		}
@@ -2007,30 +2410,44 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 		}
 	}
 
+	// Re-check against the assembled payload: getAIArgs runs before endpoints
+	// are known, and some of loxilb's rejections are about endpoint roles.
+	if err := lbArgs.aiArgs.Validate(lbModeSvc, loxiEndpointModelList); err != nil {
+		return api.LoadBalancerModel{}, err
+	}
+
+	host, pathPrefix, pathMatchMode := inferenceRoutingKey(lbArgs.externalIP, lbArgs.aiArgs, lbArgs.sel)
+
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
-			ExternalIP:   lbArgs.externalIP,
-			PrivateIP:    lbArgs.privateIP,
-			Port:         uint16(port.Port),
-			Protocol:     strings.ToLower(string(port.Protocol)),
-			BGP:          bgpMode,
-			Mode:         lbModeSvc,
-			Oper:         lbOper,
-			Monitor:      lbArgs.livenessCheck,
-			Timeout:      uint32(lbArgs.timeout),
-			Managed:      true,
-			ProbeType:    lbArgs.probeType,
-			ProbePort:    lbArgs.probePort,
-			ProbeReq:     lbArgs.probeReq,
-			ProbeResp:    lbArgs.probeResp,
-			ProbeTimeout: lbArgs.probeTimeo,
-			ProbeRetries: int32(lbArgs.probeRetries),
-			PpV2:         lbArgs.ppv2En,
-			Egress:       lbArgs.egress,
-			Sel:          lbArgs.sel,
-			Name:         fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
-			MtlsFrontend: lbArgs.mtlsFrontend,
-			MtlsBackend:  lbArgs.mtlsBackend,
+			ExternalIP:      lbArgs.externalIP,
+			Host:            host,
+			PathPrefix:      pathPrefix,
+			PathMatchMode:   pathMatchMode,
+			PrivateIP:       lbArgs.privateIP,
+			Port:            uint16(port.Port),
+			Protocol:        strings.ToLower(string(port.Protocol)),
+			BGP:             bgpMode,
+			Mode:            lbModeSvc,
+			Oper:            lbOper,
+			Monitor:         lbArgs.livenessCheck,
+			Timeout:         uint32(lbArgs.timeout),
+			Managed:         true,
+			ProbeType:       lbArgs.probeType,
+			ProbePort:       lbArgs.probePort,
+			ProbeReq:        lbArgs.probeReq,
+			ProbeResp:       lbArgs.probeResp,
+			ProbeTimeout:    lbArgs.probeTimeo,
+			ProbeRetries:    int32(lbArgs.probeRetries),
+			PpV2:            lbArgs.ppv2En,
+			Egress:          lbArgs.egress,
+			Sel:             lbArgs.sel,
+			Name:            fmt.Sprintf("%s_%s:%s", svc.Namespace, svc.Name, lbArgs.inst),
+			MtlsFrontend:    lbArgs.mtlsFrontend,
+			MtlsBackend:     lbArgs.mtlsBackend,
+			AIArgs:          lbArgs.aiArgs,
+			GatewayArgs:     lbArgs.gatewayArgs,
+			GatewayTLSLists: lbArgs.gatewayLists,
 		},
 		SrcIPs:       loxiLbAllowedSrcIpList,
 		SecondaryIPs: loxiSecIPModelList,
@@ -2574,34 +2991,21 @@ loop:
 			}
 
 			if !aliveClient.PeeringOnly {
-				isSuccess := false
-				for _, value := range m.lbCache {
-					for _, sp := range value.LbServicePairs {
-						for _, lb := range sp.LbModelList {
-							for retry := 0; retry < 5; retry++ {
-								err := m.installLB(aliveClient, lb, value.PrefLocal)
-								if err == nil {
-									klog.Infof("reinstallLoxiLbRules: lbModel: %v success", lb)
-									isSuccess = true
-									break
-								} else {
-									if !strings.Contains(err.Error(), "exist") {
-										klog.Infof("reinstallLoxiLbRules: lbModel: %v retry(%d)", lb, retry)
-										time.Sleep(1 * time.Second)
-									} else {
-										isSuccess = true
-										break
-									}
-								}
-							}
-							if !isSuccess && aliveClient.IsAlive {
-								klog.Exit("restart kube-loxilb")
-							}
-						}
-					}
-				}
+				m.reinstallLoxiLbRules(aliveClient)
 			}
 		}
+	}
+}
+
+// signalInstAddrApply - ask the lifecycle loop to apply the instance addresses
+// again. It never waits: the loop reads the whole map each time, so one
+// pending signal covers any number of changes. The callers hold m.mtx, which
+// the worker takes too, and the loop can be waiting on the cache lock the
+// worker holds - a blocking send here closed that circle.
+func (m *Manager) signalInstAddrApply() {
+	select {
+	case m.instAddrApplyCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -2620,7 +3024,7 @@ func (m *Manager) AddLoxiInstAddr(name string, IP net.IP) error {
 	}
 
 	m.loxiInstAddrMap[name] = IP
-	m.instAddrApplyCh <- struct{}{}
+	m.signalInstAddrApply()
 	klog.Infof("added cidr host name: %s:%s", name, IP.String())
 	return nil
 }
@@ -2635,7 +3039,7 @@ func (m *Manager) DeleteLoxiInstAddr(name string) error {
 	}
 
 	delete(m.loxiInstAddrMap, name)
-	m.instAddrApplyCh <- struct{}{}
+	m.signalInstAddrApply()
 	klog.Infof("removed cidr host name: %s", name)
 	return nil
 }

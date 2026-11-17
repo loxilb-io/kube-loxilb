@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Fake loxilb REST endpoint for kube-loxilb wire-payload A/B testing.
+
+Records every non-GET request body to a jsonl file and answers with a
+configurable result so the client-side error paths can be exercised.
+
+env:
+  FAKE_PORT   listen port (default 11111)
+  FAKE_REC    record file (default ./record.jsonl)
+  FAKE_MODE   normal   - 200 {"result":"Success"}         (default)
+              conflict - 409 {"result":"lb rule exists"}  (duplicate rule)
+              notfound - 404 {"result":"not-exists"}      (missing rule)
+  FAKE_VERSION  plain   - 200, no `product` field (upstream loxilb)  (default)
+                missing - 404 (loxilb too old to have /version)
+                gateway - 200 with product=loxilb-inference-gateway
+                gateway-epp - the same, plus features=["epp"] (Endpoint Picker support)
+                gateway-auth - the same, plus features=["api_key_auth", "jwt_auth_profile"]
+                gateway-apikey - the same, plus features=["api_key_auth"] only (no JWT arm)
+"""
+import json, os, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT = int(os.environ.get("FAKE_PORT", "11111"))
+REC = os.environ.get("FAKE_REC", "record.jsonl")
+MODE = os.environ.get("FAKE_MODE", "normal")
+VMODE = os.environ.get("FAKE_VERSION", "plain")
+
+# Rules stored by their serviceArguments.id, for GET .../loadbalancer/id/{id}:
+# a gateway peer reads each rule back after installing it.
+RULES = {}
+
+def store_rule(body):
+    sa = (body or {}).get("serviceArguments") or {}
+    if sa.get("id"):
+        RULES[sa["id"]] = sa
+
+def drop_rules(path):
+    parts = path.split("/")
+    key = {}
+    for i in range(len(parts) - 1):
+        if parts[i] in ("externalipaddress", "port", "protocol"):
+            key[parts[i]] = parts[i + 1]
+    for rid, sa in list(RULES.items()):
+        if (str(sa.get("externalIP")) == key.get("externalipaddress") and
+                str(sa.get("port")) == key.get("port") and
+                str(sa.get("protocol")) == key.get("protocol")):
+            del RULES[rid]
+
+def any_rule_at(path):
+    parts = path.split("/")
+    key = {}
+    for i in range(len(parts) - 1):
+        if parts[i] in ("externalipaddress", "port", "protocol"):
+            key[parts[i]] = parts[i + 1]
+    return any(str(sa.get("externalIP")) == key.get("externalipaddress") and
+               str(sa.get("port")) == key.get("port") and
+               str(sa.get("protocol")) == key.get("protocol") for sa in RULES.values())
+
+def record(method, path, body):
+    with open(REC, "a") as f:
+        f.write(json.dumps({"ts": round(time.time(), 3), "method": method,
+                            "path": path, "body": body}, sort_keys=True) + "\n")
+
+class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, obj):
+        payload = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self):
+        p = self.path.split("?")[0].rstrip("/")
+        if p.endswith("/version"):
+            if VMODE == "missing":
+                return self._send(404, {"result": "not found"})
+            v = {"version": "0.9.9", "buildInfo": "fake"}
+            if VMODE in ("gateway", "gateway-epp", "gateway-auth", "gateway-apikey"):
+                v["product"] = "loxilb-inference-gateway"
+            if VMODE == "gateway-epp":
+                v["features"] = ["epp"]
+            if VMODE == "gateway-auth":
+                v["features"] = ["api_key_auth", "jwt_auth_profile"]
+            if VMODE == "gateway-apikey":
+                v["features"] = ["api_key_auth"]
+            return self._send(200, v)
+        if p.endswith("/config/loadbalancer/all"):
+            return self._send(200, {"lbAttr": []})
+        if p.endswith("/config/cistate/all"):
+            return self._send(200, {"Attr": []})
+        if "/config/loadbalancer/status" in p or p.endswith("/status"):
+            # A rule this fake holds answers like a gateway's rule without a
+            # health monitor; one it does not hold is missing. Answering 404
+            # for every rule read as each rule vanishing on every sync.
+            if any_rule_at(p):
+                return self._send(200, {"adminStateUp": True, "operatingStatus": "NO_MONITOR"})
+            return self._send(404, {"result": "not-exists"})
+        if "/config/loadbalancer/id/" in p:
+            sa = RULES.get(p.rsplit("/", 1)[-1])
+            if sa is None:
+                return self._send(404, {"result": "not-exists"})
+            return self._send(200, {"serviceArguments": sa})
+        return self._send(200, {})
+
+    def _read_body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n) if n else b""
+        try:
+            return json.loads(raw) if raw else None
+        except Exception:
+            return {"__unparsed__": raw.decode("utf-8", "replace")}
+
+    def do_POST(self):
+        p = self.path.split("?")[0]
+        body = self._read_body()
+        record("POST", p, body)
+        if "/config/loadbalancer" in p:
+            if MODE == "notfound":
+                return self._send(404, {"result": "not-exists", "message": "not found"})
+            store_rule(body)  # "conflict" stands for a rule that is already there
+            if MODE == "conflict":
+                return self._send(409, {"result": "lb rule exists", "message": "conflict"})
+        return self._send(200, {"result": "Success"})
+
+    def do_DELETE(self):
+        p = self.path.split("?")[0]
+        record("DELETE", p, self._read_body())
+        drop_rules(p)
+        return self._send(200, {"result": "Success"})
+
+if __name__ == "__main__":
+    print(f"fake-loxilb :{PORT} mode={MODE} version={VMODE} rec={REC}", flush=True)
+    ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

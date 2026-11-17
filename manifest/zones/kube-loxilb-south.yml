@@ -49,6 +49,13 @@ rules:
       - get
       - list
   - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  - apiGroups:
       - gateway.networking.k8s.io
     resources:
       - gatewayclasses
@@ -57,6 +64,19 @@ rules:
       - gateways/status
       - tcproutes
       - udproutes
+    verbs: ["get", "watch", "list", "patch", "update"]
+  - apiGroups:
+      - inference.networking.k8s.io
+    resources:
+      - inferencepools
+      - inferencepools/status
+    verbs: ["get", "watch", "list", "patch", "update"]
+  - apiGroups:
+      - jwtauthprofile.loxilb.io
+    resources:
+      - jwtauthprofiles
+      - jwtauthprofiles/status
+      - jwtauthprofiles/finalizers
     verbs: ["get", "watch", "list", "patch", "update"]
   - apiGroups:
       - discovery.k8s.io

@@ -1,0 +1,889 @@
+package loadbalancer
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/pkg/errors"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
+	"github.com/loxilb-io/kube-loxilb/pkg/api"
+)
+
+func aiSvc(annotations map[string]string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "vllm",
+			Namespace:   "default",
+			Annotations: annotations,
+		},
+	}
+}
+
+// managerWithMode builds a Manager whose agent-wide default LB mode is mode.
+func managerWithMode(mode uint16) *Manager {
+	return &Manager{networkConfig: &config.NetworkConfig{SetLBMode: mode}}
+}
+
+// A service with no inference annotations must produce a zero AIArgs, which is
+// what keeps its payload identical to a plain loxilb rule.
+func TestGetAIArgsNoAnnotations(t *testing.T) {
+	m := managerWithMode(0)
+
+	got, err := m.getAIArgs(aiSvc(map[string]string{"loxilb.io/lbmode": "fullproxy"}), api.LBModeFullProxy, api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if got.IsSet() {
+		t.Errorf("AIArgs = %+v, want zero", got)
+	}
+}
+
+// CHWBL prefix-cache routing: use case 1.
+func TestGetAIArgsCHWBL(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		endPointSelAnnotation:          "chwbl",
+		chwblPrefixHashLevelAnnotation: "2",
+		chwblMeanLoadFactorAnnotation:  "125",
+		chwblReplicationAnnotation:     "100",
+		chwblEnableCacheSaltAnnotation: "true",
+		sseModeAnnotation:              "yes",
+		modelNameAnnotation:            "llama-70b",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelCHWBL)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+
+	if got.ChwblPrefixHashLevel != 2 {
+		t.Errorf("ChwblPrefixHashLevel = %d, want 2", got.ChwblPrefixHashLevel)
+	}
+	if got.ChwblMeanLoadFactor != 125 {
+		t.Errorf("ChwblMeanLoadFactor = %d, want 125", got.ChwblMeanLoadFactor)
+	}
+	if !got.ChwblEnableCacheSalt {
+		t.Error("ChwblEnableCacheSalt = false, want true")
+	}
+	if !got.SseMode {
+		t.Error("SseMode = false, want true (yes must parse)")
+	}
+	if got.ModelName != "llama-70b" {
+		t.Errorf("ModelName = %q, want llama-70b", got.ModelName)
+	}
+}
+
+// Single role-less pool KV-exact routing: use case 3 (SGLang).
+func TestGetAIArgsSingleRoleKVExact(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		kvExactModeAnnotation:   "3",
+		kvEngineTypeAnnotation:  "sglang",
+		kvDpRankCountAnnotation: "4",
+		kvBlockSizeAnnotation:   "16",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+
+	if got.KvExactMode != api.KvExactModeSingleRole {
+		t.Errorf("KvExactMode = %d, want 3", got.KvExactMode)
+	}
+	if got.KvEngineType != "sglang" || got.KvDpRankCount != 4 {
+		t.Errorf("engine/dp = %q/%d, want sglang/4", got.KvEngineType, got.KvDpRankCount)
+	}
+	// omitted on purpose: the server derives it from the engine
+	if got.KvHashAlgo != "" {
+		t.Errorf("KvHashAlgo = %q, want empty", got.KvHashAlgo)
+	}
+}
+
+func TestGetAIArgsRejections(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		lbMode      int
+		sel         api.EpSelect
+		defaultMode uint16
+		wantErr     string
+	}{
+		{
+			name:        "chwbl outside fullproxy",
+			annotations: map[string]string{endPointSelAnnotation: "chwbl"},
+			lbMode:      int(api.LBModeDefault),
+			sel:         api.LbSelCHWBL,
+			wantErr:     "requires loxilb.io/lbmode=fullproxy",
+		},
+		{
+			name:        "chwbl inherits a fullproxy agent default",
+			annotations: map[string]string{endPointSelAnnotation: "chwbl"},
+			lbMode:      -1,
+			sel:         api.LbSelCHWBL,
+			defaultMode: uint16(api.LBModeFullProxy),
+		},
+		{
+			name:        "chwbl with a non-fullproxy agent default",
+			annotations: map[string]string{endPointSelAnnotation: "chwbl"},
+			lbMode:      -1,
+			sel:         api.LbSelCHWBL,
+			defaultMode: uint16(api.LBModeDefault),
+			wantErr:     "requires loxilb.io/lbmode=fullproxy",
+		},
+		{
+			name:        "non-integer value",
+			annotations: map[string]string{kvZmqPortAnnotation: "abc"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     `loxilb.io/kv-zmq-port: "abc" is not an integer`,
+		},
+		{
+			name:        "non-boolean value",
+			annotations: map[string]string{sseModeAnnotation: "maybe"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     `loxilb.io/sse-mode: "maybe" is not a boolean`,
+		},
+		{
+			name:        "kv-exact mode 1 needs pd-disagg, which annotations cannot express",
+			annotations: map[string]string{kvExactModeAnnotation: "1"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "use kvExactMode=3 for a single pool",
+		},
+		{
+			name:        "kv-exact single role outside fullproxy",
+			annotations: map[string]string{kvExactModeAnnotation: "3"},
+			lbMode:      int(api.LBModeDefault),
+			sel:         api.LbSelRr,
+			wantErr:     "kv-exact single-role mode requires mode=fullproxy",
+		},
+		{
+			name: "hash algo incoherent with engine",
+			annotations: map[string]string{
+				kvEngineTypeAnnotation: "sglang",
+				kvHashAlgoAnnotation:   "sha256_cbor",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: "is incompatible with kv-engine-type",
+		},
+		{
+			name:        "chwbl mean load factor out of range",
+			annotations: map[string]string{chwblMeanLoadFactorAnnotation: "500"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "chwbl_mean_load_factor must be within 100..300",
+		},
+		{
+			name:        "unknown engine",
+			annotations: map[string]string{kvEngineTypeAnnotation: "trtllm"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "kv-engine-type must be one of",
+		},
+		{
+			name:        "model profile without kv-exact",
+			annotations: map[string]string{kvModelProfileAnnotation: "qwen3-32b-fp8-v1", sseModeAnnotation: "true"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "kvModelProfile is meaningless without kvExactMode",
+		},
+		{
+			name:        "epp outside fullproxy",
+			annotations: map[string]string{eppEndpointAnnotation: "10.43.0.9:9002"},
+			lbMode:      int(api.LBModeDefault),
+			sel:         api.LbSelRr,
+			wantErr:     "eppEndpoint requires mode=fullproxy",
+		},
+		{
+			name:        "epp inherits a fullproxy agent default",
+			annotations: map[string]string{eppEndpointAnnotation: "10.43.0.9:9002"},
+			lbMode:      -1,
+			sel:         api.LbSelRr,
+			defaultMode: uint16(api.LBModeFullProxy),
+		},
+		{
+			name:        "epp without a port",
+			annotations: map[string]string{eppEndpointAnnotation: "qwen3-epp"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "eppEndpoint must be host:port",
+		},
+		{
+			name: "epp unknown failure mode",
+			annotations: map[string]string{
+				eppEndpointAnnotation:    "10.43.0.9:9002",
+				eppFailureModeAnnotation: "open",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: "eppFailureMode must be FailOpen or FailClose",
+		},
+		{
+			name: "epp non-integer timeout",
+			annotations: map[string]string{
+				eppEndpointAnnotation:  "10.43.0.9:9002",
+				eppTimeoutMsAnnotation: "5s",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: `loxilb.io/epp-timeout-ms: "5s" is not an integer`,
+		},
+		{
+			name: "epp timeout above the bound",
+			annotations: map[string]string{
+				eppEndpointAnnotation:  "10.43.0.9:9002",
+				eppTimeoutMsAnnotation: "600001",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: "eppTimeoutMs must be within 0..600000",
+		},
+		{
+			name: "epp with pd-disagg",
+			annotations: map[string]string{
+				eppEndpointAnnotation:       "10.43.0.9:9002",
+				pdDisaggAnnotation:          "true",
+				pdPrefillSelectorAnnotation: "role=prefill",
+				pdDecodeSelectorAnnotation:  "role=decode",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: "eppEndpoint is incompatible with pd_disagg_mode=true",
+		},
+		{
+			name: "jwt auth profile with required",
+			annotations: map[string]string{
+				apiKeyAuthAnnotation:     api.APIKeyAuthRequired,
+				jwtAuthProfileAnnotation: "kc",
+			},
+			lbMode:  int(api.LBModeFullProxy),
+			sel:     api.LbSelRr,
+			wantErr: "jwt_auth_profile: only valid with api_key_auth jwt or apikey-or-jwt",
+		},
+		{
+			name:        "jwt without a profile",
+			annotations: map[string]string{apiKeyAuthAnnotation: api.APIKeyAuthJWT},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "jwt_auth_profile: required by this api_key_auth mode",
+		},
+		{
+			name:        "api key auth outside fullproxy",
+			annotations: map[string]string{apiKeyAuthAnnotation: api.APIKeyAuthRequired},
+			lbMode:      int(api.LBModeDefault),
+			sel:         api.LbSelRr,
+			wantErr:     "api_key_auth requires mode=fullproxy",
+		},
+		{
+			name:        "api key auth inherits a fullproxy agent default",
+			annotations: map[string]string{apiKeyAuthAnnotation: api.APIKeyAuthRequired},
+			lbMode:      -1,
+			sel:         api.LbSelRr,
+			defaultMode: uint16(api.LBModeFullProxy),
+		},
+		{
+			name:        "flow-control ceiling that is not an integer",
+			annotations: map[string]string{sseModeAnnotation: "true", fcMaxOutstandingAnnotation: "96k"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     `loxilb.io/fc-max-outstanding: "96k" is not an integer`,
+		},
+		{
+			name:        "flow-control mode the gateway does not know",
+			annotations: map[string]string{sseModeAnnotation: "true", fcModeAnnotation: "enabled"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "fc_mode must be one of off, observe, enforce or inherit",
+		},
+		{
+			name:        "flow-control queue without a wait window",
+			annotations: map[string]string{sseModeAnnotation: "true", fcMaxQueueDepthAnnotation: "96"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "fc_max_queue_wait_ms must be greater than 0 when fc_max_queue_depth is set",
+		},
+		{
+			name:        "flow-control band weights that are not a triple",
+			annotations: map[string]string{sseModeAnnotation: "true", fcBandWeightsAnnotation: "8,3,1"},
+			lbMode:      int(api.LBModeFullProxy),
+			sel:         api.LbSelRr,
+			wantErr:     "fc_band_weights must be three whole numbers critical:standard:sheddable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := managerWithMode(tt.defaultMode)
+
+			got, err := m.getAIArgs(aiSvc(tt.annotations), tt.lbMode, tt.sel)
+
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("getAIArgs = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("getAIArgs = nil, want error containing %q (got %+v)", tt.wantErr, got)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("getAIArgs = %q, want it to contain %q", err, tt.wantErr)
+			}
+			if got.IsSet() {
+				t.Errorf("a rejected config still returned args: %+v", got)
+			}
+		})
+	}
+}
+
+// P/D disaggregation must not be reachable from annotations: it needs a
+// per-endpoint role that a Service cannot express.
+func TestPDDisaggNotExposedViaAnnotations(t *testing.T) {
+	m := managerWithMode(uint16(api.LBModeFullProxy))
+	svc := aiSvc(map[string]string{
+		"loxilb.io/pd-disagg-mode": "true",
+		"loxilb.io/ep-role":        "prefill",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if got.PDDisaggMode {
+		t.Error("pd_disagg_mode became settable from an annotation")
+	}
+	if got.IsSet() {
+		t.Errorf("unrecognised annotations produced args: %+v", got)
+	}
+}
+
+// A gateway-only selector must be refused on plain loxilb even when no AI
+// serviceArguments accompany it.
+func TestInstallLBRefusesGatewaySelectorOnPlainLoxilb(t *testing.T) {
+	plain := newFakeLoxiLB(t, "")
+
+	m := &Manager{}
+	lb := api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			Protocol:   "tcp",
+			Mode:       api.LBModeFullProxy,
+			Sel:        api.LbSelCHWBL,
+		},
+	}
+
+	err := m.installLB(plain.client(t), lb, false)
+	if err == nil {
+		t.Fatal("installLB accepted sel=chwbl on plain loxilb")
+	}
+	if !errors.Is(err, ErrInferenceGatewayRequired) {
+		t.Errorf("error %q does not wrap ErrInferenceGatewayRequired", err)
+	}
+}
+
+// The same selector must go through to a gateway untouched.
+func TestInstallLBAllowsGatewaySelectorOnGateway(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+
+	m := &Manager{}
+	lb := api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			Protocol:   "tcp",
+			Mode:       api.LBModeFullProxy,
+			Sel:        api.LbSelCHWBL,
+			AIArgs:     api.AIArgs{ChwblPrefixHashLevel: 2},
+		},
+	}
+
+	if err := m.installLB(gw.client(t), lb, false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+
+	body := gw.lastBody(t)
+	if !strings.Contains(body, `"sel":8`) {
+		t.Errorf("gateway body missing sel=8\n%s", body)
+	}
+	if !strings.Contains(body, `"chwbl_prefix_hash_level":2`) {
+		t.Errorf("gateway body missing chwbl level\n%s", body)
+	}
+}
+
+func TestInferenceRoutingKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		aiArgs    api.AIArgs
+		sel       api.EpSelect
+		wantHost  string
+		wantPath  string
+		wantMatch api.PathMatchModeType
+	}{
+		{
+			// A plain L4 rule must not grow a host and a path: that would
+			// change what it matches.
+			name: "plain service gets no routing key",
+			sel:  api.LbSelRr,
+		},
+		{
+			name:      "a model name needs the key the proxy looks up by",
+			aiArgs:    api.AIArgs{ModelName: "qwen3-32b"},
+			sel:       api.LbSelRr,
+			wantHost:  "1.2.3.4",
+			wantPath:  "/",
+			wantMatch: api.PathMatchModePrefix,
+		},
+		{
+			// Gateway-only selection runs in the same userspace proxy, so the
+			// lookup applies even with no AI arguments set.
+			name:      "gateway-only selector alone is enough",
+			sel:       api.LbSelCHWBL,
+			wantHost:  "1.2.3.4",
+			wantPath:  "/",
+			wantMatch: api.PathMatchModePrefix,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, path, match := inferenceRoutingKey("1.2.3.4", tt.aiArgs, tt.sel)
+			if host != tt.wantHost || path != tt.wantPath || match != tt.wantMatch {
+				t.Errorf("got (%q, %q, %q), want (%q, %q, %q)",
+					host, path, match, tt.wantHost, tt.wantPath, tt.wantMatch)
+			}
+		})
+	}
+}
+
+// An Endpoint Picker declared on a Service reaches the payload as is. This is
+// also the shape the InferencePool manager writes onto the Services it makes.
+func TestGetAIArgsEndpointPicker(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		eppEndpointAnnotation:    "10.43.12.7:9002",
+		eppFailureModeAnnotation: api.EppFailureModeFailOpen,
+		eppTimeoutMsAnnotation:   "5000",
+		eppPlaintextAnnotation:   "true",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+
+	want := api.AIArgs{
+		EppEndpoint:    "10.43.12.7:9002",
+		EppFailureMode: api.EppFailureModeFailOpen,
+		EppTimeoutMs:   5000,
+		EppPlaintext:   true,
+	}
+	if got != want {
+		t.Errorf("AIArgs = %+v, want %+v", got, want)
+	}
+}
+
+// The endpoint alone is enough: the failure mode and the timeout resolve to
+// FailClose and 3000 ms on the gateway.
+func TestGetAIArgsEndpointPickerDefaults(t *testing.T) {
+	m := managerWithMode(0)
+
+	got, err := m.getAIArgs(aiSvc(map[string]string{eppEndpointAnnotation: "10.43.12.7:9002"}),
+		int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if got != (api.AIArgs{EppEndpoint: "10.43.12.7:9002"}) {
+		t.Errorf("AIArgs = %+v, want only the endpoint", got)
+	}
+	if !got.EndpointPickerFailsClosed() {
+		t.Error("an unset failure mode must read as FailClose")
+	}
+}
+
+// Without an endpoint the other settings are dropped, so a Service that names
+// no picker stays a plain Service and is not refused by plain peers.
+func TestGetAIArgsEndpointPickerSettingsWithoutEndpoint(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		eppFailureModeAnnotation: api.EppFailureModeFailOpen,
+		eppTimeoutMsAnnotation:   "5000",
+		eppPlaintextAnnotation:   "true",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeDefault), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if got.IsSet() {
+		t.Errorf("AIArgs = %+v, want zero", got)
+	}
+}
+
+// The credential policy reaches the payload as written, and a Service that
+// declares nothing else is still an inference Service: on a plain peer it has
+// to be refused, not stripped and served unauthenticated.
+func TestGetAIArgsCredentialPolicy(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		apiKeyAuthAnnotation:     api.APIKeyAuthJWT,
+		jwtAuthProfileAnnotation: "kc",
+	})
+
+	if !hasAIAnnotation(svc) {
+		t.Fatal("a Service declaring only a credential policy is not seen as an inference Service")
+	}
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if want := (api.AIArgs{APIKeyAuth: api.APIKeyAuthJWT, JwtAuthProfile: "kc"}); got != want {
+		t.Errorf("AIArgs = %+v, want %+v", got, want)
+	}
+}
+
+// The flow-control annotations of a known-good gateway request reach the
+// payload as written, beside the KV-exact ones they were sent with.
+func TestGetAIArgsFlowControl(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		endPointSelAnnotation:         "chwbl",
+		modelNameAnnotation:           "Qwen/Qwen3-32B-FP8",
+		sseModeAnnotation:             "true",
+		kvExactModeAnnotation:         "3",
+		kvEngineTypeAnnotation:        "vllm",
+		kvBlockSizeAnnotation:         "16",
+		kvZmqPortAnnotation:           "5557",
+		kvWarmupSecAnnotation:         "30",
+		kvModelProfileAnnotation:      "qwen3-32b-fp8-v1",
+		fcModeAnnotation:              "enforce",
+		fcEpMaxInflightAnnotation:     "32",
+		fcMaxOutstandingAnnotation:    "96",
+		fcMaxQueueDepthAnnotation:     "96",
+		fcMaxQueueWaitMsAnnotation:    "15000",
+		fcWarmupMsAnnotation:          "30000",
+		fcAdaptiveAnnotation:          "on",
+		fcTtftTargetMsAnnotation:      "5000",
+		fcExposeHeadersAnnotation:     "on",
+		fcWakePolicyAnnotation:        "weighted",
+		fcBandWeightsAnnotation:       "8:3:1",
+		fcTenantMaxSharePctAnnotation: "50",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelCHWBL)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+
+	want := api.FlowControlArgs{
+		FcMode:              "enforce",
+		FcEpMaxInflight:     32,
+		FcMaxOutstanding:    96,
+		FcMaxQueueDepth:     96,
+		FcMaxQueueWaitMs:    15000,
+		FcWarmupMs:          30000,
+		FcAdaptive:          "on",
+		FcTtftTargetMs:      5000,
+		FcExposeHeaders:     "on",
+		FcWakePolicy:        "weighted",
+		FcBandWeights:       "8:3:1",
+		FcTenantMaxSharePct: 50,
+	}
+	if got.FlowControlArgs != want {
+		t.Errorf("FlowControlArgs = %+v, want %+v", got.FlowControlArgs, want)
+	}
+	if got.KvExactMode != api.KvExactModeSingleRole || got.KvZmqPort != 5557 || got.KvModelProfile != "qwen3-32b-fp8-v1" {
+		t.Errorf("KV-exact fields = %d/%d/%q, want 3/5557/qwen3-32b-fp8-v1",
+			got.KvExactMode, got.KvZmqPort, got.KvModelProfile)
+	}
+	if notice := flowControlIgnoredNotice(svc, got); notice != "" {
+		t.Errorf("notice on an SSE Service = %q, want none", notice)
+	}
+}
+
+// Any credential policy that checks something makes the Service an
+// AI-gateway service too, so the gate goes out with it.
+func TestGetAIArgsFlowControlWithCredentialPolicy(t *testing.T) {
+	m := managerWithMode(0)
+	svc := aiSvc(map[string]string{
+		apiKeyAuthAnnotation: api.APIKeyAuthRequired,
+		fcModeAnnotation:     "observe",
+	})
+
+	got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+	if err != nil {
+		t.Fatalf("getAIArgs: %v", err)
+	}
+	if got.FcMode != "observe" {
+		t.Errorf("FcMode = %q, want observe", got.FcMode)
+	}
+}
+
+// Without SSE mode, P/D or a checking credential policy the gateway never
+// consults the gate, so the settings are left out and the Service is told.
+// A Service with nothing else stays plain, and an inference Service keeps the
+// rest of its arguments.
+func TestGetAIArgsFlowControlWithoutAIGatewayService(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		want        api.AIArgs
+	}{
+		{
+			name:        "flow control only",
+			annotations: map[string]string{fcModeAnnotation: "enforce", fcMaxOutstandingAnnotation: "96"},
+		},
+		{
+			name: "beside a model name",
+			annotations: map[string]string{
+				modelNameAnnotation: "llama", fcModeAnnotation: "enforce", fcMaxOutstandingAnnotation: "96",
+			},
+			want: api.AIArgs{ModelName: "llama"},
+		},
+		{
+			name: "beside api-key-auth disabled",
+			annotations: map[string]string{
+				apiKeyAuthAnnotation: api.APIKeyAuthDisabled, fcModeAnnotation: "enforce", fcMaxOutstandingAnnotation: "96",
+			},
+			want: api.AIArgs{APIKeyAuth: api.APIKeyAuthDisabled},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := managerWithMode(0)
+			svc := aiSvc(tt.annotations)
+
+			got, err := m.getAIArgs(svc, int(api.LBModeFullProxy), api.LbSelRr)
+			if err != nil {
+				t.Fatalf("getAIArgs: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("AIArgs = %+v, want %+v", got, tt.want)
+			}
+
+			notice := flowControlIgnoredNotice(svc, got)
+			for _, want := range []string{fcModeAnnotation, fcMaxOutstandingAnnotation, sseModeAnnotation} {
+				if !strings.Contains(notice, want) {
+					t.Errorf("notice does not name %s: %q", want, notice)
+				}
+			}
+		})
+	}
+}
+
+func authLoadBalancerModel(mode, profile string) api.LoadBalancerModel {
+	return api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			Protocol:   "tcp",
+			Mode:       api.LBModeFullProxy,
+			AIArgs:     api.AIArgs{APIKeyAuth: mode, JwtAuthProfile: profile},
+		},
+		Endpoints: []api.LoadBalancerEndpoint{{EndpointIP: "10.42.0.7", TargetPort: 8000, Weight: 1}},
+	}
+}
+
+func TestInstallLBSendsCredentialPolicyToSupportingGateway(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.features = []string{api.FeatureAPIKeyAuth, api.FeatureJWTAuthProfile}
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), authLoadBalancerModel(api.APIKeyAuthJWT, "kc"), false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+
+	body := gw.lastBody(t)
+	for _, want := range []string{`"api_key_auth":"jwt"`, `"jwt_auth_profile":"kc"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %s\n%s", want, body)
+		}
+	}
+}
+
+// A gateway build without the features would accept the rule, drop both
+// fields and serve it unauthenticated. Nothing may be sent, and unlike a
+// FailOpen Endpoint Picker there is no stripped variant to fall back on.
+func TestInstallLBRefusesCredentialPolicyOnGatewayWithoutTheFeature(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.features = []string{api.FeatureEndpointPicker}
+
+	m := &Manager{}
+	for _, lb := range []api.LoadBalancerModel{
+		authLoadBalancerModel(api.APIKeyAuthRequired, ""),
+		authLoadBalancerModel(api.APIKeyAuthDisabled, ""),
+		authLoadBalancerModel(api.APIKeyAuthJWT, "kc"),
+	} {
+		err := m.installLB(gw.client(t), lb, false)
+		if !errors.Is(err, ErrAuthUnsupported) {
+			t.Errorf("installLB(%s) = %v, want ErrAuthUnsupported", lb.Service.APIKeyAuth, err)
+		}
+	}
+
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	if len(gw.bodies) != 0 {
+		t.Errorf("a refused rule was still POSTed:\n%s", gw.bodies[0])
+	}
+}
+
+// A build that enforces API keys but not JWTs takes the API-key modes and
+// refuses the ones with a Bearer arm.
+func TestInstallLBNeedsBothFeaturesForJWT(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.features = []string{api.FeatureAPIKeyAuth}
+	peer := gw.client(t)
+
+	m := &Manager{}
+	if err := m.installLB(peer, authLoadBalancerModel(api.APIKeyAuthRequired, ""), false); err != nil {
+		t.Errorf("required on an API-key build: %v", err)
+	}
+	for _, mode := range []string{api.APIKeyAuthJWT, api.APIKeyAuthAPIKeyOrJWT} {
+		err := m.installLB(peer, authLoadBalancerModel(mode, "kc"), false)
+		if !errors.Is(err, ErrAuthUnsupported) {
+			t.Errorf("installLB(%s) = %v, want ErrAuthUnsupported", mode, err)
+		} else if !strings.Contains(err.Error(), `"jwt_auth_profile"`) || strings.Contains(err.Error(), `"api_key_auth"`) {
+			t.Errorf("the refusal should name only the missing feature: %v", err)
+		}
+	}
+}
+
+// A Service without a credential policy does not depend on the features.
+func TestInstallLBPlainInferenceRuleIgnoresAuthFeatures(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), eppLoadBalancerModel(api.EppFailureModeFailOpen), false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+	if body := gw.lastBody(t); strings.Contains(body, "api_key_auth") || strings.Contains(body, "jwt_auth_profile") {
+		t.Errorf("credential fields on a rule that declares none\n%s", body)
+	}
+}
+
+func eppLoadBalancerModel(failureMode string) api.LoadBalancerModel {
+	return api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			Protocol:   "tcp",
+			Mode:       api.LBModeFullProxy,
+			Sel:        api.LbSelCHWBL,
+			AIArgs: api.AIArgs{
+				ChwblReplication: 100,
+				EppEndpoint:      "10.43.12.7:9002",
+				EppFailureMode:   failureMode,
+				EppTimeoutMs:     5000,
+			},
+		},
+		Endpoints: []api.LoadBalancerEndpoint{{EndpointIP: "10.42.0.7", TargetPort: 8000, Weight: 1}},
+	}
+}
+
+func TestInstallLBSendsEndpointPickerToSupportingGateway(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.features = []string{api.FeatureEndpointPicker}
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), eppLoadBalancerModel(api.EppFailureModeFailClose), false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+
+	body := gw.lastBody(t)
+	for _, want := range []string{`"eppEndpoint":"10.43.12.7:9002"`, `"eppFailureMode":"FailClose"`, `"eppTimeoutMs":5000`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %s\n%s", want, body)
+		}
+	}
+}
+
+// A gateway build without the feature would drop the fields and serve the rule
+// on its own selection, which FailClose forbids: nothing may be sent.
+func TestInstallLBRefusesFailCloseOnGatewayWithoutEndpointPicker(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+
+	m := &Manager{}
+	err := m.installLB(gw.client(t), eppLoadBalancerModel(api.EppFailureModeFailClose), false)
+	if !errors.Is(err, ErrEndpointPickerUnsupported) {
+		t.Fatalf("installLB = %v, want ErrEndpointPickerUnsupported", err)
+	}
+
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	if len(gw.bodies) != 0 {
+		t.Errorf("a refused rule was still POSTed:\n%s", gw.bodies[0])
+	}
+}
+
+// FailOpen means "serve without the picker when it cannot be used". The peer
+// gets the rule without the EPP fields; the caller's model keeps them for the
+// peers that do support it.
+func TestInstallLBStripsFailOpenOnGatewayWithoutEndpointPicker(t *testing.T) {
+	old := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	cur := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	cur.features = []string{api.FeatureEndpointPicker}
+
+	m := &Manager{}
+	lb := eppLoadBalancerModel(api.EppFailureModeFailOpen)
+
+	if err := m.installLB(old.client(t), lb, false); err != nil {
+		t.Fatalf("installLB on the old gateway: %v", err)
+	}
+	if err := m.installLB(cur.client(t), lb, false); err != nil {
+		t.Fatalf("installLB on the current gateway: %v", err)
+	}
+
+	oldBody := old.lastBody(t)
+	if strings.Contains(oldBody, "epp") {
+		t.Errorf("old gateway got EPP fields\n%s", oldBody)
+	}
+	if !strings.Contains(oldBody, `"chwbl_replication":100`) {
+		t.Errorf("stripping removed a non-EPP field\n%s", oldBody)
+	}
+	if body := cur.lastBody(t); !strings.Contains(body, `"eppFailureMode":"FailOpen"`) {
+		t.Errorf("current gateway lost the EPP fields after the old one was served\n%s", body)
+	}
+	if lb.Service.EppEndpoint == "" {
+		t.Error("installLB stripped the caller's model")
+	}
+}
+
+func TestEndpointPickerDowngradeNotice(t *testing.T) {
+	failOpen := eppLoadBalancerModel(api.EppFailureModeFailOpen).Service.AIArgs
+	failClose := eppLoadBalancerModel(api.EppFailureModeFailClose).Service.AIArgs
+
+	if got := endpointPickerDowngradeNotice(failOpen, []string{"10.0.0.11"}); !strings.Contains(got, "10.0.0.11") {
+		t.Errorf("FailOpen downgrade not reported: %q", got)
+	}
+	if got := endpointPickerDowngradeNotice(failOpen, nil); got != "" {
+		t.Errorf("reported a downgrade with every peer supporting the picker: %q", got)
+	}
+	if got := endpointPickerDowngradeNotice(failClose, []string{"10.0.0.11"}); got != "" {
+		t.Errorf("FailClose is refused, not downgraded, yet a notice was produced: %q", got)
+	}
+	if got := endpointPickerDowngradeNotice(api.AIArgs{}, []string{"10.0.0.11"}); got != "" {
+		t.Errorf("a rule without a picker produced a notice: %q", got)
+	}
+}
+
+// The re-sync after a peer comes back must not mistake a rule the peer cannot
+// serve for a broken peer.
+func TestIsPeerRefusal(t *testing.T) {
+	for _, err := range []error{ErrInferenceGatewayRequired, ErrGPUMonitoringDisabled, ErrEndpointPickerUnsupported, ErrAuthUnsupported} {
+		if wrapped := errors.Wrap(err, "loxilb-lb(10.0.0.11)"); !isPeerRefusal(wrapped) {
+			t.Errorf("isPeerRefusal(%v) = false", wrapped)
+		}
+	}
+	if isPeerRefusal(errors.New("connection refused")) {
+		t.Error("a transport error is not a refusal")
+	}
+}

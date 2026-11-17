@@ -21,11 +21,29 @@ const (
 	LbSelLeastConnections
 	// LbSelN2 - select client based on N2 interface contents
 	LbSelN2
-	// LbSelN2DET - select client based on N2DET contents
-	LbSelN2DET
 	// LbSelN3 - select client based on N3 interface contents
 	LbSelN3
+	// 7 - reserved by loxilb (was QUIC selection). Kept as a hole so the
+	// constants below keep the values loxilb actually assigns.
+	_
+	// LbSelCHWBL - Consistent Hash with Bounded Loads, for prefix-cache aware
+	// routing. loxilb-inference-gateway only, and fullproxy only.
+	LbSelCHWBL
+	// LbSelGPUAware - GPU-aware selection for LLM workloads.
+	// loxilb-inference-gateway only, and fullproxy only.
+	LbSelGPUAware
+	// LbSelWRRHash - Weighted Consistent Hash with Bounded Loads.
+	// loxilb-inference-gateway only, and fullproxy only.
+	LbSelWRRHash
 )
+
+// IsInferenceGatewayOnly - whether this selector exists only in
+// loxilb-inference-gateway. These also require mode=fullproxy: they are
+// implemented in the userspace sockproxy, and outside fullproxy the kernel
+// selector matches no case and black-holes every connection.
+func (s EpSelect) IsInferenceGatewayOnly() bool {
+	return s == LbSelCHWBL || s == LbSelGPUAware || s == LbSelWRRHash
+}
 
 type LbMode int32
 
@@ -152,8 +170,9 @@ type LoadBalancerService struct {
 	ProbeTimeout    uint32              `json:"probeTimeout,omitempty"`
 	Security        int32               `json:"security,omitempty"`
 	Name            string              `json:"name,omitempty"`
+	ID              string              `json:"id,omitempty"` // gateway only; set per peer by installLB
 	Oper            LbOP                `json:"oper,omitempty"`
-	Host            string              `json:"host,omitempty"`
+	Host            string              `json:"host,omitempty" key:"hosturl"`
 	PpV2            bool                `json:"proxyprotocolv2,omitempty"`
 	Egress          bool                `json:"egress,omitempty"`
 	Snat            bool                `json:"snat,omitempty"`
@@ -162,6 +181,16 @@ type LoadBalancerService struct {
 	PathMatchMode   PathMatchModeType   `json:"path_match_mode,omitempty"`
 	MtlsFrontend    *MtlsFrontend       `json:"mtls_frontend,omitempty"`
 	MtlsBackend     *MtlsBackend        `json:"mtls_backend,omitempty"`
+
+	// AIArgs - loxilb-inference-gateway-only fields. Embedded, not named,
+	// because they sit flat inside serviceArguments on the wire. Promoted
+	// access means callers write svc.KvExactMode as if it were declared here.
+	AIArgs
+	// GatewayArgs - gateway-only limits, member timeouts and TLS/HSTS policy.
+	GatewayArgs
+	// GatewayTLSLists - the two gateway-only list fields, kept apart so the
+	// two structs above stay comparable.
+	GatewayTLSLists
 }
 
 func (lbService *LoadBalancerService) GetKeyStruct() LoxiModel {
@@ -174,6 +203,23 @@ type LoadBalancerEndpoint struct {
 	Weight     uint8  `json:"weight"`
 	State      string `json:"state"`
 	Counter    string `json:"counter"`
+
+	// --- loxilb-inference-gateway only: P/D disaggregation ---
+
+	// EpRole - 0=normal, 1=prefill, 2=decode. Only meaningful when the service
+	// sets pd_disagg_mode.
+	//
+	// Keep this (and every other field here) a value type: StripAIFields relies
+	// on a shallow slices.Clone to detach the per-client payload, which only
+	// holds while the element contains no pointers.
+	EpRole int32 `json:"ep_role,omitempty"`
+	// NixlPort - NIXL side-channel port for KV-cache transfer. 0 means reuse
+	// TargetPort. Must match the engine's VLLM_NIXL_SIDE_CHANNEL_PORT.
+	NixlPort int32 `json:"nixl_port,omitempty"`
+
+	// EndpointProbe - gateway-only health-monitor fields. Embedded because the
+	// wire shape is flat inside each endpoint object.
+	EndpointProbe
 }
 
 type LoadBalancerSecIp struct {
@@ -239,13 +285,38 @@ func (l *LoadBalancerAPI) Create(ctx context.Context, lbModel LoxiModel) error {
 	return nil
 }
 
+// Delete - remove a rule from loxilb.
+//
+// The URL has to name every field loxilb keys the rule by, and that is more
+// than the L4 tuple. AddLbRule and DeleteLbRule build the key as
+// <hostUrl><port><l3><l4>, and loxilb-inference-gateway folds path_prefix,
+// path_match_mode and model_name into it as well. A URL that leaves any of
+// them out looks up a key that was never inserted, which comes back as 404
+// "no-rule error": the rule stays programmed and the caller retries forever.
+//
+// A rule with no host keeps the plain L4 URL, which is every ordinary service.
+// One with a host goes through the /hosturl/ form, which carries the rest as
+// query params, model_name among them. That is what separates two rules
+// sharing a VIP and port under different model names: a delete that omits
+// model_name matches only the rule naming no model, so sending it is what
+// stops one pool's teardown from taking the other pool's rule with it.
 func (l *LoadBalancerAPI) Delete(ctx context.Context, lbModel LoxiModel) error {
-	subresources, err := l.MakeDeletedSubResource(l.deleteKey, lbModel)
+	queryParam, err := l.MakeQueryParam(lbModel)
 	if err != nil {
 		return err
 	}
 
-	queryParam, err := l.MakeQueryParam(lbModel)
+	deleteKey := l.deleteKey
+	if service, ok := lbModel.GetKeyStruct().(*LoadBalancerService); ok && service.Host != "" {
+		deleteKey = append([]string{"hosturl"}, deleteKey...)
+		queryParam["path_prefix"] = service.PathPrefix
+		queryParam["path_match_mode"] = string(service.PathMatchMode)
+		if service.ModelName != "" {
+			queryParam["model_name"] = service.ModelName
+		}
+	}
+
+	subresources, err := l.MakeDeletedSubResource(deleteKey, lbModel)
 	if err != nil {
 		return err
 	}

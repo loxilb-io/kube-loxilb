@@ -1,0 +1,590 @@
+# Inference gateway guide
+
+kube-loxilb can program [loxilb-inference-gateway](https://github.com/loxilb-io/loxilb-inference-gateway)
+as an LLM-serving load balancer: prefix-cache aware endpoint selection, KV-cache exact routing,
+model-name routing, SSE-aware streaming, and prefill/decode disaggregation. This document covers how
+to use those features and every annotation that drives them.
+
+There are two ways in, and they end up in the same place - a LoadBalancer Service that kube-loxilb
+turns into an inference rule on loxilb:
+
+| | [Through a Kubernetes Service](#1-through-a-kubernetes-service) | [Through the Gateway API](#2-through-the-gateway-api-inferencepool) |
+|---|---|---|
+| What you write | a `LoadBalancer` Service with `loxilb.io/*` annotations | an `InferencePool` + an `HTTPRoute` that references it |
+| kube-loxilb flags | none beyond the usual | `--gatewayAPI --inferenceExtension` |
+| Extra CRDs | none | Gateway API + Inference Extension |
+| Endpoints | the Service selector | the pool's `selector` |
+| Everything below the Service | identical | identical |
+
+Use the Service path when loxilb is the only thing routing to your model servers. Use the Gateway API
+path when the fleet is already described with Gateway API objects, when
+[Inference Extension](https://gateway-api-inference-extension.sigs.k8s.io/) semantics matter to other
+tooling in the cluster, or when an Endpoint Picker (for example llm-d's) should choose the endpoints.
+
+## Contents
+
+- [Before you start](#before-you-start)
+- [1. Through a Kubernetes Service](#1-through-a-kubernetes-service)
+  - [Prefill/decode disaggregation](#prefilldecode-disaggregation)
+- [2. Through the Gateway API (InferencePool)](#2-through-the-gateway-api-inferencepool)
+- [Annotation reference](#annotation-reference)
+  - [Inference gateway annotations](#inference-gateway-annotations)
+  - [Prefill/decode annotations](#prefilldecode-annotations)
+  - [Endpoint Picker annotations](#endpoint-picker-annotations)
+  - [Credential annotations](#credential-annotations)
+  - [JWT auth profiles](#jwt-auth-profiles)
+  - [Flow-control annotations](#flow-control-annotations)
+  - [Endpoint selection](#endpoint-selection)
+  - [Annotations that are not inference-specific](#annotations-that-are-not-inference-specific)
+- [Requirements outside Kubernetes](#requirements-outside-kubernetes)
+- [Events and status](#events-and-status)
+
+## Before you start
+
+**A loxilb-inference-gateway backend.** Every annotation on this page is served by
+loxilb-inference-gateway, a superset of upstream loxilb aimed at LLM serving fleets. kube-loxilb
+detects the flavor at runtime from the `product` field of `GET /netlox/v1/version`, so the same
+kube-loxilb drives both. A service that asks for any of these annotations while its loxilb is plain
+upstream loxilb is rejected with an `InferenceGatewayRequired` Warning event on the Service rather
+than being silently downgraded.
+
+**Which gateway build.** A feature that a gateway build drops without a word is checked against the
+`features` that `GET /netlox/v1/version` lists, and a rule needing a feature an instance lacks is
+not sent there (see [Events and status](#events-and-status)): `"epp"` for the Endpoint Picker,
+`"api_key_auth"` and `"jwt_auth_profile"` for the credential annotations and `JWTAuthProfile`. The
+credential features are in loxilb-inference-gateway `main` from
+[#430](https://github.com/loxilb-io/loxilb-inference-gateway/pull/430) on. kube-loxilb also gives
+every rule on a gateway an id and reads the rule back by it after adding it. A build before #430
+does not take a new id for a rule it already holds, so the first time this kube-loxilb sends a rule
+that an older kube-loxilb added, the read-back finds nothing under the id and the rule is deleted
+and added again - once per rule, with a brief interruption. Upgrade the gateways first.
+
+**fullproxy and pod endpoints.** Endpoint selection and the KV-exact paths run in the userspace
+proxy, which only fullproxy traffic reaches, so these settings need
+<b>loxilb.io/lbmode: "fullproxy"</b> in practice. Selecting on cache locality, GPU state or a
+prefill/decode role also means choosing between individual model server pods, so the endpoints have
+to be pods - set <b>loxilb.io/usepodnetwork: "yes"</b> (the Gateway API path imposes both for you).
+Omitting an annotation leaves the field out of the request entirely, so loxilb applies its own default.
+
+## 1. Through a Kubernetes Service
+
+Annotate an ordinary `LoadBalancer` Service whose selector picks up the model server pods. Nothing
+else is needed: no CRDs, no extra kube-loxilb flags.
+
+Example - prefix-cache aware routing across a vLLM pool:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-llama70b
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+    loxilb.io/epselect: "chwbl"
+    loxilb.io/chwbl-prefix-hash-level: "2"
+    loxilb.io/chwbl-mean-load-factor: "125"
+    loxilb.io/sse-mode: "true"
+    loxilb.io/model-name: "meta-llama/Llama-3.1-70B-Instruct"
+spec:
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: vllm
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: LoadBalancer
+```
+
+That service asks for four things at once: `chwbl` picks the endpoint whose cache most likely already
+holds the prompt prefix, `chwbl-*` tunes how that hashing works, `sse-mode` keeps a streaming response
+from being torn down by the idle timeout, and `model-name` lets other services share the same VIP and
+port by claiming a different model. Each is described in
+[Inference gateway annotations](#inference-gateway-annotations).
+
+`chwbl` is one of three selectors that exist only on the inference gateway - see
+[Endpoint selection](#endpoint-selection) for the rest, and for what `gpuaware` additionally needs.
+
+Verify the rule the way you would any other loxilb service:
+
+```
+kubectl get svc vllm-llama70b
+kubectl describe svc vllm-llama70b     # events report anything loxilb refused
+```
+
+### Prefill/decode disaggregation
+
+Disaggregation needs a role per endpoint, which a Service cannot state directly. kube-loxilb derives it: two label selectors name the prefill and the decode pods, and each endpoint is stamped with the role of the pod it belongs to.
+
+Because the role is per pod, the endpoints have to <b>be</b> pods. Set <b>loxilb.io/usepodnetwork: "yes"</b> (or use a multus network). In the default mode the endpoints are node addresses, every pod on a node collapses into one entry, and the split cannot be represented - kube-loxilb rejects that combination rather than programming a rule that cannot work.
+
+The annotations are listed under [Prefill/decode annotations](#prefilldecode-annotations).
+
+With disaggregation on, <b>loxilb.io/kv-exact-mode: "1"</b> becomes available; mode `3` is for a
+single role-less pool and loxilb rejects it here.
+
+The port is uniform per pool, not per pod: all prefill pods are assumed to share one NIXL port and
+all decode pods another, which is how one Deployment per role deploys. Per-pod ports would need a pod
+annotation and are not supported.
+
+Example - a prefill pool and a decode pool behind one Service:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-pd
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+    loxilb.io/usepodnetwork: "yes"
+    loxilb.io/pd-disagg: "true"
+    loxilb.io/pd-prefill-selector: "llm-role=prefill"
+    loxilb.io/pd-decode-selector: "llm-role=decode"
+    loxilb.io/pd-prefill-nixl-port: "9001"
+    loxilb.io/pd-decode-nixl-port: "9002"
+    loxilb.io/kv-exact-mode: "1"
+    loxilb.io/sse-mode: "true"
+spec:
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: vllm          # selects both pools
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+  type: LoadBalancer
+```
+
+The Service selector must cover both pools, since one rule carries both. The two role selectors then partition what it found.
+
+## 2. Through the Gateway API (InferencePool)
+
+Start kube-loxilb with `--inferenceExtension` (which needs `--gatewayAPI`) to serve
+[Gateway API Inference Extension](https://gateway-api-inference-extension.sigs.k8s.io/) pools.
+An `InferencePool` referenced from an HTTPRoute becomes a LoadBalancer Service selecting the pool's
+pods, which loxilb then programs as an inference rule - the same rule the
+[Service path](#1-through-a-kubernetes-service) produces, written differently.
+
+The GatewayClass and Gateway themselves are ordinary Gateway API objects - see
+[Gateway API support](README.md#gateway-api-support) in the README for those. What is added here is
+the pool and the route that points at it:
+
+```yaml
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: vllm-qwen3
+  namespace: llm
+  annotations:
+    loxilb.io/epselect: "chwbl"           # prefix-cache aware endpoint selection
+    loxilb.io/model-name: "qwen3-32b"
+spec:
+  selector:
+    matchLabels:
+      app: vllm-qwen3
+  targetPorts:
+    - number: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: llm-route
+  namespace: llm
+spec:
+  parentRefs:
+    - name: inference-gw
+  rules:
+    - backendRefs:
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: vllm-qwen3
+```
+
+The generated Service is named `<pool>-inference`, sits on the Gateway's address, and selects the
+pool's pods. What it carries and what the translation decides for you is below.
+
+**The route and the pool share a namespace.** A backendRef naming an `InferencePool` in another
+namespace is not served - the Gateway API allows one only with a ReferenceGrant, which kube-loxilb
+does not check - and the route is logged with a warning. The Gateway can be anywhere its listeners
+admit the route from.
+
+**An Endpoint Picker, when the pool names one.** Without `endpointPickerRef`, loxilb selects
+endpoints itself with the `epselect` algorithm. With it, the gateway asks the picker (an
+[Endpoint Picker](https://github.com/kubernetes-sigs/gateway-api-inference-extension/blob/main/docs/proposals/004-endpoint-picker-protocol/README.md)
+such as the llm-d EPP) over ext_proc where every request goes. kube-loxilb never talks to the picker
+itself: it resolves the referenced Service to its cluster IP and puts that address on the rule,
+and the gateway does the rest.
+
+- **failureMode.** `FailClose` (the API default) answers `503 epp_unavailable` when the picker cannot
+  answer; `FailOpen` falls back to the rule's own selection, so `epselect` still matters as the
+  fallback. An endpoint the picker names must still be one of the pool's endpoints and pass loxilb's
+  own health, circuit-breaker and disabled checks.
+- **The reference.** It has to be a Service (group `""`, kind `Service`) in the pool's namespace,
+  with a cluster IP - not headless, not `ExternalName` - and a port matching `endpointPickerRef.port`.
+  If it does not resolve, `ResolvedRefs` is `False` with reason `InvalidExtensionRef`; a `FailOpen`
+  pool is then served by loxilb's own selection, and a `FailClose` pool keeps its rule but points it
+  at an address that always refuses (`127.0.0.1:1`), so every request is answered
+  `503 epp_unavailable` - never by a model server - until the reference resolves. The Service is
+  watched, so creating it later, or recreating it at a new address, is picked up without touching
+  the pool.
+- **What it rules out.** A pool with a picker needs `loxilb.io/lbmode: fullproxy`, cannot be combined
+  with `loxilb.io/pd-disagg` (the picker orchestrates prefill/decode itself), and must declare a
+  single `targetPorts` entry. Any of these is reported as `Accepted=False` / `NotSupportedByParent`.
+- **KV-exact alongside a picker.** Allowed. A request the picker routes skips loxilb's KV-exact
+  selection; KV-exact is used only when a `FailOpen` pool falls back to loxilb's own selection, so it
+  is a reasonable fallback to configure.
+- **Reaching it.** A loxilb running outside the cluster needs a route to the service CIDR through a
+  node, the same way it needs one to the pod CIDR for pod endpoints.
+- **Which gateway.** Only gateway builds that list `"epp"` in the `features` of
+  `GET /netlox/v1/version` apply the picker. On any other gateway a `FailClose` pool is refused and a
+  `FailOpen` pool is served without the picker, both with an `EndpointPickerUnsupported` event.
+- **Tuning.** The picker's deadline and transport have no field in the API, so they are annotations -
+  see [Endpoint Picker annotations](#endpoint-picker-annotations).
+
+**Model routing needs a lookup key.** The gateway's userspace proxy finds an endpoint pool by
+host, path prefix and match mode, so a rule carrying inference settings is given `host` = its
+external IP, `path_prefix` = `/` and `path_match_mode` = `prefix`. Without them the rule is
+accepted, reads back correctly, and answers every request with `model_unavailable`.
+
+**The pool takes the listener.** A Gateway with HTTP/HTTPS listeners normally also gets a
+`<gateway>-ingress-service` pointing at the loxilb-ingress pods. A listener that an InferencePool
+is attached to is left out of that Service - both would otherwise claim the same address and port,
+and which rule the data plane binds would be a race. When a Gateway is applied together with its
+routes, the ingress service can hold the port for a moment before the route is seen; the pool's
+Service then waits, with an `ExternalIPUnavailable` event naming the holder, and gets the port once
+the ingress service lets it go.
+
+**CRDs.** Install the Inference Extension CRDs separately; kube-loxilb waits for
+`inferencepools.inference.networking.k8s.io` and does nothing until it exists. Pools that omit
+`endpointPickerRef` need the **v1.6.0** CRDs or later - v1.5.0 and earlier make the field required.
+
+**Where the annotations come from.** Only `loxilb.io/*` annotations are copied - first the pool's,
+then the route's, so the same pool served through two routes on different listeners can be tuned
+per route. Routes on the same listener share that listener's one Service: the first route by name
+is the one read, and the others' `loxilb.io/*` annotations are ignored with a warning. Everything in
+[Annotation reference](#annotation-reference) can be set in either place.
+
+**What the translation imposes.** `loxilb.io/usepodnetwork` is forced to `"yes"` - inference routing
+chooses between individual model server pods, which node-address endpoints cannot express - and
+setting it to anything else is an error rather than a silent override. `loxilb.io/lbmode` defaults to `fullproxy`;
+if the pool or route sets it to something else while asking for a gateway-only selector
+(`chwbl`, `gpuaware`, `wrr-hash`), the pool is refused - outside fullproxy that selector matches no
+case and the traffic is black-holed.
+
+**Ports.** The Service listens on the Gateway listener's port and targets the pool's first
+`targetPorts` entry. A pool declaring more than one target port is served on the first, with a
+warning in the kube-loxilb log - unless it names an Endpoint Picker, which chooses among every target
+port, in which case it is refused.
+
+**Several pools on one listener.** The routes on one listener can send to several pools - a model
+each. Their Services share the listener's address and port, and the gateway tells their rules apart
+by model, the host and path being the same for all of them. The address and port stay allocated until
+the last of these Services goes. Two pools serving the same model, or two naming none, would make one
+rule: the older pool is served, and the other waits with a `ListenerRouteConflict` event until one of
+them changes or goes.
+
+**One Service per listener.** A pool reachable through several Gateway listeners gets one Service per
+listener, named `<pool>-inference-<gateway namespace>-<gateway>-<listener>`; long names are truncated
+to the API server's 63-character limit without letting two of them collapse onto one.
+
+For a worked, runnable version of this path - k3s, a real gateway container, and the assertions that
+prove the rule carries traffic - see [test/e2e-inference-gwapi](test/e2e-inference-gwapi/README.md).
+
+## Annotation reference
+
+Everything here can be set on a Service, or on an `InferencePool` / `HTTPRoute` when using the
+Gateway API path. These are the annotations added for inference serving; the rest of kube-loxilb's
+annotations are in the [README](README.md#kube-loxilb-supported-annotations).
+
+### Inference gateway annotations
+
+Model routing, streaming, session affinity, prefix-cache hashing and KV-exact routing. All of these
+need <b>loxilb.io/lbmode: "fullproxy"</b> and a loxilb-inference-gateway peer.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/model-name</b> | Route by the `model` field of the request body. Several services can share one VIP:port, each claiming a model name; a service with no model name is the catch-all. |
+| <b>loxilb.io/sse-mode</b> | Server-sent-events awareness: suppresses the idle timeout during token streaming. Also arms AI key and rate-limit enforcement. `"true"`/`"yes"`. |
+| <b>loxilb.io/max-stream-duration</b> | Ceiling in seconds for a single streamed response. Default 0 (unbounded). |
+| <b>loxilb.io/backend-keepalive-interval</b> | Backend keepalive interval in seconds. Default 0. |
+| <b>loxilb.io/session-header-name</b> | Pin a session to one endpoint by an HTTP header, e.g. `"mcp-session-id"` for an MCP gateway. |
+| <b>loxilb.io/trace-type</b> | Protocol-aware tracing, e.g. `"mcp"`. |
+| <b>loxilb.io/cb-enable</b> | Per-endpoint circuit breaker. `"true"`/`"yes"`. |
+| <b>loxilb.io/chwbl-prefix-hash-level</b> | Prefix-hash depth for consistent hashing with bounded loads: `1`, `2` or `3`. Default 1. Used by `epselect: chwbl` and `epselect: wrr-hash`. |
+| <b>loxilb.io/chwbl-prefix-hash-flags</b> | Prefix-hash flags, 0..255. Default 0. |
+| <b>loxilb.io/chwbl-mean-load-factor</b> | Bounded-load factor as a percentage, 100..300. Default 125. Lower values spread load more evenly at the cost of cache locality. |
+| <b>loxilb.io/chwbl-replication</b> | Virtual nodes per endpoint on the hash ring, 1..1024. Default 100. |
+| <b>loxilb.io/chwbl-enable-cache-salt</b> | Salt the cache key. `"true"`/`"yes"`. Default false. |
+| <b>loxilb.io/kv-exact-mode</b> | KV-cache exact routing. Use `"3"` for a single role-less serving pool, or `"1"` alongside [prefill/decode disaggregation](#prefilldecode-disaggregation). |
+| <b>loxilb.io/kv-engine-type</b> | `"vllm"` (default) or `"sglang"`. Immutable once the rule exists: changing it needs a delete and recreate. |
+| <b>loxilb.io/kv-dp-rank-count</b> | SGLang `--dp-size`, 1..8. Default 1. |
+| <b>loxilb.io/kv-block-size</b> | KV block size in tokens. Default 16. Must match the engine. |
+| <b>loxilb.io/kv-zmq-port</b> | Engine event socket port. Default 5557. |
+| <b>loxilb.io/kv-warmup-sec</b> | Warmup window in seconds. The gateway's swagger documents a default of 30 but no code applies it, so set this explicitly if warmup matters. |
+| <b>loxilb.io/kv-hash-algo</b> | `"sha256_cbor"`, `"xxhash_cbor"` or `"sha256_sglang"`. Best omitted: loxilb then derives it from the engine type and the pair can never be incoherent. |
+| <b>loxilb.io/kv-model-profile</b> | ID of a model-prompt profile published on the gateway, e.g. `"qwen3-32b-fp8-v1"`. Binds the rule to it strictly: the gateway refuses the rule (`LoxiLBRejected`) unless the profile is published and admits the `model-name`. Needs `kv-exact-mode`. The gateway does not change it in place; kube-loxilb deletes and re-adds the rule when the annotation changes. |
+
+### Prefill/decode annotations
+
+See [Prefill/decode disaggregation](#prefilldecode-disaggregation) for how the roles are derived and
+what they require.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/pd-disagg</b> | Turn on prefill/decode disaggregation. `"true"`/`"yes"`. Requires fullproxy, pod endpoints, and both selectors below. |
+| <b>loxilb.io/pd-prefill-selector</b> | Label selector for the prefill pods, e.g. `"llm-role=prefill"`. |
+| <b>loxilb.io/pd-decode-selector</b> | Label selector for the decode pods. A pod may not match both. |
+| <b>loxilb.io/pd-prefill-nixl-port</b> | NIXL side-channel port the prefill pods listen on, matching their `VLLM_NIXL_SIDE_CHANNEL_PORT`. 0 or unset reuses the target port. |
+| <b>loxilb.io/pd-decode-nixl-port</b> | The same for the decode pods. |
+| <b>loxilb.io/pd-cache-aware</b> | Cache-aware prefill placement. Requires `pd-disagg`. |
+| <b>loxilb.io/pd-cache-threshold</b> | Cache-hit percentage above which the cached prefill endpoint is preferred, 0..100. Default 20. |
+| <b>loxilb.io/pd-session-ttl</b> | Session lifetime in seconds. Default 0. |
+| <b>loxilb.io/pd-balance-abs-threshold</b> | Absolute load gap before rebalancing. Default 3. |
+
+### Endpoint Picker annotations
+
+On a pool, the address and the failure mode come from `endpointPickerRef` and anything written in
+these two annotations is overwritten. On a plain Service there is no reference to resolve, so the
+annotations are the whole configuration. Without `epp-endpoint`, the other three are ignored.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/epp-endpoint</b> | `host:port` of the Endpoint Picker's gRPC (ext_proc) server. Set from `endpointPickerRef` on a pool. Requires fullproxy; not combinable with `pd-disagg`. |
+| <b>loxilb.io/epp-failure-mode</b> | `"FailOpen"` or `"FailClose"`. Default `FailClose`. Set from `endpointPickerRef.failureMode` on a pool. |
+| <b>loxilb.io/epp-timeout-ms</b> | How long a request waits for the picker's decision before the failure mode applies, 0..600000. Default 3000. A picker that queues requests under load (llm-d flow control) needs more. |
+| <b>loxilb.io/epp-plaintext</b> | `"true"` connects to the picker without TLS. The default is TLS without certificate verification, matching the self-signed certificate the llm-d EPP serves. |
+
+### Credential annotations
+
+These make loxilb check a credential before a request reaches a backend. On a pool, write them on
+the InferencePool; they are copied onto the Service it generates.
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/api-key-auth</b> | `"disabled"`, `"required"`, `"jwt"` or `"apikey-or-jwt"`. `required` validates `X-Api-Key` against loxilb's key store; `jwt` validates an `Authorization: Bearer` token against the profile named below; `apikey-or-jwt` accepts either, and a present `X-Api-Key` decides alone. `disabled` checks nothing but still strips `X-Api-Key`, which is not the same as leaving the annotation out. Requires fullproxy. |
+| <b>loxilb.io/jwt-auth-profile</b> | Name of the JWT auth profile that checks the token, at most 63 characters. Required by `jwt` and `apikey-or-jwt`, refused with any other mode. Create it as a `JWTAuthProfile` (see [JWT auth profiles](#jwt-auth-profiles)); the rule goes to each loxilb instance once the profile is there. |
+
+loxilb checks the credential once per listener - address, port and protocol - before it looks at
+host, path or model, so every Service sharing a listener must declare the same pair; loxilb refuses
+a rule that disagrees with the ones already there. kube-loxilb settles it first: among the fullproxy
+Services on a listener, the oldest one's pair holds - for a Service generated from an InferencePool,
+the pool's age counts - and a Service declaring another pair is not programmed, and has its rules
+taken back, until the two agree (`ListenerAuthConflict`). An unset `api-key-auth` and `"disabled"`
+count as different. A gateway instance that does not list
+`"api_key_auth"` in its version features (and, for `jwt` and `apikey-or-jwt`, `"jwt_auth_profile"`)
+would drop the fields and serve the rule unauthenticated, so the rule is not sent there
+(`AuthNotSupported`).
+
+### JWT auth profiles
+
+A profile tells loxilb how to check a Bearer token: which issuer it must come from, where its signing
+keys are, which audiences it must carry, and which claims hold the tenant, the user, the roles and the
+models it may use. loxilb keeps profiles per instance, so kube-loxilb owns them as a cluster-scoped
+`JWTAuthProfile` and registers each one on every loxilb-inference-gateway instance that lists
+`"jwt_auth_profile"` in its version features - including an instance added later, or one restarted
+without its snapshot. Apply the CRD once:
+
+```bash
+kubectl apply -f manifest/crds/jwt-auth-profile.yaml
+```
+
+```yaml
+apiVersion: jwtauthprofile.loxilb.io/v1
+kind: JWTAuthProfile
+metadata:
+  name: kc                      # the value of loxilb.io/jwt-auth-profile, at most 63 characters
+spec:
+  issuer: https://keycloak.example/realms/inference   # also the base of OIDC discovery
+  audiences: [inference-api]
+  rolesClaim: realm_access.roles                       # the defaults match Keycloak
+  modelRolePrefix: "model:"
+```
+
+Every field of loxilb's profile is there, under its camelCase name (`jwksUrl`, `algs`, `leewaySec`,
+`refreshSec`, `tenantClaim`, `defaultTenant`, `userClaim`, `usernameClaim`, `modelsClaim`,
+`modelAuthz`, `forwardIdentity`, `authorizationPassthrough`, `priorityClass`); unset fields take
+loxilb's defaults. `kubectl get jwtauthprofiles` shows whether a profile is `Programmed` on every such
+instance, and `status.peers` shows each instance's answer.
+
+A rule naming a profile is held back from an instance until the profile is there
+(`ProfileNotProgrammed`), and from every instance while no `JWTAuthProfile` of that name exists
+(`ProfileNotFound`); it goes out on its own once the reason is gone. Without the CRD installed, rules
+go as they are and loxilb answers for the profile, which then has to be registered on each instance
+by hand.
+
+Changing a profile reloads its signing keys on every instance at once; Bearer requests checked
+against it answer 503 until they are fetched, so change it when traffic allows. A profile is deleted
+from the instances only once no rule names it: delete the routes and pools first. Until then the
+delete waits (`ProfileInUse`).
+
+### Flow-control annotations
+
+loxilb's capacity admission gate bounds how many inference requests execute on a pool at once, how
+many may wait for a turn, and which waiter goes next. Each annotation is one `fc_*` field of the rule,
+passed as written; leaving one out runs on the instance's own default (its `LLB_FC_*` environment).
+On a pool, write them on the InferencePool; they are copied onto the Service it generates. The
+gateway's [flow-control guide](https://github.com/loxilb-io/loxilb-inference-gateway/blob/main/docs/load-balancing/23-ai-admission-flow-control.md)
+has what each one does.
+
+loxilb runs the gate only on an AI-gateway service: one with `sse-mode`, `pd-disagg`, or an
+`api-key-auth` other than `"disabled"`. On any other Service these annotations would be stored and
+never consulted, so they are not sent and the Service gets a `FlowControlIgnored` warning.
+
+```yaml
+metadata:
+  annotations:
+    loxilb.io/lbmode: "fullproxy"
+    loxilb.io/usepodnetwork: "yes"
+    loxilb.io/model-name: "Qwen/Qwen3-32B-FP8"
+    loxilb.io/sse-mode: "true"              # what makes it an AI-gateway service
+    loxilb.io/fc-mode: "enforce"
+    loxilb.io/fc-max-outstanding: "96"      # the pool
+    loxilb.io/fc-ep-max-inflight: "32"      # each endpoint
+    loxilb.io/fc-max-queue-depth: "96"
+    loxilb.io/fc-max-queue-wait-ms: "15000"
+    loxilb.io/fc-adaptive: "on"
+    loxilb.io/fc-ttft-target-ms: "5000"
+    loxilb.io/fc-warmup-ms: "30000"
+    loxilb.io/fc-expose-headers: "on"
+```
+
+| Annotation | Description |
+| ---------- | ----------- |
+| <b>loxilb.io/fc-mode</b> | `"enforce"` refuses or queues a request over a ceiling, `"observe"` only counts what it would have done, `"off"` bypasses the gate, `"inherit"` runs on the instance default. |
+| <b>loxilb.io/fc-max-outstanding</b> | Executing requests on the whole pool, 0..100000. |
+| <b>loxilb.io/fc-ep-max-inflight</b> | Executing requests per endpoint, 0..100000. |
+| <b>loxilb.io/fc-prefill-max-inflight</b> | Prefill legs per endpoint under `pd-disagg`, 0..100000. |
+| <b>loxilb.io/fc-decode-max-inflight</b> | Decode legs per endpoint under `pd-disagg`, 0..100000. |
+| <b>loxilb.io/fc-max-queue-depth</b> | Requests that may wait for a turn instead of being refused with 429, 0..65536. Each waiting request holds its client connection, about 1 MiB. |
+| <b>loxilb.io/fc-max-queue-wait-ms</b> | The longest a request waits before it is answered 504, 0..3600000. Required with a queue depth. |
+| <b>loxilb.io/fc-adaptive</b> | `"on"` lowers the pool ceiling while endpoints report backpressure and raises it back as they recover. `"off"` / `"inherit"`. |
+| <b>loxilb.io/fc-ttft-target-ms</b> | With `fc-adaptive`, a time to first token over this counts as backpressure, 0..3600000. |
+| <b>loxilb.io/fc-telemetry-stale-ms</b> | How long scraped endpoint telemetry is trusted, 0..3600000. |
+| <b>loxilb.io/fc-warmup-ms</b> | An endpoint back in service ramps its ceilings up over this window, 0..3600000. |
+| <b>loxilb.io/fc-tenant-max-share-pct</b> | The most of the ceiling and the queue one tenant may hold, 0..100. Inert without a pool ceiling (`fc-max-outstanding`). |
+| <b>loxilb.io/fc-tenant-wake</b> | Order inside a band: `"fifo"` or `"rr"` across tenants. `"inherit"`. |
+| <b>loxilb.io/fc-expose-headers</b> | `"on"` adds `X-Loxilb-Admission-Inflight`, `-Queued` and `-Limit` to admitted responses. `"off"` / `"inherit"`. |
+| <b>loxilb.io/fc-llmd-headers</b> | `"on"` honours the llm-d TTL header and forwards the admitted class and tenant as `x-llm-d-inference-objective` and `x-llm-d-inference-fairness-id`. `"off"` / `"inherit"`. |
+| <b>loxilb.io/fc-wake-policy</b> | Which priority band a freed unit wakes: `"strict"` (highest first) or `"weighted"` (by `fc-band-weights`). `"inherit"`. |
+| <b>loxilb.io/fc-band-weights</b> | `"critical:standard:sheddable"` credits per round for `weighted`, e.g. `"8:3:1"`: each 1..62, at most 64 together, or `"0:0:0"`. |
+| <b>loxilb.io/fc-band-min-share-pct</b> | Each band's floor under contention, as `critical:standard:sheddable` percentages, at most 100 together. |
+| <b>loxilb.io/fc-critical-reserve-pct</b> | Percent of the ceiling no other band may take, even while critical is idle, 0..100. |
+| <b>loxilb.io/fc-band-wait-ms</b> | Each band's wait window as `critical:standard:sheddable`, inside `fc-max-queue-wait-ms`. |
+| <b>loxilb.io/fc-band-queue-pct</b> | Each band's share of the queue depth as `critical:standard:sheddable` percentages. |
+| <b>loxilb.io/fc-shed-queue</b> | `"on"` lets sheddable requests wait, evicted by higher bands when the queue is full. Needs a queue depth. `"off"` / `"inherit"`. |
+
+kube-loxilb checks what a single annotation can say on its own - the values above, the ranges, the
+three-number shape of a band triple, and a queue depth without a wait - and refuses those with
+`InvalidInferenceConfig`. The rules between the band annotations, and `fc-shed-queue` without a queue
+(which may come from the instance's environment), are loxilb's to judge; a refusal comes back as
+`LoxiLBRejected`.
+
+No version feature says which of these a gateway build has, and a build that predates a field drops
+it without a word. The band settings (`fc-wake-policy`, `fc-band-*`, `fc-critical-reserve-pct`,
+`fc-shed-queue`, `fc-tenant-wake` and `fc-llmd-headers`) entered loxilb-inference-gateway `main` in
+October 2026, after the others; `fc_effective` on `GET /netlox/v1/config/loadbalancer` shows what an
+instance runs on.
+
+### Endpoint selection
+
+`loxilb.io/epselect` is not new, but three of its values are: `chwbl`, `gpuaware` and `wrr-hash` exist
+only in loxilb-inference-gateway and only work under `loxilb.io/lbmode: "fullproxy"`. Outside
+fullproxy the kernel selector matches no case and black-holes the traffic, so kube-loxilb refuses that
+combination rather than programming it.
+
+| Value | What it does | Also needs |
+| ----- | ------------ | ---------- |
+| `chwbl` | Consistent hashing with bounded loads - routes a prompt to the endpoint whose cache most likely holds its prefix. | the `chwbl-*` annotations to tune it |
+| `wrr-hash` | Weighted round-robin over the same prefix hash. | the `chwbl-*` annotations |
+| `gpuaware` | Selects on live GPU telemetry. | [arming on each loxilb instance](#gpu-aware-routing-has-to-be-armed-outside-kubernetes) |
+
+The other values (`rr`, `hash`, `persist`, `lc`, ...) work against any loxilb - see the
+[README](README.md#kube-loxilb-supported-annotations).
+
+### Annotations that are not inference-specific
+
+Three more annotation families were added alongside these. They are documented in the README because
+they apply to any service, not only to model serving, but they are worth knowing about here because
+they exist only in loxilb-inference-gateway too:
+
+- [**Endpoint health-monitor**](README.md#endpoint-health-monitor-annotations)
+  (`loxilb.io/probe-method`, `probe-path`, `probe-expected-codes`, `probe-http-version`,
+  `probe-domain`) - a real HTTP health check instead of the `probereq`/`proberesp` escape hatch.
+  Setting any of them replaces the legacy probe rather than refining it.
+- [**Gateway-only service settings**](README.md#gateway-only-service-annotations)
+  (`loxilb.io/connection-limit`, the `timeout-*`, `tls-*`, `hsts-*` and `backend-*-cert-id`
+  annotations) - per-service limits, member timeouts and TLS/HSTS policy. A useful companion to a
+  public inference endpoint.
+- [**Rule health on the Service**](README.md#rule-health-on-the-service) - what loxilb says about a
+  rule, surfaced on `Service.status` and as events. Needs `loxilb.io/liveness: "yes"`.
+- **mTLS** (`loxilb.io/mtls-*`) - frontend and backend mutual TLS for the endpoint in front of the
+  pool.
+
+## Requirements outside Kubernetes
+
+Two of these features depend on state kube-loxilb cannot create from the Kubernetes API.
+
+### GPU-aware routing has to be armed outside Kubernetes
+
+`loxilb.io/epselect: "gpuaware"` sets the rule's selector, but whether that selector actually runs is decided by a process-global routing mode on each loxilb instance, and it is off by default. A rule created against a loxilb with it off is accepted and then routes as plain CHWBL, indistinguishable from `epselect: "chwbl"`.
+
+Two things have to happen on the loxilb side, and neither is something kube-loxilb can do:
+
+1. `POST /netlox/v1/config/gpu/enable` on each instance, which arms the routing mode.
+2. Per-endpoint GPU telemetry pushed to `POST /netlox/v1/config/worker/metrics`. This comes from the serving engine or DCGM; without it the selector is armed but has no data.
+
+kube-loxilb does not drive either: the first is one instance-wide switch with no reference counting, and the second needs metrics the Kubernetes API does not have. What it does do is check. Before programming a `gpuaware` rule it reads `GET /netlox/v1/config/gpu/status`, and if the mode is disarmed it refuses the rule on that instance with a `GPUMonitoringDisabled` warning event rather than letting it silently become CHWBL. The same check repeats on every reconcile of a `gpuaware` service, so disarming the mode after the rule exists is reported too. If the status cannot be read at all, the rule is programmed anyway -- a failed diagnostic should not take down a rule that would have worked.
+
+### KV-exact routing needs a staged tokenizer
+
+loxilb reads `/etc/loxilb/tokenizers/<model-slug>/tokenizer.json`, where `<model-slug>` is the model name with each `/` replaced by `__`. kube-loxilb does not manage that file and cannot see it, so whenever a rule enables `kv-exact-mode` it records a Normal `KvExactTokenizerRequired` event on the Service naming the exact path to check -- visible with `kubectl describe svc`.
+
+If the file is missing, loxilb logs `kv-router: tokenizer not available` once and silently falls back to load-based routing: the rule is still created and traffic still flows, just without cache-aware placement. <b>loxilb caches that failure</b>, so staging the tokenizer afterwards does not take effect until loxilb restarts. Stage it before creating the rule.
+
+## Events and status
+
+Everything kube-loxilb refuses, downgrades or is told by loxilb lands on the object as an event, so
+`kubectl describe` is the first place to look. On a Service generated from an InferencePool, the
+warnings about the pool's own configuration - `InvalidInferenceConfig`, `FlowControlIgnored`, `AuthNotSupported`,
+`ListenerAuthConflict`, `ListenerRouteConflict`, `ProfileNotFound`, `ProfileNotProgrammed`, `LoxiLBRejected` - are repeated on
+the pool, naming the Service. A `JWTAuthProfile` carries its own, listed last.
+
+| Reason | Type | Meaning |
+| ------ | ---- | ------- |
+| `InferenceGatewayRequired` | Warning | An inference annotation was used against plain upstream loxilb. The rule is refused rather than silently downgraded. |
+| `InvalidInferenceConfig` | Warning | An annotation did not parse, or a combination is impossible (e.g. `pd-disagg` without pod endpoints). |
+| `GPUMonitoringDisabled` | Warning | `epselect: gpuaware` on an instance where the GPU routing mode is not armed. Re-checked on every reconcile. |
+| `EndpointPickerUnsupported` | Warning | The rule names an Endpoint Picker and a gateway instance does not list `"epp"` in its version features. A `FailClose` rule is refused there; a `FailOpen` rule is served there without the picker. |
+| `ProfileNotFound` | Warning | The rule names a JWT auth profile that has no `JWTAuthProfile`. It is sent nowhere until one is created. |
+| `ProfileNotProgrammed` | Warning | The JWT auth profile is not on that loxilb instance yet. The rule goes there once it is. |
+| `ListenerAuthConflict` | Warning | The Service shares a listener with an older one that declares another `api-key-auth` or `jwt-auth-profile`. It is not served there until they agree. |
+| `ListenerRouteConflict` | Warning | The Service of an InferencePool shares a listener with an older pool's that serves the same model (or, like it, none): the gateway would hold one rule for both. It is not served there until one of them changes or goes. |
+| `AuthNotSupported` | Warning | The rule declares `api-key-auth` and a gateway instance does not list the matching version features, or stores the rule without the policy when it is read back. The rule is refused, or removed, there rather than served unauthenticated. |
+| `FlowControlIgnored` | Warning | `fc-*` annotations on a Service that is not an AI-gateway service, where loxilb never consults them. They are not sent; names them. |
+| `KvExactTokenizerRequired` | Normal | `kv-exact-mode` is on; names the tokenizer path loxilb will read. |
+| `LoxiLBRejected` | Warning | loxilb itself refused the value - an unknown cipher, an unregistered certificate id, a JWT auth profile the instance does not have, and so on. |
+| `ExternalIPUnavailable` | Warning | No external address and port could be allocated yet: another Service holds that port on the pool's address, or the pool is out of addresses. Names the holder when there is one; the Service is retried until it is released. |
+| `GatewayArgsDowngraded` | Warning | A gateway-only service setting was dropped for an upstream peer in the pool; names which. |
+| `ProbeFieldsDowngraded` | Warning | Health-monitor fields dropped for an upstream peer; the probe path is carried across to `probereq`. |
+| `ProbeModeChanged` | Warning | Both the new health monitor and `proberesp` are configured; names what will actually be checked. |
+| `RuleMissing` | Warning | A loxilb instance no longer has a rule kube-loxilb programmed there. It is put back in the same sync. |
+| `RuleUnhealthy` / `RuleHealthy` | Warning / Normal | loxilb's own view of the rule changed. Needs `loxilb.io/liveness: "yes"`. |
+| `ProfileRefused` (on a `JWTAuthProfile`) | Warning | A loxilb instance refused the profile and said why; it is tried again. |
+| `ProfileInUse` (on a `JWTAuthProfile`) | Warning | The profile is being deleted and a rule still names it; the delete waits for the rule to go. |
+
+With more than one loxilb instance, a rule that one instance refuses or fails is not given up on. The
+Service is served by the instances that took it, and the others are tried again with backoff, at most
+two minutes apart, until they take it - a JWT auth profile registered there later, for instance. Each
+refusal is reported once. An instance that is down is left alone until it comes back up, when every
+rule is sent to it again.
+
+On the Gateway API path the pool also carries `status.parents[].conditions` (`Accepted`,
+`ResolvedRefs`) under the Gateway that serves it. `ResolvedRefs` says whether `endpointPickerRef`
+resolved, and to which address.
+
+## See also
+
+- [README](README.md) - deploying kube-loxilb, and the full annotation list
+- [Gateway API support](README.md#gateway-api-support) - the non-inference Gateway API resources
+- [test/e2e-inference-gwapi](test/e2e-inference-gwapi/README.md) - the InferencePool path end to end
+- [loxilb-inference-gateway](https://github.com/loxilb-io/loxilb-inference-gateway)

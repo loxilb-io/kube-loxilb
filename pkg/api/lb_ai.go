@@ -1,0 +1,575 @@
+package api
+
+import (
+	"fmt"
+	"net"
+	"slices"
+)
+
+// AIArgs - loxilb-inference-gateway-only serviceArguments fields.
+//
+// These live FLAT inside the serviceArguments JSON object on the wire, so this
+// struct MUST stay embedded in LoadBalancerService. Turning it into a named
+// field (`json:"ai"`) would nest the JSON and the gateway would not see any of
+// it.
+//
+// Every field is a value type with omitempty, so an unset AIArgs contributes
+// nothing to the payload and upstream loxilb keeps seeing byte-identical
+// requests. Tri-state pointers are deliberately avoided: the gateway itself
+// uses the "0 means default" idiom (dpebpf_linux.go), so it does not
+// distinguish an absent field from a zero one either.
+//
+// Field casing is copied verbatim from the gateway's api/swagger.yml and is
+// deliberately inconsistent (snake_case vs camelCase). A mis-cased key is
+// dropped silently by the server, with no error, so do not "tidy" these tags.
+type AIArgs struct {
+	// --- KV-cache exact routing (camelCase on the wire) ---
+
+	// KvExactMode - 0=off, 1=P/D topology, 3=single role-less pool.
+	KvExactMode int64 `json:"kvExactMode,omitempty"`
+	// KvZmqPort - engine event socket. 1..65535, server default 5557.
+	KvZmqPort int64 `json:"kvZmqPort,omitempty"`
+	// KvBlockSize - KV block size in tokens. min 1, server default 16.
+	KvBlockSize int64 `json:"kvBlockSize,omitempty"`
+	// KvHashAlgo - "sha256_cbor" | "xxhash_cbor" | "sha256_sglang".
+	// Omitting it is the recommended shape: the server then derives the value
+	// from KvEngineType and the pair can never be incoherent.
+	KvHashAlgo string `json:"kvHashAlgo,omitempty"`
+	// KvEngineType - "vllm" (default) | "sglang". Immutable once the rule exists;
+	// changing it requires delete + recreate.
+	KvEngineType string `json:"kvEngineType,omitempty"`
+	// KvDpRankCount - SGLang --dp-size. 1..8, 0 means server default 1.
+	KvDpRankCount int32 `json:"kvDpRankCount,omitempty"`
+	// KvWarmupSec - swagger documents default 30, but no Go layer applies it;
+	// the handler casts the value straight through to the data plane. Send an
+	// explicit value if warmup matters.
+	KvWarmupSec int64 `json:"kvWarmupSec,omitempty"`
+	// KvModelProfile - ID of the gateway's ModelPromptProfile the rule binds
+	// to. Naming one makes the rule strict: the gateway refuses it unless the
+	// profile is published and admits model_name. Needs KvExactMode 1 or 3.
+	// Immutable once the rule exists; changing it requires delete + recreate.
+	KvModelProfile string `json:"kvModelProfile,omitempty"`
+
+	// --- CHWBL (only meaningful with sel=chwbl(8) or sel=wrr-hash(10)) ---
+
+	// ChwblPrefixHashLevel - 1 | 2 | 3, server default 1.
+	ChwblPrefixHashLevel int `json:"chwbl_prefix_hash_level,omitempty"`
+	// ChwblMeanLoadFactor - 100..300, server default 125.
+	ChwblMeanLoadFactor int `json:"chwbl_mean_load_factor,omitempty"`
+	// ChwblReplication - 1..1024, server default 100.
+	ChwblReplication int `json:"chwbl_replication,omitempty"`
+	// ChwblPrefixHashFlags - 0..255, server default 0.
+	ChwblPrefixHashFlags int `json:"chwbl_prefix_hash_flags,omitempty"`
+	// ChwblEnableCacheSalt - server default false.
+	ChwblEnableCacheSalt bool `json:"chwbl_enable_cache_salt,omitempty"`
+
+	// --- Prefill/Decode disaggregation ---
+
+	// PDDisaggMode - requires mode=fullproxy and at least one prefill and one
+	// decode endpoint.
+	PDDisaggMode bool `json:"pd_disagg_mode,omitempty"`
+	// PDCacheAwareMode - requires PDDisaggMode.
+	PDCacheAwareMode bool `json:"pd_cache_aware_mode,omitempty"`
+	// PDCacheThreshold - 0..100, 0 means server default 20.
+	PDCacheThreshold int32 `json:"pd_cache_threshold,omitempty"`
+	// PDSessionTTLSec - server default 0.
+	PDSessionTTLSec int32 `json:"pd_session_ttl_sec,omitempty"`
+	// PDBalanceAbsThreshold - 0 means server default 3.
+	PDBalanceAbsThreshold int32 `json:"pd_balance_abs_threshold,omitempty"`
+
+	// --- L7 / streaming / AI gateway controls ---
+
+	// SseMode - SSE awareness, and the arming switch for AI key/limit enforcement.
+	SseMode bool `json:"sse_mode,omitempty"`
+	// MaxStreamDurationSec - min 0, server default 0 (unbounded).
+	MaxStreamDurationSec int32 `json:"max_stream_duration_sec,omitempty"`
+	// BackendKeepaliveIntervalSec - min 0, server default 0.
+	BackendKeepaliveIntervalSec int32 `json:"backend_keepalive_interval_sec,omitempty"`
+	// SessionHeaderName - session affinity header, e.g. "mcp-session-id".
+	SessionHeaderName string `json:"session_header_name,omitempty"`
+	// ModelName - model-name routing key. Empty is the catch-all rule.
+	ModelName string `json:"model_name,omitempty"`
+	// TraceType - e.g. "mcp".
+	TraceType string `json:"trace_type,omitempty"`
+	// CbEnable - per-endpoint circuit breaker.
+	CbEnable bool `json:"cb_enable,omitempty"`
+
+	// --- Endpoint Picker (EPP, Gateway API Inference Extension) ---
+	//
+	// The gateway asks the EPP over ext_proc which endpoint serves each
+	// request; kube-loxilb only says where the EPP is and what to do when it
+	// cannot answer. The other three fields mean nothing without EppEndpoint.
+
+	// EppEndpoint - gRPC host:port of the EPP. Empty keeps the rule's own
+	// selection.
+	EppEndpoint string `json:"eppEndpoint,omitempty"`
+	// EppFailureMode - "FailOpen" | "FailClose"; empty resolves to FailClose
+	// on the gateway.
+	EppFailureMode string `json:"eppFailureMode,omitempty"`
+	// EppTimeoutMs - request-phase decision deadline, 0..600000; 0 resolves
+	// to 3000 on the gateway.
+	EppTimeoutMs int64 `json:"eppTimeoutMs,omitempty"`
+	// EppPlaintext - connect to the EPP without TLS. The default is TLS
+	// without certificate verification, matching what the llm-d charts set
+	// up for the EPP's self-signed certificate.
+	EppPlaintext bool `json:"eppPlaintext,omitempty"`
+
+	// --- Credential enforcement ---
+	//
+	// The gateway reads these once per listener (address, port, protocol),
+	// before a request is matched to a rule, so every fullproxy rule on a
+	// listener has to declare the same pair; it refuses a rule that does not.
+
+	// APIKeyAuth - "disabled" | "required" | "jwt" | "apikey-or-jwt". Empty
+	// declares nothing and keeps proxying byte-identical. "disabled" is not
+	// the same: it marks the service AI-facing and strips X-Api-Key.
+	APIKeyAuth string `json:"api_key_auth,omitempty"`
+	// JwtAuthProfile - the JWT auth profile that decides the Bearer arm.
+	// Required by, and only valid with, "jwt" and "apikey-or-jwt"; the gateway
+	// refuses a name it has no profile for.
+	JwtAuthProfile string `json:"jwt_auth_profile,omitempty"`
+
+	// --- Capacity admission gate (flow control) ---
+
+	// FlowControlArgs - the fc_* fields. Embedded, so they stay flat on the
+	// wire and inside the comparison IsSet makes.
+	FlowControlArgs
+}
+
+// IsSet - whether any gateway-only field carries a value.
+//
+// This is the gate for flavor handling: an AIArgs that IsSet() must never be
+// sent to plain upstream loxilb.
+//
+// The comparison requires every field to be comparable. That is deliberate: a
+// slice or map field would break this line at compile time, which is exactly
+// when it should break, because such a field would also invalidate the shallow
+// copy that StripAIFields relies on.
+func (a AIArgs) IsSet() bool { return a != AIArgs{} }
+
+// KV-cache exact routing modes.
+const (
+	// KvExactModeOff - KV-exact routing disabled.
+	KvExactModeOff int64 = 0
+	// KvExactModeZmq - ZMQ engine-event routing over a P/D topology.
+	KvExactModeZmq int64 = 1
+	// KvExactModeSingleRole - single role-less pool.
+	KvExactModeSingleRole int64 = 3
+)
+
+// Endpoint Picker failure modes and bounds, mirroring loxilb-inference-gateway
+// common/common.go.
+const (
+	// EppFailureModeFailOpen - fall back to the rule's own selection when the
+	// EPP cannot answer.
+	EppFailureModeFailOpen = "FailOpen"
+	// EppFailureModeFailClose - answer 503 when the EPP cannot answer.
+	EppFailureModeFailClose = "FailClose"
+	// EppTimeoutMsMax - upper bound of EppTimeoutMs.
+	EppTimeoutMsMax int64 = 600000
+	// EppEndpointMaxBytes - upper bound of the UTF-8 length of EppEndpoint.
+	EppEndpointMaxBytes = 255
+)
+
+// api_key_auth values and the profile-name bound, mirroring
+// loxilb-inference-gateway common/common.go and api/swagger.yml.
+const (
+	// APIKeyAuthDisabled - AI-facing without enforcement; X-Api-Key is stripped.
+	APIKeyAuthDisabled = "disabled"
+	// APIKeyAuthRequired - X-Api-Key is validated against the key store.
+	APIKeyAuthRequired = "required"
+	// APIKeyAuthJWT - an Authorization Bearer JWT is validated against the
+	// JWT auth profile.
+	APIKeyAuthJWT = "jwt"
+	// APIKeyAuthAPIKeyOrJWT - either credential; a present X-Api-Key decides alone.
+	APIKeyAuthAPIKeyOrJWT = "apikey-or-jwt"
+	// JwtAuthProfileMaxLen - upper bound of the length of JwtAuthProfile.
+	JwtAuthProfileMaxLen = 63
+)
+
+// UsesJWTAuth - whether the declared mode has a Bearer arm, and so needs a
+// JWT auth profile.
+func (a AIArgs) UsesJWTAuth() bool {
+	return a.APIKeyAuth == APIKeyAuthJWT || a.APIKeyAuth == APIKeyAuthAPIKeyOrJWT
+}
+
+// IsAIGatewayService - whether the gateway runs the rule as an AI-gateway
+// service: SSE mode, P/D disaggregation, or a credential policy that checks
+// something ("disabled" does not count). The capacity admission gate runs on
+// these only. Mirrors aiGwModeFor in the gateway's pkg/loxinet/rules.go.
+func (a AIArgs) IsAIGatewayService() bool {
+	return a.SseMode || a.PDDisaggMode || (a.APIKeyAuth != "" && a.APIKeyAuth != APIKeyAuthDisabled)
+}
+
+// UsesEndpointPicker - whether the rule hands endpoint selection to an EPP.
+func (a AIArgs) UsesEndpointPicker() bool { return a.EppEndpoint != "" }
+
+// EndpointPickerFailsClosed - whether requests are refused when the EPP cannot
+// answer. An empty mode is FailClose, which is what the gateway resolves it to.
+func (a AIArgs) EndpointPickerFailsClosed() bool {
+	return a.UsesEndpointPicker() && a.EppFailureMode != EppFailureModeFailOpen
+}
+
+// Endpoint roles for P/D disaggregation.
+const (
+	// EpRoleNormal - no role (default).
+	EpRoleNormal int32 = 0
+	// EpRolePrefill - prefill pool member.
+	EpRolePrefill int32 = 1
+	// EpRoleDecode - decode pool member.
+	EpRoleDecode int32 = 2
+)
+
+// Validate - the full client-side check: service arguments first, then the
+// endpoint roles. Use this once the payload is assembled.
+func (a AIArgs) Validate(mode LbMode, eps []LoadBalancerEndpoint) error {
+	if err := a.ValidateServiceArgs(mode); err != nil {
+		return err
+	}
+
+	return a.ValidateEndpoints(eps)
+}
+
+// ValidateServiceArgs - the subset of the checks that does not need endpoints,
+// for callers that validate while parsing configuration, before endpoint
+// discovery has run.
+//
+// Rejects, client side, the combinations the gateway rejects server side, so
+// the operator surfaces an actionable message instead of a 500 from loxilb. The
+// checks and their wording mirror loxilb-inference-gateway
+// pkg/loxinet/rules.go (addLbRule validation block) and the bounds declared in
+// its api/swagger.yml.
+//
+// Zero values are never range-checked: omitempty keeps them off the wire
+// entirely, which is precisely how the caller asks for the server default.
+//
+// Endpoint-selection algorithms (sel=8/9/10) carry their own fullproxy
+// requirement, but they are validated where the sel value is resolved, not
+// here.
+func (a AIArgs) ValidateServiceArgs(mode LbMode) error {
+	if !a.IsSet() {
+		return nil
+	}
+
+	// --- P/D disaggregation ---
+	if a.PDDisaggMode && mode != LBModeFullProxy {
+		return fmt.Errorf("pd-disagg requires mode=fullproxy")
+	}
+
+	if a.PDCacheAwareMode && !a.PDDisaggMode {
+		return fmt.Errorf("pd-cache-aware requires pd_disagg_mode=true")
+	}
+
+	// --- KV-cache exact routing ---
+	switch a.KvExactMode {
+	case KvExactModeOff, KvExactModeZmq, KvExactModeSingleRole:
+	default:
+		return fmt.Errorf("kvExactMode must be 0 (off), 1 (zmq/pd) or 3 (single-role), got %d", a.KvExactMode)
+	}
+
+	if a.KvExactMode == KvExactModeSingleRole {
+		if a.PDDisaggMode {
+			return fmt.Errorf("kv-exact single-role mode is incompatible with pd-disagg (use kvExactMode=1 for P/D)")
+		}
+		if mode != LBModeFullProxy {
+			return fmt.Errorf("kv-exact single-role mode requires mode=fullproxy")
+		}
+	}
+
+	if a.KvExactMode == KvExactModeZmq && !a.PDDisaggMode {
+		return fmt.Errorf("kv-exact zmq mode requires pd_disagg_mode=true (use kvExactMode=3 for a single pool)")
+	}
+
+	if a.KvModelProfile != "" && a.KvExactMode == KvExactModeOff {
+		return fmt.Errorf("kvModelProfile is meaningless without kvExactMode (no KV-exact tier; omit it)")
+	}
+
+	if err := kvEngineConfigValidate(a.KvEngineType, a.KvDpRankCount); err != nil {
+		return err
+	}
+	if err := kvHashAlgoValidate(a.KvHashAlgo, a.KvEngineType); err != nil {
+		return err
+	}
+
+	// --- declared bounds (swagger), skipping zero == "use the server default" ---
+	if err := rangeCheck("kvZmqPort", int64(a.KvZmqPort), 1, 65535); err != nil {
+		return err
+	}
+	if a.KvBlockSize < 0 {
+		return fmt.Errorf("kvBlockSize must be >= 1, got %d", a.KvBlockSize)
+	}
+	if a.KvWarmupSec < 0 {
+		return fmt.Errorf("kvWarmupSec must be >= 0, got %d", a.KvWarmupSec)
+	}
+	if err := rangeCheck("chwbl_prefix_hash_level", int64(a.ChwblPrefixHashLevel), 1, 3); err != nil {
+		return err
+	}
+	if err := rangeCheck("chwbl_mean_load_factor", int64(a.ChwblMeanLoadFactor), 100, 300); err != nil {
+		return err
+	}
+	if err := rangeCheck("chwbl_replication", int64(a.ChwblReplication), 1, 1024); err != nil {
+		return err
+	}
+	if err := rangeCheck("chwbl_prefix_hash_flags", int64(a.ChwblPrefixHashFlags), 0, 255); err != nil {
+		return err
+	}
+	if err := rangeCheck("pd_cache_threshold", int64(a.PDCacheThreshold), 0, 100); err != nil {
+		return err
+	}
+	if a.PDSessionTTLSec < 0 {
+		return fmt.Errorf("pd_session_ttl_sec must be >= 0, got %d", a.PDSessionTTLSec)
+	}
+	if a.PDBalanceAbsThreshold < 0 {
+		return fmt.Errorf("pd_balance_abs_threshold must be >= 0, got %d", a.PDBalanceAbsThreshold)
+	}
+	if a.MaxStreamDurationSec < 0 {
+		return fmt.Errorf("max_stream_duration_sec must be >= 0, got %d", a.MaxStreamDurationSec)
+	}
+	if a.BackendKeepaliveIntervalSec < 0 {
+		return fmt.Errorf("backend_keepalive_interval_sec must be >= 0, got %d", a.BackendKeepaliveIntervalSec)
+	}
+
+	if err := a.FlowControlArgs.validate(); err != nil {
+		return err
+	}
+
+	if err := a.validateCredentialPolicy(mode); err != nil {
+		return err
+	}
+
+	return a.validateEndpointPicker(mode)
+}
+
+// validateCredentialPolicy - the gateway's api_key_auth and jwt_auth_profile
+// checks, client side and in its wording. Whether a named profile exists only
+// the gateway can say.
+func (a AIArgs) validateCredentialPolicy(mode LbMode) error {
+	switch a.APIKeyAuth {
+	case "", APIKeyAuthDisabled, APIKeyAuthRequired, APIKeyAuthJWT, APIKeyAuthAPIKeyOrJWT:
+	default:
+		return fmt.Errorf("invalid api_key_auth: must be one of disabled, required, jwt, apikey-or-jwt, got %q", a.APIKeyAuth)
+	}
+
+	if a.UsesJWTAuth() {
+		if a.JwtAuthProfile == "" {
+			return fmt.Errorf("jwt_auth_profile: required by this api_key_auth mode and must name a configured profile")
+		}
+	} else if a.JwtAuthProfile != "" {
+		return fmt.Errorf("jwt_auth_profile: only valid with api_key_auth jwt or apikey-or-jwt")
+	}
+	if len(a.JwtAuthProfile) > JwtAuthProfileMaxLen {
+		return fmt.Errorf("jwt_auth_profile must be at most %d bytes, got %d", JwtAuthProfileMaxLen, len(a.JwtAuthProfile))
+	}
+
+	// Enforcement runs in the fullproxy AI path only. On any other mode the
+	// gateway stores the declaration and lets every request through.
+	if a.APIKeyAuth != "" && mode != LBModeFullProxy {
+		return fmt.Errorf("api_key_auth requires mode=fullproxy")
+	}
+
+	return nil
+}
+
+// validateEndpointPicker - the gateway's eppArgsValidate, client side.
+//
+// The failure mode and the timeout are checked even without an endpoint, as
+// the gateway does; the topology rules only apply once an EPP is named.
+func (a AIArgs) validateEndpointPicker(mode LbMode) error {
+	switch a.EppFailureMode {
+	case "", EppFailureModeFailOpen, EppFailureModeFailClose:
+	default:
+		return fmt.Errorf("eppFailureMode must be %s or %s, got %q",
+			EppFailureModeFailOpen, EppFailureModeFailClose, a.EppFailureMode)
+	}
+	if a.EppTimeoutMs < 0 || a.EppTimeoutMs > EppTimeoutMsMax {
+		return fmt.Errorf("eppTimeoutMs must be within 0..%d, got %d", EppTimeoutMsMax, a.EppTimeoutMs)
+	}
+
+	if !a.UsesEndpointPicker() {
+		return nil
+	}
+	if len(a.EppEndpoint) > EppEndpointMaxBytes {
+		return fmt.Errorf("eppEndpoint must be at most %d bytes, got %d", EppEndpointMaxBytes, len(a.EppEndpoint))
+	}
+	if host, port, err := net.SplitHostPort(a.EppEndpoint); err != nil || host == "" || port == "" {
+		return fmt.Errorf("eppEndpoint must be host:port, got %q", a.EppEndpoint)
+	}
+	if mode != LBModeFullProxy {
+		return fmt.Errorf("eppEndpoint requires mode=fullproxy (the EPP decides per HTTP request)")
+	}
+	if a.PDDisaggMode {
+		return fmt.Errorf("eppEndpoint is incompatible with pd_disagg_mode=true (the EPP orchestrates P/D itself)")
+	}
+
+	return nil
+}
+
+// ValidateEndpoints - the checks that need the assembled endpoint list.
+func (a AIArgs) ValidateEndpoints(eps []LoadBalancerEndpoint) error {
+	if !a.IsSet() {
+		return nil
+	}
+
+	for i, ep := range eps {
+		switch ep.EpRole {
+		case EpRoleNormal, EpRolePrefill, EpRoleDecode:
+		default:
+			return fmt.Errorf("endpoint[%d] %s: ep_role must be 0 (normal), 1 (prefill) or 2 (decode), got %d",
+				i, ep.EndpointIP, ep.EpRole)
+		}
+		if ep.NixlPort < 0 || ep.NixlPort > 65535 {
+			return fmt.Errorf("endpoint[%d] %s: nixl_port must be within 0..65535, got %d",
+				i, ep.EndpointIP, ep.NixlPort)
+		}
+	}
+
+	// loxilb refuses a disaggregated rule that cannot actually split work.
+	if a.PDDisaggMode {
+		hasPrefill := slices.ContainsFunc(eps, func(ep LoadBalancerEndpoint) bool {
+			return ep.EpRole == EpRolePrefill
+		})
+		hasDecode := slices.ContainsFunc(eps, func(ep LoadBalancerEndpoint) bool {
+			return ep.EpRole == EpRoleDecode
+		})
+		if !hasPrefill || !hasDecode {
+			return fmt.Errorf("pd-disagg requires at least 1 prefill (ep_role=1) and 1 decode (ep_role=2) endpoint")
+		}
+	}
+
+	return nil
+}
+
+// rangeCheck - bounds check that treats 0 as "absent"; omitempty drops it from
+// the payload, so the server never sees it and applies its own default.
+func rangeCheck(name string, v, min, max int64) error {
+	if v == 0 || (v >= min && v <= max) {
+		return nil
+	}
+	return fmt.Errorf("%s must be within %d..%d, got %d", name, min, max, v)
+}
+
+// kvEngineEffective - "" is an alias for the default engine, "vllm".
+func kvEngineEffective(engine string) string {
+	if engine == "" {
+		return "vllm"
+	}
+	return engine
+}
+
+// kvHashAlgoEffective - mirrors the gateway's resolution order: an explicit
+// algorithm always wins, otherwise the engine's default applies.
+func kvHashAlgoEffective(algo, engine string) string {
+	if algo != "" {
+		return algo
+	}
+	if kvEngineEffective(engine) == "sglang" {
+		return "sha256_sglang"
+	}
+	return "sha256_cbor"
+}
+
+func kvEngineConfigValidate(engine string, dpRankCount int32) error {
+	switch engine {
+	case "", "vllm", "sglang":
+	default:
+		return fmt.Errorf("kv-engine-type must be one of \"vllm\", \"sglang\"")
+	}
+	if dpRankCount < 0 || dpRankCount > 8 {
+		return fmt.Errorf("kv-dp-rank-count must be within 1..8 (0 = default 1)")
+	}
+	return nil
+}
+
+func kvHashAlgoValidate(algo, engine string) error {
+	switch algo {
+	case "":
+		// engine default - coherent by construction
+		return nil
+	case "sha256_cbor", "xxhash_cbor", "sha256_sglang":
+	default:
+		return fmt.Errorf("kv-hash-algo must be one of \"sha256_cbor\", \"xxhash_cbor\", \"sha256_sglang\"")
+	}
+	if (kvEngineEffective(engine) == "sglang") != (algo == "sha256_sglang") {
+		return fmt.Errorf("kv-hash-algo %q is incompatible with kv-engine-type %q (omit kvHashAlgo to take the engine default %q)",
+			algo, kvEngineEffective(engine), kvHashAlgoEffective("", engine))
+	}
+	return nil
+}
+
+// StripGatewayFields - remove every loxilb-inference-gateway-only field from a
+// payload bound for plain upstream loxilb.
+//
+// The same LoadBalancerModel is fanned out to every client in the pool, and
+// installLB copies it shallowly, so the endpoint slice's backing array is
+// shared across clients. Mutating an element through that shared array would
+// corrupt the payloads of the other clients. Reassigning is safe, mutating
+// through is not - so this reassigns both the embedded AIArgs (a value field,
+// already independent after the struct copy) and the endpoint slice (cloned
+// first).
+func StripGatewayFields(m *LoadBalancerModel) {
+	m.Service.AIArgs = AIArgs{}
+	m.Service.GatewayArgs = GatewayArgs{}
+	// Reassigned, not cleared element by element: these are the first slices in
+	// the service payload, so after the shallow copy in installLB their backing
+	// arrays are shared with the caller's model too.
+	m.Service.GatewayTLSLists = GatewayTLSLists{}
+	translateProbeForPlainPeer(m)
+	m.Endpoints = stripGatewayEndpointFields(m.Endpoints)
+}
+
+// StripEndpointPicker - remove the EPP fields from a payload bound for a
+// gateway peer that does not support them.
+//
+// Same shallow-copy contract as StripGatewayFields: Service is a value field,
+// already independent of the caller's model after installLB's struct copy, so
+// reassigning its fields leaves the other peers' payloads alone.
+func StripEndpointPicker(m *LoadBalancerModel) {
+	m.Service.EppEndpoint = ""
+	m.Service.EppFailureMode = ""
+	m.Service.EppTimeoutMs = 0
+	m.Service.EppPlaintext = false
+}
+
+// translateProbeForPlainPeer - carry the probe path across to the name upstream
+// loxilb understands, instead of dropping it.
+//
+// Clearing urlPath on its own reproduces the failure the field was added to
+// avoid: the peer still gets a rule, still probes, and probes "/" because
+// probereq is empty. urlPath and probereq are two spellings of one intent - the
+// gateway itself defines probereq as urlPath's fallback - so the path survives
+// under the other name and the probe stays correct.
+//
+// urlPath wins over any probereq already set, which is the precedence the
+// gateway applies. The other four fields have no upstream equivalent and are
+// simply dropped; expectedCodes in particular must not be folded into
+// proberesp, because that is a body-substring match rather than a status check
+// and translating one into the other would change what is being tested.
+//
+// Safe to assign: Service is a value field, already independent of the caller's
+// model after the struct copy.
+func translateProbeForPlainPeer(m *LoadBalancerModel) {
+	for _, ep := range m.Endpoints {
+		if ep.URLPath != "" {
+			m.Service.ProbeReq = ep.URLPath
+			return
+		}
+	}
+}
+
+// stripGatewayEndpointFields - copy eps with the gateway-only endpoint fields
+// cleared: the P/D roles and the health-monitor block. A shallow clone suffices
+// because every LoadBalancerEndpoint field is a value type.
+func stripGatewayEndpointFields(src []LoadBalancerEndpoint) []LoadBalancerEndpoint {
+	if src == nil {
+		return nil
+	}
+
+	out := slices.Clone(src)
+	for i := range out {
+		out[i].EpRole = 0
+		out[i].NixlPort = 0
+		out[i].EndpointProbe = EndpointProbe{}
+	}
+
+	return out
+}

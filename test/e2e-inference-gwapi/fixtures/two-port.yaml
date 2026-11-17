@@ -1,0 +1,18 @@
+# A plain Service with two ports: one rule name, two rules, so two ids.
+apiVersion: v1
+kind: Service
+metadata:
+  name: two-port
+  namespace: llm
+spec:
+  type: LoadBalancer
+  loadBalancerClass: loxilb.io/loxilb
+  selector:
+    app: vllm-qwen3
+  ports:
+    - name: a
+      port: 18081
+      targetPort: 8000
+    - name: b
+      port: 18082
+      targetPort: 8000

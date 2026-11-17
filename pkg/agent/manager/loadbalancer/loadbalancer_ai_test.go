@@ -1,0 +1,837 @@
+package loadbalancer
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/pkg/errors"
+
+	"k8s.io/client-go/tools/record"
+
+	"github.com/loxilb-io/kube-loxilb/pkg/api"
+)
+
+// fakeLoxiLB is a loxilb REST endpoint that records the bodies POSTed to
+// /netlox/v1/config/loadbalancer and reports the given product on /version.
+type fakeLoxiLB struct {
+	srv *httptest.Server
+
+	// gpuStatus is served from /config/gpu/status; nil makes the endpoint fail,
+	// standing in for a peer that cannot answer.
+	gpuStatus *api.GPUStatusModel
+	// gpuStatusError, when set, answers /config/gpu/status with this status,
+	// an application/json Content-Type and a JSON error body - the failure a
+	// go-swagger server sends, which a client can mistake for a status.
+	gpuStatusError int
+
+	// ruleStatus is served from the per-rule status sub-resource; nil answers
+	// 404, standing in for a rule this peer does not have.
+	ruleStatus *api.LoadBalancerStatusModel
+	// statusQueries counts the per-rule status reads this peer received.
+	statusQueries int
+
+	// features is reported on /version; set it before client() detects it.
+	features []string
+
+	// createStatus, when set, answers the load-balancer POST with this status
+	// and createResult instead of success. The body is recorded either way.
+	createStatus int
+	createResult string
+
+	// deleteStatus, when set, answers a load-balancer DELETE with this status
+	// and deleteResult instead of success; deletes counts them. Guarded by mu,
+	// so a test can change the answer between attempts.
+	deleteStatus int
+	deleteResult string
+	deletes      int
+
+	// createAnswers, while not empty, answers the next POSTs in turn ahead of
+	// createStatus; a zero status is success.
+	createAnswers []fakeAnswer
+
+	// rules holds what a successful POST stored, by its serviceArguments.id,
+	// for GET /config/loadbalancer/id/{id}; DELETE removes the rules on its
+	// address, port and protocol. Tests can seed it with what a peer kept.
+	rules map[string]map[string]any
+	// dropFields are left out when a rule is stored, as a gateway build that
+	// does not know them would.
+	dropFields []string
+	// readBacks counts the GET-by-id requests.
+	readBacks int
+
+	mu     sync.Mutex
+	bodies []string
+}
+
+type fakeAnswer struct {
+	status int
+	result string
+}
+
+// storeRule - keep a successfully POSTed rule under its id.
+func (f *fakeLoxiLB) storeRule(body []byte) {
+	var model struct {
+		Service map[string]any `json:"serviceArguments"`
+	}
+	if err := json.Unmarshal(body, &model); err != nil {
+		return
+	}
+	id, _ := model.Service["id"].(string)
+	if id == "" {
+		return
+	}
+	for _, field := range f.dropFields {
+		delete(model.Service, field)
+	}
+	if f.rules == nil {
+		f.rules = make(map[string]map[string]any)
+	}
+	f.rules[id] = model.Service
+}
+
+// dropRules - remove the stored rules a DELETE names by address, port and
+// protocol.
+func (f *fakeLoxiLB) dropRules(urlPath string) {
+	parts := strings.Split(urlPath, "/")
+	key := map[string]string{}
+	for i := 0; i+1 < len(parts); i++ {
+		switch parts[i] {
+		case "externalipaddress", "port", "protocol":
+			key[parts[i]] = parts[i+1]
+		}
+	}
+	for id, rule := range f.rules {
+		if fmt.Sprint(rule["externalIP"]) == key["externalipaddress"] &&
+			fmt.Sprint(rule["port"]) == key["port"] && fmt.Sprint(rule["protocol"]) == key["protocol"] {
+			delete(f.rules, id)
+		}
+	}
+}
+
+func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
+	t.Helper()
+
+	f := &fakeLoxiLB{}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/netlox/v1/version":
+			v := api.VersionModel{Version: "test", Product: product, Features: f.features}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&v)
+
+		case r.URL.Path == "/netlox/v1/config/gpu/status":
+			if f.gpuStatusError != 0 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(f.gpuStatusError)
+				_, _ = fmt.Fprintf(w, `{"code":%d,"message":%q}`, f.gpuStatusError, http.StatusText(f.gpuStatusError))
+				return
+			}
+			if f.gpuStatus == nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(f.gpuStatus)
+
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/netlox/v1/config/loadbalancer/"):
+			f.mu.Lock()
+			f.deletes++
+			status, result := f.deleteStatus, f.deleteResult
+			if status == 0 {
+				f.dropRules(r.URL.Path)
+			}
+			f.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			if status != 0 {
+				w.WriteHeader(status)
+				_, _ = fmt.Fprintf(w, `{"result":%q}`, result)
+				return
+			}
+			_, _ = w.Write([]byte(`{"result":"Success"}`))
+
+		case strings.HasSuffix(r.URL.Path, "/status") && strings.Contains(r.URL.Path, "/config/loadbalancer/"):
+			f.mu.Lock()
+			f.statusQueries++
+			status := f.ruleStatus
+			f.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			if status == nil {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"result":"lbrule not-exists error"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(status)
+
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/netlox/v1/config/loadbalancer/id/"):
+			id := strings.TrimPrefix(r.URL.Path, "/netlox/v1/config/loadbalancer/id/")
+			f.mu.Lock()
+			f.readBacks++
+			rule, ok := f.rules[id]
+			f.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"serviceArguments": rule})
+
+		case r.URL.Path == "/netlox/v1/config/loadbalancer" && r.Method == http.MethodPost:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read body: %v", err)
+			}
+			f.mu.Lock()
+			f.bodies = append(f.bodies, string(body))
+			answer := fakeAnswer{status: f.createStatus, result: f.createResult}
+			if len(f.createAnswers) > 0 {
+				answer, f.createAnswers = f.createAnswers[0], f.createAnswers[1:]
+			}
+			if answer.status == 0 {
+				f.storeRule(body)
+			}
+			f.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			if answer.status != 0 {
+				w.WriteHeader(answer.status)
+				_, _ = fmt.Fprintf(w, `{"result":%q}`, answer.result)
+				return
+			}
+			_, _ = w.Write([]byte(`{"result":"Success"}`))
+
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+
+	return f
+}
+
+// client builds a LoxiClient for this fake with its flavor already detected.
+func (f *fakeLoxiLB) client(t *testing.T) *api.LoxiClient {
+	t.Helper()
+
+	base, err := url.Parse(f.srv.URL)
+	if err != nil {
+		t.Fatalf("parse url: %v", err)
+	}
+	restClient, err := api.NewRESTClient(base, "netlox", "v1", f.srv.Client())
+	if err != nil {
+		t.Fatalf("NewRESTClient: %v", err)
+	}
+
+	c := &api.LoxiClient{RestClient: restClient, Url: f.srv.URL, Host: base.Host}
+	c.DetectFlavor(context.Background())
+	if !c.FlavorDetected() {
+		t.Fatal("flavor detection failed against the fake")
+	}
+
+	return c
+}
+
+func (f *fakeLoxiLB) lastBody(t *testing.T) string {
+	t.Helper()
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(f.bodies) == 0 {
+		t.Fatal("no load-balancer POST was recorded")
+	}
+	return f.bodies[len(f.bodies)-1]
+}
+
+func aiLoadBalancerModel() api.LoadBalancerModel {
+	return api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			Protocol:   "tcp",
+			Mode:       api.LBModeFullProxy,
+			AIArgs: api.AIArgs{
+				KvExactMode:  api.KvExactModeZmq,
+				PDDisaggMode: true,
+				SseMode:      true,
+			},
+		},
+		Endpoints: []api.LoadBalancerEndpoint{
+			{EndpointIP: "31.31.31.1", TargetPort: 8000, EpRole: api.EpRolePrefill, NixlPort: 9001},
+			{EndpointIP: "31.31.31.2", TargetPort: 8000, EpRole: api.EpRoleDecode},
+		},
+	}
+}
+
+// Acceptance criterion 8: a pool mixing a gateway with a plain loxilb must send
+// the AI fields to the gateway, and the two request bodies must not contaminate
+// each other through the shared endpoint backing array.
+func TestInstallLBMixedPoolDoesNotContaminate(t *testing.T) {
+	gateway := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	plain := newFakeLoxiLB(t, "")
+
+	m := &Manager{}
+	lb := aiLoadBalancerModel()
+
+	// The plain peer refuses an explicit AI request, which is the documented
+	// behaviour; drive it with an AI-free model so the fan-out completes and
+	// the gateway body can be checked for contamination afterwards.
+	plainLB := aiLoadBalancerModel()
+	plainLB.Service.AIArgs = api.AIArgs{}
+
+	if err := m.installLB(gateway.client(t), lb, false); err != nil {
+		t.Fatalf("installLB against gateway: %v", err)
+	}
+	if err := m.installLB(plain.client(t), plainLB, false); err != nil {
+		t.Fatalf("installLB against plain loxilb: %v", err)
+	}
+
+	gwBody := gateway.lastBody(t)
+	for _, want := range []string{`"kvExactMode":1`, `"pd_disagg_mode":true`, `"sse_mode":true`, `"ep_role":1`, `"nixl_port":9001`, `"ep_role":2`} {
+		if !strings.Contains(gwBody, want) {
+			t.Errorf("gateway body missing %s\n%s", want, gwBody)
+		}
+	}
+
+	plainBody := plain.lastBody(t)
+	for _, unwanted := range []string{"kvExactMode", "pd_disagg_mode", "sse_mode", "ep_role", "nixl_port"} {
+		if strings.Contains(plainBody, unwanted) {
+			t.Errorf("plain loxilb body carries gateway-only key %q\n%s", unwanted, plainBody)
+		}
+	}
+
+	// The source model must survive both fan-out legs untouched.
+	if lb.Endpoints[0].EpRole != api.EpRolePrefill || lb.Endpoints[0].NixlPort != 9001 {
+		t.Errorf("source endpoint[0] was mutated: %+v", lb.Endpoints[0])
+	}
+	if !lb.Service.AIArgs.IsSet() {
+		t.Error("source AIArgs was cleared by the fan-out")
+	}
+}
+
+// Stripping for a plain peer must not disturb a gateway request issued from the
+// same model, whichever order the two run in.
+func TestInstallLBStripOrderIndependence(t *testing.T) {
+	for _, plainFirst := range []bool{true, false} {
+		t.Run(map[bool]string{true: "plain-first", false: "gateway-first"}[plainFirst], func(t *testing.T) {
+			gateway := newFakeLoxiLB(t, api.ProductInferenceGateway)
+			plain := newFakeLoxiLB(t, "")
+
+			m := &Manager{}
+			lb := aiLoadBalancerModel()
+			noAI := aiLoadBalancerModel()
+			noAI.Service.AIArgs = api.AIArgs{}
+			// share the endpoint backing array, as the real fan-out does
+			noAI.Endpoints = lb.Endpoints
+
+			run := []func(){
+				func() {
+					if err := m.installLB(plain.client(t), noAI, false); err != nil {
+						t.Errorf("installLB plain: %v", err)
+					}
+				},
+				func() {
+					if err := m.installLB(gateway.client(t), lb, false); err != nil {
+						t.Errorf("installLB gateway: %v", err)
+					}
+				},
+			}
+			if !plainFirst {
+				run[0], run[1] = run[1], run[0]
+			}
+			run[0]()
+			run[1]()
+
+			if body := gateway.lastBody(t); !strings.Contains(body, `"ep_role":1`) {
+				t.Errorf("gateway lost ep_role after the plain leg stripped a shared slice\n%s", body)
+			}
+			if body := plain.lastBody(t); strings.Contains(body, "ep_role") {
+				t.Errorf("plain loxilb received ep_role\n%s", body)
+			}
+		})
+	}
+}
+
+// Acceptance criterion 4: asking a plain loxilb for AI routing is refused, not
+// silently downgraded.
+func TestInstallLBRefusesAIOnPlainLoxilb(t *testing.T) {
+	plain := newFakeLoxiLB(t, "")
+
+	m := &Manager{}
+	err := m.installLB(plain.client(t), aiLoadBalancerModel(), false)
+
+	if err == nil {
+		t.Fatal("installLB accepted an AI rule on plain loxilb")
+	}
+	if !strings.Contains(err.Error(), "plain loxilb") {
+		t.Errorf("error = %q, want it to name the flavor mismatch", err)
+	}
+
+	plain.mu.Lock()
+	defer plain.mu.Unlock()
+	if len(plain.bodies) != 0 {
+		t.Errorf("a rule was still POSTed to plain loxilb: %v", plain.bodies)
+	}
+}
+
+// A non-AI rule must reach a plain peer byte-identically to before this change.
+func TestInstallLBPlainRuleUnchanged(t *testing.T) {
+	plain := newFakeLoxiLB(t, "")
+
+	m := &Manager{}
+	lb := api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.2",
+			Port:       80,
+			Protocol:   "tcp",
+		},
+		Endpoints: []api.LoadBalancerEndpoint{
+			{EndpointIP: "31.31.31.1", TargetPort: 8000, Weight: 1},
+		},
+	}
+
+	if err := m.installLB(plain.client(t), lb, false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+
+	body := plain.lastBody(t)
+	for _, unwanted := range []string{"kvExactMode", "pd_disagg_mode", "sse_mode", "ep_role", "nixl_port", "AIArgs"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("plain payload gained %q\n%s", unwanted, body)
+		}
+	}
+}
+
+// gpuLB - a sel=gpuaware rule.
+func gpuLoadBalancerModel() api.LoadBalancerModel {
+	return api.LoadBalancerModel{
+		Service: api.LoadBalancerService{
+			ExternalIP: "10.0.0.1",
+			Port:       8080,
+			Protocol:   "tcp",
+			Mode:       api.LBModeFullProxy,
+			Sel:        api.LbSelGPUAware,
+		},
+		Endpoints: []api.LoadBalancerEndpoint{
+			{EndpointIP: "31.31.31.1", TargetPort: 8000, Weight: 1},
+		},
+	}
+}
+
+// GPU-aware selection is armed instance-wide, not by the rule. A peer with it
+// disarmed accepts sel=9 and then selects as CHWBL, so the rule must be refused
+// rather than programmed into a mode it will not run.
+func TestInstallLBRefusesGPUAwareWhenDisarmed(t *testing.T) {
+	tests := []struct {
+		name   string
+		status *api.GPUStatusModel
+	}{
+		{"monitoring off", &api.GPUStatusModel{Enabled: false, RoutingMode: "standard_chwbl"}},
+		{"enabled but still routing as chwbl", &api.GPUStatusModel{Enabled: true, RoutingMode: "standard_chwbl"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+			gw.gpuStatus = tt.status
+
+			m := &Manager{}
+			err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false)
+
+			if err == nil {
+				t.Fatal("installLB programmed a gpuaware rule into a disarmed peer")
+			}
+			if !errors.Is(err, ErrGPUMonitoringDisabled) {
+				t.Errorf("error %q does not wrap ErrGPUMonitoringDisabled", err)
+			}
+
+			gw.mu.Lock()
+			defer gw.mu.Unlock()
+			if len(gw.bodies) != 0 {
+				t.Errorf("a rule was still POSTed: %v", gw.bodies)
+			}
+		})
+	}
+}
+
+func TestInstallLBAllowsGPUAwareWhenArmed(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 4}
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+
+	if body := gw.lastBody(t); !strings.Contains(body, `"sel":9`) {
+		t.Errorf("gateway body missing sel=9\n%s", body)
+	}
+}
+
+// Armed but tracking nothing is a warning, not a refusal: the telemetry feed
+// may simply not have run yet.
+func TestInstallLBAllowsGPUAwareWithNoWorkersYet(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 0}
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false); err != nil {
+		t.Fatalf("installLB refused an armed peer that is merely idle: %v", err)
+	}
+	gw.lastBody(t)
+}
+
+// A diagnostic that cannot be read must not take down a rule that would have
+// worked.
+func TestInstallLBAllowsGPUAwareWhenStatusUnreadable(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = nil // endpoint returns 500
+
+	m := &Manager{}
+	if err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false); err != nil {
+		t.Fatalf("installLB refused on an unreadable status: %v", err)
+	}
+	gw.lastBody(t)
+}
+
+// An error answer with a JSON body is as unreadable as no answer. Read as a
+// status it was Enabled=false, and the rule was refused as "disarmed".
+func TestInstallLBAllowsGPUAwareOnAJSONError(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+			gw.gpuStatusError = status
+
+			m := &Manager{}
+			if err := m.installLB(gw.client(t), gpuLoadBalancerModel(), false); err != nil {
+				t.Fatalf("installLB refused on HTTP %d from the status endpoint: %v", status, err)
+			}
+			gw.lastBody(t)
+		})
+	}
+}
+
+// The pre-flight is scoped to sel=gpuaware, so every other rule costs nothing.
+func TestInstallLBSkipsGPUCheckForOtherSelectors(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = nil // any query would fail loudly in the handler
+
+	m := &Manager{}
+	lb := gpuLoadBalancerModel()
+	lb.Service.Sel = api.LbSelCHWBL
+
+	if err := m.installLB(gw.client(t), lb, false); err != nil {
+		t.Fatalf("installLB: %v", err)
+	}
+	if body := gw.lastBody(t); !strings.Contains(body, `"sel":8`) {
+		t.Errorf("gateway body missing sel=8\n%s", body)
+	}
+}
+
+// A peer disarmed after the rule was programmed raises an event on the
+// reconcile path, since the creation-time pre-flight cannot see it.
+func TestReportGPUDisarmedRaisesEvent(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: false, RoutingMode: "standard_chwbl"}
+
+	recorder := record.NewFakeRecorder(4)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
+	}
+
+	m.reportGPUDisarmed(pdService())
+
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, ReasonGPUMonitoringDisabled) {
+			t.Errorf("event = %q, want %s", event, ReasonGPUMonitoringDisabled)
+		}
+	default:
+		t.Fatal("no event was raised for a disarmed peer")
+	}
+}
+
+func TestReportGPUDisarmedQuietWhenArmed(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 2}
+
+	recorder := record.NewFakeRecorder(4)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
+	}
+
+	m.reportGPUDisarmed(pdService())
+
+	select {
+	case event := <-recorder.Events:
+		t.Errorf("unexpected event for an armed peer: %s", event)
+	default:
+	}
+}
+
+// A peer that cannot answer must not produce a warning: "cannot tell" is not
+// "disarmed".
+func TestReportGPUDisarmedQuietWhenUnreachable(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = nil // status endpoint returns 500
+
+	recorder := record.NewFakeRecorder(4)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
+	}
+
+	m.reportGPUDisarmed(pdService())
+
+	select {
+	case event := <-recorder.Events:
+		t.Errorf("unexpected event for an unreadable status: %s", event)
+	default:
+	}
+}
+
+// Nor must an error answer with a JSON body, which used to read as disarmed.
+func TestReportGPUDisarmedQuietOnAJSONError(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+			gw.gpuStatusError = status
+
+			recorder := record.NewFakeRecorder(4)
+			m := &Manager{
+				eventRecorder: recorder,
+				LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+				gpuArmed:      map[string]bool{},
+			}
+
+			m.reportGPUDisarmed(pdService())
+
+			select {
+			case event := <-recorder.Events:
+				t.Errorf("unexpected event for HTTP %d from the status endpoint: %s", status, event)
+			default:
+			}
+		})
+	}
+}
+
+// Plain loxilb peers are skipped: gpuaware never reaches them anyway.
+func TestReportGPUDisarmedSkipsPlainPeers(t *testing.T) {
+	plain := newFakeLoxiLB(t, "")
+	plain.gpuStatus = nil
+
+	recorder := record.NewFakeRecorder(4)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{plain.client(t)}},
+		gpuArmed:      map[string]bool{},
+	}
+
+	m.reportGPUDisarmed(pdService())
+
+	select {
+	case event := <-recorder.Events:
+		t.Errorf("unexpected event for a plain peer: %s", event)
+	default:
+	}
+}
+
+// The reconcile check reports the edge into disarmed, not every observation:
+// a warning each reconcile is noise, a warning when arming is lost is a signal.
+func TestReportGPUDisarmedOnlyOnTransition(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 2}
+
+	recorder := record.NewFakeRecorder(8)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
+	}
+	svc := pdService()
+
+	drain := func() int {
+		n := 0
+		for {
+			select {
+			case <-recorder.Events:
+				n++
+			default:
+				return n
+			}
+		}
+	}
+
+	m.reportGPUDisarmed(svc)
+	if n := drain(); n != 0 {
+		t.Fatalf("armed peer raised %d events", n)
+	}
+
+	// operator disarms the mode
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: false, RoutingMode: "standard_chwbl"}
+	m.reportGPUDisarmed(svc)
+	if n := drain(); n != 1 {
+		t.Fatalf("the transition into disarmed raised %d events, want 1", n)
+	}
+
+	// still disarmed on the next few reconciles - already reported
+	for i := 0; i < 3; i++ {
+		m.reportGPUDisarmed(svc)
+	}
+	if n := drain(); n != 0 {
+		t.Errorf("staying disarmed raised %d further events, want 0", n)
+	}
+
+	// armed again, then disarmed again: a new edge, a new event
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 2}
+	m.reportGPUDisarmed(svc)
+	drain()
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: false, RoutingMode: "standard_chwbl"}
+	m.reportGPUDisarmed(svc)
+	if n := drain(); n != 1 {
+		t.Errorf("a second transition raised %d events, want 1", n)
+	}
+}
+
+// An unreadable status must not be remembered as either state, so a blip does
+// not fabricate a transition once the peer answers again.
+func TestReportGPUDisarmedBlipDoesNotFabricateTransition(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 1}
+
+	recorder := record.NewFakeRecorder(8)
+	m := &Manager{
+		eventRecorder: recorder,
+		LoxiClients:   &api.LoxiClientPool{Clients: []*api.LoxiClient{gw.client(t)}},
+		gpuArmed:      map[string]bool{},
+	}
+	svc := pdService()
+
+	m.reportGPUDisarmed(svc)
+
+	gw.gpuStatus = nil // unreachable
+	m.reportGPUDisarmed(svc)
+
+	gw.gpuStatus = &api.GPUStatusModel{Enabled: true, RoutingMode: "gpu_aware", WorkerCount: 1}
+	m.reportGPUDisarmed(svc)
+
+	select {
+	case event := <-recorder.Events:
+		t.Errorf("a blip produced an event: %s", event)
+	default:
+	}
+}
+
+// rejectingLoxiLB answers the load-balancer POST with a loxilb-shaped error.
+func rejectingLoxiLB(t *testing.T, status int, reason string) *httptest.Server {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/netlox/v1/version" {
+			// a gateway, so the flavor gate lets the AI model through and the
+			// rejection under test is the one that surfaces
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&api.VersionModel{
+				Version: "test", Product: api.ProductInferenceGateway,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = fmt.Fprintf(w, `{"result":%q}`, reason)
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv
+}
+
+func clientFor(t *testing.T, srv *httptest.Server) *api.LoxiClient {
+	t.Helper()
+
+	base, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse url: %v", err)
+	}
+	rc, err := api.NewRESTClient(base, "netlox", "v1", srv.Client())
+	if err != nil {
+		t.Fatalf("NewRESTClient: %v", err)
+	}
+	c := &api.LoxiClient{RestClient: rc, Url: srv.URL, Host: base.Host}
+	c.DetectFlavor(context.Background())
+
+	return c
+}
+
+// A duplicate is the steady state and must stay silent. Keyed on 409, not on
+// the wording.
+func TestInstallLBTreats409AsAlreadyDone(t *testing.T) {
+	srv := rejectingLoxiLB(t, http.StatusConflict, "lbrule-exist error")
+
+	m := &Manager{}
+	if err := m.installLB(clientFor(t, srv), aiLoadBalancerModel(), false); err != nil {
+		t.Errorf("a 409 duplicate surfaced as an error: %v", err)
+	}
+}
+
+// The failure the wording test used to swallow.
+func TestInstallLBDoesNotSwallowServerErrorMentioningExist(t *testing.T) {
+	srv := rejectingLoxiLB(t, http.StatusInternalServerError, "datapath sync failed: map does not exist")
+
+	m := &Manager{}
+	err := m.installLB(clientFor(t, srv), aiLoadBalancerModel(), false)
+	if err == nil {
+		t.Fatal("a 500 was swallowed because its wording contained \"exist\"")
+	}
+	if api.IsClientError(err) {
+		t.Error("a 500 must not be reported as something the user has to fix")
+	}
+}
+
+// loxilb's own reason has to reach the caller intact - it is more specific than
+// anything kube-loxilb could reconstruct.
+func TestInstallLBCarriesLoxiLBReason(t *testing.T) {
+	srv := rejectingLoxiLB(t, http.StatusBadRequest, "kv-exact zmq mode requires pd_disagg_mode=true")
+
+	m := &Manager{}
+	err := m.installLB(clientFor(t, srv), aiLoadBalancerModel(), false)
+	if err == nil {
+		t.Fatal("a 400 rejection was not reported")
+	}
+	if !strings.Contains(err.Error(), "kv-exact zmq mode requires pd_disagg_mode=true") {
+		t.Errorf("loxilb's reason was lost: %v", err)
+	}
+	if !api.IsClientError(err) {
+		t.Error("a 400 must be reported as something the user has to fix")
+	}
+}
+
+// The other half of what the substring test could not separate: "not-exists"
+// contains "exist", so a missing rule used to read as an idempotent duplicate.
+func TestInstallLBDoesNotSwallowNotFound(t *testing.T) {
+	srv := rejectingLoxiLB(t, http.StatusNotFound, "lbrule not-exists error")
+
+	m := &Manager{}
+	err := m.installLB(clientFor(t, srv), aiLoadBalancerModel(), false)
+	if err == nil {
+		t.Fatal("a 404 not-exists was swallowed as a duplicate")
+	}
+	if !api.IsClientError(err) {
+		t.Error("a 404 must be reported as something the user has to fix")
+	}
+}

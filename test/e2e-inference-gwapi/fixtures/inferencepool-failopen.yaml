@@ -1,0 +1,21 @@
+# The same pool, now naming a picker Service that does not exist yet and
+# allowing service without it. It must be served by loxilb's own selection and
+# report ResolvedRefs=False until some-epp appears.
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: epp-required
+  namespace: llm
+  annotations:
+    loxilb.io/epselect: "chwbl"
+spec:
+  selector:
+    matchLabels:
+      app: vllm-qwen3
+  targetPorts:
+    - number: 8000
+  endpointPickerRef:
+    name: some-epp
+    port:
+      number: 9002
+    failureMode: FailOpen

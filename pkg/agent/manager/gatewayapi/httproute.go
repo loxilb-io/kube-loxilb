@@ -19,6 +19,7 @@ package gatewayapi
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	netv1 "k8s.io/api/networking/v1"
@@ -181,6 +182,14 @@ func (h *HTTPRouteManager) createHTTPRoute(httpRoute *v1.HTTPRoute) error {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
+	// Said here, once per route, rather than where the references are
+	// resolved: that runs from event handlers, once per pool and listener.
+	if refs := crossNamespacePoolRefs(httpRoute); len(refs) > 0 {
+		klog.Warningf("HTTPRoute %s/%s: InferencePool backendRefs into another namespace are not served (%s); "+
+			"the route and the pool have to be in the same namespace",
+			httpRoute.Namespace, httpRoute.Name, strings.Join(refs, ", "))
+	}
+
 	// find all parent resources
 	for _, parentRef := range httpRoute.Spec.ParentRefs {
 		// If no namespace is specified, the parent resource is searched for in the same namespace as HTTPRoute.
@@ -218,6 +227,16 @@ func (h *HTTPRouteManager) deleteHTTPRoute(namespace, name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
+	if err := h.deleteRouteIngresses(ctx, namespace, name); err != nil {
+		return err
+	}
+
+	klog.Infof("HTTPRoute %s is deleted.", name)
+	return nil
+}
+
+// deleteRouteIngresses - remove the Ingresses this manager made for the route.
+func (h *HTTPRouteManager) deleteRouteIngresses(ctx context.Context, namespace, name string) error {
 	ingList, err := h.kubeClient.NetworkingV1().Ingresses(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		klog.Errorf("HTTPRoute: get ingresses list (ns: %s) failure. err: %v", namespace, err)
@@ -238,7 +257,6 @@ func (h *HTTPRouteManager) deleteHTTPRoute(namespace, name string) error {
 		}
 	}
 
-	klog.Infof("HTTPRoute %s is deleted.", name)
 	return nil
 }
 
@@ -272,10 +290,22 @@ func (h *HTTPRouteManager) findListener(gateway *v1.Gateway, parentRef v1.Parent
 	return nil
 }
 
+// errNoIngressBackends - the route names no backend an Ingress can carry, so
+// there is no Ingress to make.
+var errNoIngressBackends = fmt.Errorf("no backendRef an Ingress can carry")
+
 func (h *HTTPRouteManager) reconcileIngress(ctx context.Context, httpRoute *v1.HTTPRoute, gateway *v1.Gateway, listener *v1.Listener) error {
 	// create ingress
 	_, err := h.createIngress(ctx, httpRoute, gateway, listener)
-	if err != nil {
+	switch {
+	case err == errNoIngressBackends:
+		// Every backend is served some other way - an InferencePool becomes a
+		// Service of its own manager's - and an Ingress with no rules is
+		// refused by the API server anyway. One left from when the route still
+		// named a Service has to go.
+		klog.V(4).Infof("HTTPRoute %s/%s: no backendRef needs an Ingress", httpRoute.Namespace, httpRoute.Name)
+		return h.deleteRouteIngresses(ctx, httpRoute.Namespace, httpRoute.Name)
+	case err != nil:
 		klog.Errorf("HTTPManager: failed to create new ingress %s/%s. err: %v", httpRoute.Namespace, httpRoute.Name, err)
 	}
 	return nil
@@ -324,10 +354,29 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 		}
 	}
 
+	anyPath := false
 	for _, rule := range httpRoute.Spec.Rules {
 		var paths []netv1.HTTPIngressPath
 		for _, match := range rule.Matches {
 			for _, backref := range rule.BackendRefs {
+				// An Ingress backend is always a Service. A backendRef that
+				// names something else has to be skipped rather than read as
+				// one, or the Ingress ends up pointing at a Service that was
+				// never created and the route silently forwards nowhere.
+				switch classifyBackendRef(backref.BackendObjectReference) {
+				case backendService:
+				case backendInferencePool:
+					// Handled by the InferencePool controller, which programs
+					// the loxilb rule directly instead of going through an
+					// Ingress.
+					klog.V(4).Infof("HTTPRoute %s/%s: backendRef %s is an InferencePool, not an Ingress backend",
+						httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
+					continue
+				default:
+					klog.Warningf("HTTPRoute %s/%s: backendRef %s is not supported - skipping",
+						httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
+					continue
+				}
 
 				if backref.Namespace != nil {
 					if newIngress.Namespace != string(*backref.Namespace) {
@@ -371,6 +420,13 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 			}
 		}
 
+		// A rule whose backends are all served elsewhere adds nothing; an
+		// IngressRule without paths would make the whole Ingress invalid.
+		if len(paths) == 0 {
+			continue
+		}
+		anyPath = true
+
 		for _, hostname := range hostnames {
 			newRule := netv1.IngressRule{
 				Host: string(hostname),
@@ -382,6 +438,10 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 			}
 			newIngress.Spec.Rules = append(newIngress.Spec.Rules, newRule)
 		}
+	}
+
+	if !anyPath {
+		return nil, errNoIngressBackends
 	}
 
 	ing, err := h.kubeClient.NetworkingV1().Ingresses(newIngress.Namespace).Create(ctx, &newIngress, metav1.CreateOptions{})

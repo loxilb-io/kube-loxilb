@@ -40,6 +40,8 @@ type AgentConfig struct {
 	LoxilbLoadBalancerClass string `yaml:"loxilbLoadBalancerClass,omitempty"`
 	// enable Gateway API
 	EnableGatewayAPI bool `yaml:"gatewayAPI"`
+	// enable the Gateway API Inference Extension (InferencePool)
+	EnableInferenceExtension bool `yaml:"inferenceExtension"`
 	// support GatewayClass manager name
 	LoxilbGatewayClass string `yaml:"loxilbGatewayClass,omitempty"`
 	// support LoadBalancer external IP

@@ -1,0 +1,1132 @@
+/*
+ * Copyright (c) 2022 NetLOX Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package loadbalancer
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/pkg/errors"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog/v2"
+
+	"github.com/loxilb-io/kube-loxilb/pkg/api"
+)
+
+// loxilb-inference-gateway annotations.
+//
+// These cover the single-pool inference use cases: prefix-cache aware routing
+// (CHWBL), SGLang/vLLM KV-exact routing over one role-less pool, MCP session
+// affinity and model-name routing.
+//
+// Prefill/decode disaggregation is deliberately absent. It needs a per-endpoint
+// role (ep_role), which a Service annotation cannot express because a single
+// EndpointSlice carries no way to say "this pod is prefill, that one is
+// decode". Enabling pd_disagg_mode without roles is rejected by loxilb every
+// time, so exposing it here could only ever produce failures. It is being
+// designed separately.
+const (
+	// --- L7 / streaming / AI gateway ---
+	modelNameAnnotation                = "loxilb.io/model-name"
+	sseModeAnnotation                  = "loxilb.io/sse-mode"
+	sessionHeaderNameAnnotation        = "loxilb.io/session-header-name"
+	maxStreamDurationAnnotation        = "loxilb.io/max-stream-duration"
+	backendKeepaliveIntervalAnnotation = "loxilb.io/backend-keepalive-interval"
+	traceTypeAnnotation                = "loxilb.io/trace-type"
+	cbEnableAnnotation                 = "loxilb.io/cb-enable"
+
+	// --- CHWBL, for sel=chwbl and sel=wrr-hash ---
+	chwblPrefixHashLevelAnnotation = "loxilb.io/chwbl-prefix-hash-level"
+	chwblPrefixHashFlagsAnnotation = "loxilb.io/chwbl-prefix-hash-flags"
+	chwblMeanLoadFactorAnnotation  = "loxilb.io/chwbl-mean-load-factor"
+	chwblReplicationAnnotation     = "loxilb.io/chwbl-replication"
+	chwblEnableCacheSaltAnnotation = "loxilb.io/chwbl-enable-cache-salt"
+
+	// --- Prefill/decode disaggregation ---
+	pdDisaggAnnotation              = "loxilb.io/pd-disagg"
+	pdPrefillSelectorAnnotation     = "loxilb.io/pd-prefill-selector"
+	pdDecodeSelectorAnnotation      = "loxilb.io/pd-decode-selector"
+	pdPrefillNixlPortAnnotation     = "loxilb.io/pd-prefill-nixl-port"
+	pdDecodeNixlPortAnnotation      = "loxilb.io/pd-decode-nixl-port"
+	pdCacheAwareAnnotation          = "loxilb.io/pd-cache-aware"
+	pdCacheThresholdAnnotation      = "loxilb.io/pd-cache-threshold"
+	pdSessionTTLAnnotation          = "loxilb.io/pd-session-ttl"
+	pdBalanceAbsThresholdAnnotation = "loxilb.io/pd-balance-abs-threshold"
+
+	// --- KV-cache exact routing ---
+	kvExactModeAnnotation    = "loxilb.io/kv-exact-mode"
+	kvZmqPortAnnotation      = "loxilb.io/kv-zmq-port"
+	kvBlockSizeAnnotation    = "loxilb.io/kv-block-size"
+	kvHashAlgoAnnotation     = "loxilb.io/kv-hash-algo"
+	kvEngineTypeAnnotation   = "loxilb.io/kv-engine-type"
+	kvDpRankCountAnnotation  = "loxilb.io/kv-dp-rank-count"
+	kvWarmupSecAnnotation    = "loxilb.io/kv-warmup-sec"
+	kvModelProfileAnnotation = "loxilb.io/kv-model-profile"
+
+	// --- Endpoint Picker (Gateway API Inference Extension EPP) ---
+	//
+	// On a Service generated from an InferencePool, the endpoint and the
+	// failure mode come from the pool's endpointPickerRef and the pool manager
+	// owns them. On any other Service they are whatever the user wrote.
+	eppEndpointAnnotation    = "loxilb.io/epp-endpoint"
+	eppFailureModeAnnotation = "loxilb.io/epp-failure-mode"
+	eppTimeoutMsAnnotation   = "loxilb.io/epp-timeout-ms"
+	eppPlaintextAnnotation   = "loxilb.io/epp-plaintext"
+
+	// --- Credential enforcement ---
+	//
+	// The gateway applies these per listener, so every Service sharing an
+	// address and port has to declare the same pair.
+	apiKeyAuthAnnotation     = "loxilb.io/api-key-auth"
+	jwtAuthProfileAnnotation = "loxilb.io/jwt-auth-profile"
+
+	// --- Capacity admission gate (flow control) ---
+	//
+	// One annotation per fc_* field, named after it. The gateway runs the gate
+	// on AI-gateway services only, so these go out only with sse-mode,
+	// pd-disagg or a checking api-key-auth.
+	fcModeAnnotation               = "loxilb.io/fc-mode"
+	fcMaxOutstandingAnnotation     = "loxilb.io/fc-max-outstanding"
+	fcEpMaxInflightAnnotation      = "loxilb.io/fc-ep-max-inflight"
+	fcPrefillMaxInflightAnnotation = "loxilb.io/fc-prefill-max-inflight"
+	fcDecodeMaxInflightAnnotation  = "loxilb.io/fc-decode-max-inflight"
+	fcMaxQueueDepthAnnotation      = "loxilb.io/fc-max-queue-depth"
+	fcMaxQueueWaitMsAnnotation     = "loxilb.io/fc-max-queue-wait-ms"
+	fcAdaptiveAnnotation           = "loxilb.io/fc-adaptive"
+	fcTtftTargetMsAnnotation       = "loxilb.io/fc-ttft-target-ms"
+	fcTelemetryStaleMsAnnotation   = "loxilb.io/fc-telemetry-stale-ms"
+	fcWarmupMsAnnotation           = "loxilb.io/fc-warmup-ms"
+	fcTenantMaxSharePctAnnotation  = "loxilb.io/fc-tenant-max-share-pct"
+	fcTenantWakeAnnotation         = "loxilb.io/fc-tenant-wake"
+	fcExposeHeadersAnnotation      = "loxilb.io/fc-expose-headers"
+	fcLlmdHeadersAnnotation        = "loxilb.io/fc-llmd-headers"
+	fcWakePolicyAnnotation         = "loxilb.io/fc-wake-policy"
+	fcBandWeightsAnnotation        = "loxilb.io/fc-band-weights"
+	fcBandMinSharePctAnnotation    = "loxilb.io/fc-band-min-share-pct"
+	fcCriticalReservePctAnnotation = "loxilb.io/fc-critical-reserve-pct"
+	fcBandWaitMsAnnotation         = "loxilb.io/fc-band-wait-ms"
+	fcBandQueuePctAnnotation       = "loxilb.io/fc-band-queue-pct"
+	fcShedQueueAnnotation          = "loxilb.io/fc-shed-queue"
+)
+
+// fcAnnotations - every flow-control annotation, in the order they are named
+// when they are not sent.
+var fcAnnotations = []string{
+	fcModeAnnotation,
+	fcMaxOutstandingAnnotation, fcEpMaxInflightAnnotation,
+	fcPrefillMaxInflightAnnotation, fcDecodeMaxInflightAnnotation,
+	fcMaxQueueDepthAnnotation, fcMaxQueueWaitMsAnnotation,
+	fcAdaptiveAnnotation, fcTtftTargetMsAnnotation, fcTelemetryStaleMsAnnotation,
+	fcWarmupMsAnnotation,
+	fcTenantMaxSharePctAnnotation, fcTenantWakeAnnotation,
+	fcExposeHeadersAnnotation, fcLlmdHeadersAnnotation,
+	fcWakePolicyAnnotation, fcBandWeightsAnnotation, fcBandMinSharePctAnnotation,
+	fcCriticalReservePctAnnotation, fcBandWaitMsAnnotation, fcBandQueuePctAnnotation,
+	fcShedQueueAnnotation,
+}
+
+// Endpoint health-monitor annotations.
+//
+// These configure the gateway's per-endpoint health monitor. They are named
+// inside the existing probe family rather than after the wire fields, so the
+// whole probe surface reads as one group.
+//
+// They do not replace loxilb.io/probereq and loxilb.io/proberesp: the gateway
+// keeps those as its escape hatch, and a field set here simply wins over them.
+const (
+	probeMethodAnnotation        = "loxilb.io/probe-method"
+	probePathAnnotation          = "loxilb.io/probe-path"
+	probeExpectedCodesAnnotation = "loxilb.io/probe-expected-codes"
+	probeHTTPVersionAnnotation   = "loxilb.io/probe-http-version"
+	probeDomainAnnotation        = "loxilb.io/probe-domain"
+)
+
+// getEndpointProbe - build the health-monitor block from annotations.
+//
+// The values are uniform across the pool: one health-check path and one set of
+// expected codes for every endpoint of a service is the normal case, so a
+// single Service annotation fans out to all of them. Per-endpoint variation
+// would need the pod-label mechanism built for P/D roles, and nothing asks for
+// it yet.
+func getEndpointProbe(svc *corev1.Service) (api.EndpointProbe, error) {
+	probe := api.EndpointProbe{
+		HTTPMethod:    svc.Annotations[probeMethodAnnotation],
+		URLPath:       svc.Annotations[probePathAnnotation],
+		ExpectedCodes: svc.Annotations[probeExpectedCodesAnnotation],
+		HTTPVersion:   svc.Annotations[probeHTTPVersionAnnotation],
+		DomainName:    svc.Annotations[probeDomainAnnotation],
+	}
+
+	if !probe.IsSet() {
+		return probe, nil
+	}
+
+	// domainName is two features wearing one name, and they arm differently:
+	// it is always the TLS SNI for an HTTPS monitor, but it only becomes the
+	// Host header at httpVersion 1.1. Someone who sets a domain for
+	// virtual-host health checks and leaves the version alone gets SNI only,
+	// with no error and no warning. Default the version instead, which is what
+	// they meant; setting it explicitly to 1.0 still wins.
+	if probe.DomainName != "" && probe.HTTPVersion == "" {
+		probe.HTTPVersion = "1.1"
+		klog.V(4).Infof("service %s/%s: %s implies %s=1.1 so the domain is sent as the Host header",
+			svc.Namespace, svc.Name, probeDomainAnnotation, probeHTTPVersionAnnotation)
+	}
+
+	if err := probe.Validate(); err != nil {
+		return api.EndpointProbe{}, err
+	}
+
+	return probe, nil
+}
+
+// aiAnnotations - every annotation handled by getAIArgs, used to tell "the user
+// asked for inference routing" from "the user asked for nothing".
+var aiAnnotations = append([]string{
+	modelNameAnnotation, sseModeAnnotation, sessionHeaderNameAnnotation,
+	maxStreamDurationAnnotation, backendKeepaliveIntervalAnnotation,
+	traceTypeAnnotation, cbEnableAnnotation,
+	chwblPrefixHashLevelAnnotation, chwblPrefixHashFlagsAnnotation,
+	chwblMeanLoadFactorAnnotation, chwblReplicationAnnotation,
+	chwblEnableCacheSaltAnnotation,
+	kvExactModeAnnotation, kvZmqPortAnnotation, kvBlockSizeAnnotation,
+	kvHashAlgoAnnotation, kvEngineTypeAnnotation, kvDpRankCountAnnotation,
+	kvWarmupSecAnnotation, kvModelProfileAnnotation,
+	pdDisaggAnnotation, pdPrefillSelectorAnnotation, pdDecodeSelectorAnnotation,
+	pdPrefillNixlPortAnnotation, pdDecodeNixlPortAnnotation,
+	pdCacheAwareAnnotation, pdCacheThresholdAnnotation, pdSessionTTLAnnotation,
+	pdBalanceAbsThresholdAnnotation,
+	eppEndpointAnnotation, eppFailureModeAnnotation, eppTimeoutMsAnnotation,
+	eppPlaintextAnnotation,
+	apiKeyAuthAnnotation, jwtAuthProfileAnnotation,
+}, fcAnnotations...)
+
+// hasAIAnnotation - whether the service asks for anything gateway-specific,
+// counting the gateway-only endpoint selectors as well.
+func hasAIAnnotation(svc *corev1.Service) bool {
+	for _, a := range aiAnnotations {
+		if svc.Annotations[a] != "" {
+			return true
+		}
+	}
+
+	switch svc.Annotations[endPointSelAnnotation] {
+	case "chwbl", "gpuaware", "wrr-hash", "wrrhash":
+		return true
+	}
+
+	return false
+}
+
+// annoInt - parse an integer annotation. An absent annotation yields 0, which
+// every AIArgs field treats as "unset", so the server applies its own default.
+func annoInt(svc *corev1.Service, key string) (int64, error) {
+	raw, ok := svc.Annotations[key]
+	if !ok || raw == "" {
+		return 0, nil
+	}
+
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %q is not an integer", key, raw)
+	}
+
+	return v, nil
+}
+
+// annoBool - parse a boolean annotation, accepting the yes/no spelling the
+// older loxilb annotations use alongside true/false.
+func annoBool(svc *corev1.Service, key string) (bool, error) {
+	raw, ok := svc.Annotations[key]
+	if !ok || raw == "" {
+		return false, nil
+	}
+
+	switch raw {
+	case "true", "yes", "1":
+		return true, nil
+	case "false", "no", "0":
+		return false, nil
+	}
+
+	return false, fmt.Errorf("%s: %q is not a boolean (use true/false or yes/no)", key, raw)
+}
+
+// effectiveLbMode - the mode the rule will actually carry: the per-service
+// annotation when set, otherwise the agent-wide default. Mirrors
+// makeLoxiLoadBalancerModel.
+func (m *Manager) effectiveLbMode(lbMode int) api.LbMode {
+	if lbMode >= 0 {
+		return api.LbMode(lbMode)
+	}
+
+	return api.LbMode(m.networkConfig.SetLBMode)
+}
+
+// getAIArgs - build the gateway-only service arguments from annotations.
+//
+// Returns a zero AIArgs when the service asks for nothing, which keeps the
+// payload byte-identical to a plain loxilb rule.
+func (m *Manager) getAIArgs(svc *corev1.Service, lbMode int, sel api.EpSelect) (api.AIArgs, error) {
+	var aiArgs api.AIArgs
+
+	if !hasAIAnnotation(svc) {
+		return aiArgs, nil
+	}
+
+	var errs []error
+	intVal := func(key string) int64 {
+		v, err := annoInt(svc, key)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return v
+	}
+	boolVal := func(key string) bool {
+		v, err := annoBool(svc, key)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return v
+	}
+
+	aiArgs.ModelName = svc.Annotations[modelNameAnnotation]
+	aiArgs.SessionHeaderName = svc.Annotations[sessionHeaderNameAnnotation]
+	aiArgs.TraceType = svc.Annotations[traceTypeAnnotation]
+	aiArgs.KvHashAlgo = svc.Annotations[kvHashAlgoAnnotation]
+	aiArgs.KvEngineType = svc.Annotations[kvEngineTypeAnnotation]
+	aiArgs.KvModelProfile = svc.Annotations[kvModelProfileAnnotation]
+
+	aiArgs.SseMode = boolVal(sseModeAnnotation)
+	aiArgs.CbEnable = boolVal(cbEnableAnnotation)
+	aiArgs.ChwblEnableCacheSalt = boolVal(chwblEnableCacheSaltAnnotation)
+
+	aiArgs.MaxStreamDurationSec = int32(intVal(maxStreamDurationAnnotation))
+	aiArgs.BackendKeepaliveIntervalSec = int32(intVal(backendKeepaliveIntervalAnnotation))
+
+	aiArgs.ChwblPrefixHashLevel = int(intVal(chwblPrefixHashLevelAnnotation))
+	aiArgs.ChwblPrefixHashFlags = int(intVal(chwblPrefixHashFlagsAnnotation))
+	aiArgs.ChwblMeanLoadFactor = int(intVal(chwblMeanLoadFactorAnnotation))
+	aiArgs.ChwblReplication = int(intVal(chwblReplicationAnnotation))
+
+	aiArgs.PDDisaggMode = boolVal(pdDisaggAnnotation)
+	aiArgs.PDCacheAwareMode = boolVal(pdCacheAwareAnnotation)
+	aiArgs.PDCacheThreshold = int32(intVal(pdCacheThresholdAnnotation))
+	aiArgs.PDSessionTTLSec = int32(intVal(pdSessionTTLAnnotation))
+	aiArgs.PDBalanceAbsThreshold = int32(intVal(pdBalanceAbsThresholdAnnotation))
+
+	aiArgs.KvExactMode = intVal(kvExactModeAnnotation)
+	aiArgs.KvZmqPort = intVal(kvZmqPortAnnotation)
+	aiArgs.KvBlockSize = intVal(kvBlockSizeAnnotation)
+	aiArgs.KvWarmupSec = intVal(kvWarmupSecAnnotation)
+	aiArgs.KvDpRankCount = int32(intVal(kvDpRankCountAnnotation))
+
+	aiArgs.EppEndpoint = svc.Annotations[eppEndpointAnnotation]
+	aiArgs.EppFailureMode = svc.Annotations[eppFailureModeAnnotation]
+	aiArgs.EppTimeoutMs = intVal(eppTimeoutMsAnnotation)
+	aiArgs.EppPlaintext = boolVal(eppPlaintextAnnotation)
+
+	aiArgs.APIKeyAuth = svc.Annotations[apiKeyAuthAnnotation]
+	aiArgs.JwtAuthProfile = svc.Annotations[jwtAuthProfileAnnotation]
+
+	aiArgs.FcMode = svc.Annotations[fcModeAnnotation]
+	aiArgs.FcMaxOutstanding = intVal(fcMaxOutstandingAnnotation)
+	aiArgs.FcEpMaxInflight = intVal(fcEpMaxInflightAnnotation)
+	aiArgs.FcPrefillMaxInflight = intVal(fcPrefillMaxInflightAnnotation)
+	aiArgs.FcDecodeMaxInflight = intVal(fcDecodeMaxInflightAnnotation)
+	aiArgs.FcMaxQueueDepth = intVal(fcMaxQueueDepthAnnotation)
+	aiArgs.FcMaxQueueWaitMs = intVal(fcMaxQueueWaitMsAnnotation)
+	aiArgs.FcAdaptive = svc.Annotations[fcAdaptiveAnnotation]
+	aiArgs.FcTtftTargetMs = intVal(fcTtftTargetMsAnnotation)
+	aiArgs.FcTelemetryStaleMs = intVal(fcTelemetryStaleMsAnnotation)
+	aiArgs.FcWarmupMs = intVal(fcWarmupMsAnnotation)
+	aiArgs.FcTenantMaxSharePct = intVal(fcTenantMaxSharePctAnnotation)
+	aiArgs.FcTenantWake = svc.Annotations[fcTenantWakeAnnotation]
+	aiArgs.FcExposeHeaders = svc.Annotations[fcExposeHeadersAnnotation]
+	aiArgs.FcLlmdHeaders = svc.Annotations[fcLlmdHeadersAnnotation]
+	aiArgs.FcWakePolicy = svc.Annotations[fcWakePolicyAnnotation]
+	aiArgs.FcBandWeights = svc.Annotations[fcBandWeightsAnnotation]
+	aiArgs.FcBandMinSharePct = svc.Annotations[fcBandMinSharePctAnnotation]
+	aiArgs.FcCriticalReservePct = intVal(fcCriticalReservePctAnnotation)
+	aiArgs.FcBandWaitMs = svc.Annotations[fcBandWaitMsAnnotation]
+	aiArgs.FcBandQueuePct = svc.Annotations[fcBandQueuePctAnnotation]
+	aiArgs.FcShedQueue = svc.Annotations[fcShedQueueAnnotation]
+
+	if len(errs) > 0 {
+		return api.AIArgs{}, errs[0]
+	}
+
+	// Without an endpoint the other three do nothing on the gateway either.
+	// Kept, they would turn an otherwise plain Service into a gateway-only one
+	// and get it refused on every plain peer for settings that change nothing.
+	if !aiArgs.UsesEndpointPicker() {
+		if aiArgs.EppFailureMode != "" || aiArgs.EppTimeoutMs != 0 || aiArgs.EppPlaintext {
+			klog.V(2).Infof("service %s/%s: Endpoint Picker settings ignored without %s",
+				svc.Namespace, svc.Name, eppEndpointAnnotation)
+		}
+		aiArgs.EppFailureMode = ""
+		aiArgs.EppTimeoutMs = 0
+		aiArgs.EppPlaintext = false
+	}
+
+	// Outside an AI-gateway service the gateway stores the gate's settings and
+	// never consults them. Kept, they would make an otherwise plain Service
+	// gateway-only, with an inference routing key, for settings that change
+	// nothing. recordFlowControlNotice tells the Service.
+	if !aiArgs.IsAIGatewayService() {
+		aiArgs.FlowControlArgs = api.FlowControlArgs{}
+	}
+
+	mode := m.effectiveLbMode(lbMode)
+
+	// The gateway-only selectors have no L4 datapath implementation: outside
+	// fullproxy the rule is programmed as DNAT, the kernel selector matches no
+	// case and every SYN is black-holed. loxilb rejects this; say so first.
+	if sel.IsInferenceGatewayOnly() && mode != api.LBModeFullProxy {
+		return api.AIArgs{}, fmt.Errorf("%s=%s requires %s=fullproxy",
+			endPointSelAnnotation, svc.Annotations[endPointSelAnnotation], lbModeAnnotation)
+	}
+
+	// Endpoints are not known yet, so only the service-level rules can run here.
+	// The endpoint-role rules are checked against the real payload in
+	// makeLoxiLoadBalancerModel.
+	if err := aiArgs.ValidateServiceArgs(mode); err != nil {
+		return api.AIArgs{}, err
+	}
+
+	if aiArgs.PDDisaggMode {
+		if svc.Annotations[pdPrefillSelectorAnnotation] == "" || svc.Annotations[pdDecodeSelectorAnnotation] == "" {
+			return api.AIArgs{}, fmt.Errorf("%s requires both %s and %s",
+				pdDisaggAnnotation, pdPrefillSelectorAnnotation, pdDecodeSelectorAnnotation)
+		}
+		if _, err := parsePDPools(svc); err != nil {
+			return api.AIArgs{}, err
+		}
+	}
+
+	return aiArgs, nil
+}
+
+// pdPool - one side of a disaggregated pair: which pods belong to it, and the
+// NIXL side-channel port they listen on.
+type pdPool struct {
+	role     int32
+	selector labels.Selector
+	nixlPort int32
+}
+
+// inferenceRoutingKey - host, path prefix and match mode for an inference rule.
+//
+// The gateway's userspace proxy looks an endpoint pool up by a key built from
+// these three. A rule that leaves them empty is accepted, reads back over REST
+// exactly like a working one, and then answers every request with
+// model_unavailable, because the lookup key never matches. Nothing else in
+// kube-loxilb sets them, so an inference rule fills them in itself.
+//
+// Empty for every other service: adding a host and a path to a plain L4 rule
+// would change what it matches.
+func inferenceRoutingKey(externalIP string, aiArgs api.AIArgs, sel api.EpSelect) (host, pathPrefix string, matchMode api.PathMatchModeType) {
+	if !aiArgs.IsSet() && !sel.IsInferenceGatewayOnly() {
+		return "", "", ""
+	}
+
+	return externalIP, "/", api.PathMatchModePrefix
+}
+
+// parsePDPools - read the prefill and decode pool definitions from annotations.
+func parsePDPools(svc *corev1.Service) ([]pdPool, error) {
+	pools := []pdPool{
+		{role: api.EpRolePrefill},
+		{role: api.EpRoleDecode},
+	}
+	selAnnotations := []string{pdPrefillSelectorAnnotation, pdDecodeSelectorAnnotation}
+	portAnnotations := []string{pdPrefillNixlPortAnnotation, pdDecodeNixlPortAnnotation}
+
+	for i := range pools {
+		sel, err := labels.Parse(svc.Annotations[selAnnotations[i]])
+		if err != nil {
+			return nil, fmt.Errorf("%s: %q is not a label selector: %v",
+				selAnnotations[i], svc.Annotations[selAnnotations[i]], err)
+		}
+		pools[i].selector = sel
+
+		port, err := annoInt(svc, portAnnotations[i])
+		if err != nil {
+			return nil, err
+		}
+		if port < 0 || port > 65535 {
+			return nil, fmt.Errorf("%s must be within 0..65535, got %d", portAnnotations[i], port)
+		}
+		pools[i].nixlPort = int32(port)
+	}
+
+	return pools, nil
+}
+
+// pdEndpointRole - what to stamp onto an endpoint whose address belongs to a
+// pod of one of the pools.
+type pdEndpointRole struct {
+	Role     int32
+	NixlPort int32
+}
+
+// resolvePDRoles - map endpoint address to prefill/decode role from the labels
+// of the pods each selector matches.
+//
+// Returns nil when the service does not use disaggregation, which leaves every
+// endpoint at ep_role=0 and keeps the payload unchanged. That early return is
+// also what keeps the pod watch lazy: a cluster with no disaggregated service
+// never reaches the watcher.
+func (m *Manager) resolvePDRoles(ctx context.Context, svc *corev1.Service, aiArgs api.AIArgs) (map[string]pdEndpointRole, error) {
+	if !aiArgs.PDDisaggMode {
+		return nil, nil
+	}
+
+	pools, err := parsePDPools(svc)
+	if err != nil {
+		return nil, err
+	}
+
+	podLister, err := m.pdPods.Lister(ctx, svc.Namespace, podCacheScope(pools))
+	if err != nil {
+		return nil, err
+	}
+
+	roles := make(map[string]pdEndpointRole)
+	for _, pool := range pools {
+		pods, err := podLister.Pods(svc.Namespace).List(pool.selector)
+		if err != nil {
+			return nil, fmt.Errorf("failed to select pods for the %s pool: %v", roleName(pool.role), err)
+		}
+
+		for _, pod := range pods {
+			for _, podIP := range podIPs(pod) {
+				if existing, dup := roles[podIP]; dup && existing.Role != pool.role {
+					// One pod matching both selectors would make the rule
+					// depend on map iteration order. Refuse instead.
+					return nil, fmt.Errorf("pod %s/%s (%s) matches both the prefill and the decode selector",
+						pod.Namespace, pod.Name, podIP)
+				}
+				roles[podIP] = pdEndpointRole{Role: pool.role, NixlPort: pool.nixlPort}
+			}
+		}
+	}
+
+	return roles, nil
+}
+
+// podIPs - every address a pod answers on, covering dual-stack.
+func podIPs(pod *corev1.Pod) []string {
+	var ips []string
+
+	if pod.Status.PodIP != "" {
+		ips = append(ips, pod.Status.PodIP)
+	}
+	for _, ip := range pod.Status.PodIPs {
+		if ip.IP != "" && ip.IP != pod.Status.PodIP {
+			ips = append(ips, ip.IP)
+		}
+	}
+
+	return ips
+}
+
+func roleName(role int32) string {
+	if role == api.EpRolePrefill {
+		return "prefill"
+	}
+	return "decode"
+}
+
+// ErrInferenceGatewayRequired - the peer cannot serve the requested routing.
+// Sentinel so the fan-out can tell this refusal apart from a transport error
+// and report it on the Service.
+var ErrInferenceGatewayRequired = errors.New("loxilb peer is not a loxilb-inference-gateway")
+
+// ErrGPUMonitoringDisabled - the peer would accept a sel=gpuaware rule and then
+// select as CHWBL, because GPU-aware routing is armed instance-wide and is off.
+var ErrGPUMonitoringDisabled = errors.New("GPU monitoring is disabled on the loxilb peer")
+
+// ErrEndpointPickerUnsupported - the gateway peer does not apply the Endpoint
+// Picker fields and the rule is FailClose, so it must not be served without one.
+var ErrEndpointPickerUnsupported = errors.New("loxilb peer does not support an Endpoint Picker")
+
+// ErrAuthUnsupported - the gateway peer does not enforce the credential policy
+// the rule declares, and would serve it unauthenticated.
+var ErrAuthUnsupported = errors.New("loxilb peer does not enforce the declared credential policy")
+
+// isPeerRefusal - whether installLB declined the rule itself because of what
+// the peer is, before sending anything. Retrying cannot change the answer, and
+// the peer may be perfectly healthy.
+func isPeerRefusal(err error) bool {
+	return refusalReason(err) != ""
+}
+
+// refusalReason - the event reason for a rule installLB declined because of
+// what the peer is, or "" for any other error.
+func refusalReason(err error) string {
+	switch {
+	case errors.Is(err, ErrAuthUnsupported):
+		return ReasonAuthNotSupported
+	case errors.Is(err, ErrListenerAuthConflict):
+		return ReasonListenerAuthConflict
+	case errors.Is(err, ErrProfileNotFound):
+		return ReasonProfileNotFound
+	case errors.Is(err, ErrProfileNotProgrammed):
+		return ReasonProfileNotProgrammed
+	case errors.Is(err, ErrEndpointPickerUnsupported):
+		return ReasonEndpointPickerUnsupported
+	case errors.Is(err, ErrGPUMonitoringDisabled):
+		return ReasonGPUMonitoringDisabled
+	case errors.Is(err, ErrInferenceGatewayRequired):
+		return ReasonInferenceGatewayRequired
+	}
+	return ""
+}
+
+// serviceForCacheKey - the Service a load-balancer cache entry belongs to, or
+// nil when it is gone. Cache keys are GenKey(namespace, name).
+func (m *Manager) serviceForCacheKey(cacheKey string) *corev1.Service {
+	if m.serviceLister == nil {
+		return nil
+	}
+	namespace, name, err := cache.SplitMetaNamespaceKey(cacheKey)
+	if err != nil {
+		return nil
+	}
+	svc, err := m.serviceLister.Services(namespace).Get(name)
+	if err != nil {
+		return nil
+	}
+	return svc
+}
+
+// reportResyncRefusal - the re-sync's counterpart of the warning the fan-out
+// in addLoadBalancer raises for a refused rule. The event recorder folds the
+// repeats - one per port, one per peer coming up - into a single event.
+func (m *Manager) reportResyncRefusal(cacheKey string, err error) {
+	reason := refusalReason(err)
+	if reason == "" {
+		return
+	}
+	if svc := m.serviceForCacheKey(cacheKey); svc != nil {
+		m.recordServiceWarning(svc, reason, err.Error())
+	}
+}
+
+// reportResyncRejection - the re-sync's counterpart of the LoxiLBRejected
+// warning the fan-out raises: the peer answered and refused the rule - a JWT
+// auth profile it does not have yet, say. Sending the same rule again cannot
+// change that, and neither can restarting kube-loxilb.
+func (m *Manager) reportResyncRejection(cacheKey string, c *api.LoxiClient, err error) {
+	if svc := m.serviceForCacheKey(cacheKey); svc != nil {
+		m.recordServiceWarning(svc, ReasonLoxiLBRejected, fmt.Sprintf("loxilb-lb(%s): %v", c.Host, err))
+	}
+}
+
+// reportResyncDowngrade - a FailOpen rule the re-sync installed on this peer
+// without its Endpoint Picker. installLB strips the fields and succeeds, so
+// nothing else would say so.
+func (m *Manager) reportResyncDowngrade(cacheKey string, c *api.LoxiClient, lb api.LoadBalancerModel) {
+	aiArgs := lb.Service.AIArgs
+	if !c.IsInferenceGateway() || !aiArgs.UsesEndpointPicker() || aiArgs.EndpointPickerFailsClosed() ||
+		c.SupportsFeature(api.FeatureEndpointPicker) {
+		return
+	}
+	if svc := m.serviceForCacheKey(cacheKey); svc != nil {
+		m.recordEndpointPickerNotices(svc, aiArgs)
+	}
+}
+
+// checkEndpointPicker - decide what a gateway peer gets for a rule that names
+// an Endpoint Picker.
+//
+// Gateway builds that do not list the feature accept the rule and drop the
+// EPP fields without a word, then serve it with the rule's own selection. For
+// FailOpen that is exactly what the user declared for "the picker cannot be
+// used", so the fields are stripped and the rule goes ahead; the downgrade is
+// reported by recordEndpointPickerNotices. For FailClose it would serve a
+// policy the user forbade, so the rule is refused before anything is sent.
+//
+// model is the per-peer copy installLB builds; stripping it does not reach the
+// other peers of the fan-out.
+func checkEndpointPicker(c *api.LoxiClient, model *api.LoadBalancerModel) error {
+	if !model.Service.UsesEndpointPicker() || c.SupportsFeature(api.FeatureEndpointPicker) {
+		return nil
+	}
+
+	if model.Service.EndpointPickerFailsClosed() {
+		return fmt.Errorf("loxilb-lb(%s) does not list %q in its version features, so it would drop %s "+
+			"and serve the rule without the Endpoint Picker, which failureMode FailClose forbids: %w",
+			c.Host, api.FeatureEndpointPicker, eppEndpointAnnotation, ErrEndpointPickerUnsupported)
+	}
+
+	klog.V(2).Infof("loxilb-lb(%s): no Endpoint Picker support, sending the FailOpen rule without it", c.Host)
+	api.StripEndpointPicker(model)
+
+	return nil
+}
+
+// authFeatures - the version features a gateway peer must list to enforce the
+// credential policy in aiArgs: api_key_auth for any declaration, and
+// jwt_auth_profile as well for the modes with a Bearer arm.
+func authFeatures(aiArgs api.AIArgs) []string {
+	switch {
+	case aiArgs.APIKeyAuth == "":
+		return nil
+	case aiArgs.UsesJWTAuth():
+		return []string{api.FeatureAPIKeyAuth, api.FeatureJWTAuthProfile}
+	default:
+		return []string{api.FeatureAPIKeyAuth}
+	}
+}
+
+// checkCredentialPolicy - refuse a rule that declares a credential policy on a
+// gateway peer that does not list the features enforcing it.
+//
+// Gateway builds without them accept api_key_auth and jwt_auth_profile, drop
+// them without a word and serve the rule unauthenticated. Unlike a FailOpen
+// Endpoint Picker, no reading of the declaration allows that, so the rule is
+// never stripped and sent: it is refused before anything goes out.
+func checkCredentialPolicy(c *api.LoxiClient, model *api.LoadBalancerModel) error {
+	var missing []string
+	for _, feature := range authFeatures(model.Service.AIArgs) {
+		if !c.SupportsFeature(feature) {
+			missing = append(missing, strconv.Quote(feature))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf("loxilb-lb(%s) does not list %s in its version features, so it would drop %s "+
+		"and serve the rule unauthenticated: %w",
+		c.Host, strings.Join(missing, " and "), apiKeyAuthAnnotation, ErrAuthUnsupported)
+}
+
+// eppUnsupportedPeers - gateway peers that do not list the Endpoint Picker
+// feature. Plain and undetected peers are left out: they refuse the whole rule
+// on their own, with their own warning.
+func (m *Manager) eppUnsupportedPeers() []string {
+	var peers []string
+
+	for _, c := range m.LoxiClients.Clients {
+		if c.IsInferenceGateway() && !c.SupportsFeature(api.FeatureEndpointPicker) {
+			peers = append(peers, c.Host)
+		}
+	}
+
+	return peers
+}
+
+// endpointPickerDowngradeNotice - what a FailOpen rule loses on peers without
+// Endpoint Picker support, or "" when nothing is lost.
+//
+// FailClose is not reported here: those peers refuse the rule, and the refusal
+// carries its own warning out of the fan-out.
+func endpointPickerDowngradeNotice(aiArgs api.AIArgs, peers []string) string {
+	if !aiArgs.UsesEndpointPicker() || aiArgs.EndpointPickerFailsClosed() || len(peers) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("%s does not list %q in its version features, so this FailOpen rule is served there "+
+		"by loxilb's own endpoint selection instead of the Endpoint Picker at %s. Upgrade the gateway to use the picker",
+		strings.Join(peers, ", "), api.FeatureEndpointPicker, aiArgs.EppEndpoint)
+}
+
+// recordEndpointPickerNotices - report the FailOpen downgrade when a rule is
+// programmed. Warning rather than Normal: the user named a picker and is not
+// getting it, which lasts until the gateway is upgraded.
+func (m *Manager) recordEndpointPickerNotices(svc *corev1.Service, aiArgs api.AIArgs) {
+	notice := endpointPickerDowngradeNotice(aiArgs, m.eppUnsupportedPeers())
+	if notice == "" {
+		return
+	}
+
+	klog.Warningf("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+	m.recordServiceWarning(svc, ReasonEndpointPickerUnsupported, notice)
+}
+
+// checkGPUAware - refuse a sel=gpuaware rule that the peer would silently
+// downgrade to CHWBL.
+//
+// GPU-aware selection has three stages and kube-loxilb only drives the third.
+// Stage 1 arms the instance-wide routing mode; stage 2 feeds per-endpoint GPU
+// telemetry, which comes from the serving engine or DCGM rather than from the
+// Kubernetes API. Neither belongs to kube-loxilb - but unlike the tokenizer,
+// whose state cannot be observed at all, stage 1 reports itself. A check that is
+// available and not made is a different thing from blindness.
+func (m *Manager) checkGPUAware(ctx context.Context, c *api.LoxiClient) error {
+	status, readable := m.gpuStatus(ctx, c)
+	if !readable {
+		// A failed diagnostic must not take down a rule that would have worked.
+		return nil
+	}
+
+	if !status.GPUArmed() {
+		return fmt.Errorf("loxilb-lb(%s) has GPU-aware routing disarmed (enabled=%v, routing_mode=%q), "+
+			"so a %s=gpuaware rule would select as CHWBL instead: %w",
+			c.Host, status.Enabled, status.RoutingMode, endPointSelAnnotation, ErrGPUMonitoringDisabled)
+	}
+
+	if status.WorkerCount == 0 {
+		// Armed, but nothing has reported metrics yet, so the selector has no
+		// telemetry to act on. Not a refusal: the feed may simply not have run.
+		klog.Warningf("loxilb-lb(%s): GPU monitoring is armed but tracking 0 workers - "+
+			"GPU-aware selection has no telemetry until worker metrics are pushed to it", c.Host)
+	}
+
+	return nil
+}
+
+// reportGPUDisarmed - re-check GPU arming on the reconcile path.
+//
+// The pre-flight in installLB only runs when a rule is programmed, so it cannot
+// see an operator disarming the mode afterwards: the rule stops being
+// GPU-aware, nothing about the rule changed, and no event is raised. Same shape
+// as a pod relabelled in place, and the same fix - look on the loop that runs
+// anyway rather than only at the write.
+//
+// This reports rather than refuses. The rule already exists and is serving; the
+// mode being off is not something reprogramming would repair.
+func (m *Manager) reportGPUDisarmed(svc *corev1.Service) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	for _, c := range m.LoxiClients.Clients {
+		if !c.IsInferenceGateway() {
+			continue
+		}
+
+		status, readable := m.gpuStatus(ctx, c)
+		if !readable {
+			// "Cannot tell" is not "disarmed". Leave the remembered state
+			// alone so a blip does not read as a transition either way.
+			continue
+		}
+
+		if !m.gpuArmingChangedToOff(c.Host, status.GPUArmed()) {
+			continue
+		}
+
+		msg := fmt.Sprintf("loxilb-lb(%s) no longer has GPU-aware routing armed (enabled=%v, routing_mode=%q), "+
+			"so this rule now selects as CHWBL",
+			c.Host, status.Enabled, status.RoutingMode)
+		klog.Errorf("service %s/%s: %s", svc.Namespace, svc.Name, msg)
+		m.recordServiceWarning(svc, ReasonGPUMonitoringDisabled, msg)
+	}
+}
+
+// gpuArmingChangedToOff - remember the arming state per peer and report only
+// the edge into disarmed.
+//
+// A warning on every reconcile is noise even with event aggregation; a warning
+// at the moment arming is lost is something an operator can act on. A peer seen
+// disarmed for the first time also reports, since that covers a controller
+// restarting after the mode was turned off.
+func (m *Manager) gpuArmingChangedToOff(host string, armed bool) bool {
+	m.gpuArmedMu.Lock()
+	defer m.gpuArmedMu.Unlock()
+
+	previous, seen := m.gpuArmed[host]
+	m.gpuArmed[host] = armed
+
+	return !armed && (!seen || previous)
+}
+
+// gpuStatus - read GPU monitoring state, distinguishing "disarmed" from
+// "cannot tell". The difference matters: an unreachable peer must neither
+// block a rule nor be reported as a regression.
+func (m *Manager) gpuStatus(ctx context.Context, c *api.LoxiClient) (*api.GPUStatusModel, bool) {
+	status, err := c.GPU().Status(ctx)
+	if err != nil {
+		klog.V(4).Infof("loxilb-lb(%s): GPU monitoring status unreadable: %v", c.Host, err)
+		return nil, false
+	}
+
+	return status, true
+}
+
+// Event reasons raised against a Service.
+const (
+	// ReasonInvalidInferenceConfig - the inference annotations are malformed or
+	// describe a combination loxilb rejects.
+	ReasonInvalidInferenceConfig = "InvalidInferenceConfig"
+	// ReasonInferenceGatewayRequired - the service asks for inference routing
+	// but the loxilb it would be programmed into is plain upstream loxilb.
+	ReasonInferenceGatewayRequired = "InferenceGatewayRequired"
+	// ReasonKvExactTokenizerRequired - the rule uses KV-exact routing, which
+	// needs a tokenizer staged inside loxilb that kube-loxilb cannot see.
+	ReasonKvExactTokenizerRequired = "KvExactTokenizerRequired"
+	// ReasonFlowControlIgnored - flow-control annotations on a Service that is
+	// not an AI-gateway service, where loxilb never consults them; they are
+	// not sent.
+	ReasonFlowControlIgnored = "FlowControlIgnored"
+	// ReasonGPUMonitoringDisabled - the rule selects GPU-aware routing on a
+	// loxilb instance where that mode is not armed.
+	ReasonGPUMonitoringDisabled = "GPUMonitoringDisabled"
+	// ReasonExternalIPUnavailable - no external address and port could be
+	// allocated for the Service yet; it is retried.
+	ReasonExternalIPUnavailable = "ExternalIPUnavailable"
+	// ReasonEndpointPickerUnsupported - the rule names an Endpoint Picker and a
+	// gateway peer does not support it: refused there (FailClose) or served
+	// without it (FailOpen).
+	ReasonEndpointPickerUnsupported = "EndpointPickerUnsupported"
+	// ReasonAuthNotSupported - the rule declares a credential policy and a
+	// gateway peer does not enforce it, so the rule is not sent there.
+	ReasonAuthNotSupported = "AuthNotSupported"
+	// ReasonListenerAuthConflict - the Service shares a listener with an older
+	// one that declares another credential policy, and is not served there.
+	ReasonListenerAuthConflict = "ListenerAuthConflict"
+	// ReasonListenerRouteConflict - the Service is generated from an
+	// InferencePool and shares a listener with an older pool serving the same
+	// model, and is not served there.
+	ReasonListenerRouteConflict = "ListenerRouteConflict"
+	// ReasonProfileNotFound - the rule names a JWT auth profile that has no
+	// JWTAuthProfile; it is sent nowhere until one is created.
+	ReasonProfileNotFound = "ProfileNotFound"
+	// ReasonProfileNotProgrammed - the JWT auth profile is not on a peer yet;
+	// the rule goes there once it is.
+	ReasonProfileNotProgrammed = "ProfileNotProgrammed"
+	// ReasonInvalidProbeConfig - the health-monitor annotations are malformed.
+	ReasonInvalidProbeConfig = "InvalidProbeConfig"
+	// ReasonProbeModeChanged - the probe annotations retire a proberesp check
+	// that is still configured.
+	ReasonProbeModeChanged = "ProbeModeChanged"
+	// ReasonProbeFieldsDowngraded - a plain upstream peer in the pool cannot
+	// honour part of the probe configuration.
+	ReasonProbeFieldsDowngraded = "ProbeFieldsDowngraded"
+	// ReasonInvalidGatewayArgs - a gateway-only service annotation is malformed.
+	ReasonInvalidGatewayArgs = "InvalidGatewayArgs"
+	// ReasonGatewayArgsDowngraded - a plain upstream peer in the pool will not
+	// apply part of the gateway-only service configuration.
+	ReasonGatewayArgsDowngraded = "GatewayArgsDowngraded"
+	// ReasonRuleMissing - a peer no longer has a rule kube-loxilb programmed.
+	ReasonRuleMissing = "RuleMissing"
+	// ReasonRuleUnhealthy - loxilb reports the rule as degraded or offline.
+	ReasonRuleUnhealthy = "RuleUnhealthy"
+	// ReasonRuleHealthy - the rule recovered.
+	ReasonRuleHealthy = "RuleHealthy"
+	// ReasonLoxiLBRejected - loxilb refused the rule and said why. Carries
+	// loxilb's own wording, since it is more specific than anything
+	// kube-loxilb could reconstruct.
+	ReasonLoxiLBRejected = "LoxiLBRejected"
+)
+
+// recordServiceEvent - surface something on the Service itself, so
+// `kubectl describe svc` explains it. A log line on the agent does not reach
+// the person who wrote the annotation.
+func (m *Manager) recordServiceEvent(svc *corev1.Service, eventType, reason, message string) {
+	if m.eventRecorder == nil || svc == nil {
+		return
+	}
+
+	m.eventRecorder.Event(svc, eventType, reason, message)
+}
+
+// recordServiceWarning - report a rejected configuration.
+func (m *Manager) recordServiceWarning(svc *corev1.Service, reason, message string) {
+	m.recordServiceEvent(svc, corev1.EventTypeWarning, reason, message)
+	m.recordPoolWarning(svc, reason, message)
+}
+
+// kvTokenizerDir - where the gateway looks for tokenizers
+// (kvTokenizerDir in its pkg/loxinet/ai_kv_router.go).
+const kvTokenizerDir = "/etc/loxilb/tokenizers"
+
+// kvModelSlug - the gateway's filesystem name for a model: every "/" becomes
+// "__" and nothing else changes. Mirrors kvModelSlug in ai_kv_router.go.
+func kvModelSlug(modelName string) string {
+	return strings.ReplaceAll(modelName, "/", "__")
+}
+
+// tokenizerNotice - what an operator has to check when a rule turns on KV-exact
+// routing, or "" when the rule does not use it.
+//
+// This is deliberately a notice and not a readiness signal. kube-loxilb cannot
+// verify any of it: the file lives inside the loxilb pod, and the gateway loads
+// it lazily on the first request for a model rather than when the rule is
+// created, so a rule that programs cleanly proves nothing. Reporting health
+// that was never checked would be worse than saying nothing. Naming the exact
+// path is the most that can honestly be said.
+//
+// The stakes are why it is said at all: a missing tokenizer does not fail the
+// rule, it silently downgrades KV-exact routing to load-based routing. The
+// gateway logs once per model and caches the failure, so staging the file
+// afterwards does not take effect until loxilb restarts.
+func tokenizerNotice(aiArgs api.AIArgs) string {
+	if aiArgs.KvExactMode == api.KvExactModeOff {
+		return ""
+	}
+
+	target := fmt.Sprintf("%s/%s/tokenizer.json", kvTokenizerDir, kvModelSlug(aiArgs.ModelName))
+	if aiArgs.ModelName == "" {
+		target = fmt.Sprintf("%s/<model>/tokenizer.json for every model this rule serves, where <model> is the requested model name with each \"/\" replaced by \"__\" (%s is unset, so the model comes from each request)",
+			kvTokenizerDir, modelNameAnnotation)
+	}
+
+	return fmt.Sprintf("KV-exact routing is enabled (%s=%d): loxilb must already have a tokenizer staged at %s. "+
+		"kube-loxilb cannot check this. If it is missing, loxilb logs \"kv-router: tokenizer not available\" once and "+
+		"falls back to load-based routing - the rule is still created and traffic still flows, just without cache-aware "+
+		"placement. loxilb caches that failure, so staging the file afterwards needs a loxilb restart to take effect.",
+		kvExactModeAnnotation, aiArgs.KvExactMode, target)
+}
+
+// recordTokenizerNotice - emit the notice above when a rule is programmed.
+//
+// Normal, not Warning: nothing has been detected as wrong, and a Warning that
+// fires on every correctly configured KV-exact service would devalue the
+// Warnings that report real rejections.
+func (m *Manager) recordTokenizerNotice(svc *corev1.Service, aiArgs api.AIArgs) {
+	notice := tokenizerNotice(aiArgs)
+	if notice == "" {
+		return
+	}
+
+	klog.Infof("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+	m.recordServiceEvent(svc, corev1.EventTypeNormal, ReasonKvExactTokenizerRequired, notice)
+}
+
+// flowControlIgnoredNotice - which flow-control annotations getAIArgs left out
+// because the Service is not an AI-gateway service, or "" when none were.
+func flowControlIgnoredNotice(svc *corev1.Service, aiArgs api.AIArgs) string {
+	if aiArgs.IsAIGatewayService() {
+		return ""
+	}
+
+	var ignored []string
+	for _, key := range fcAnnotations {
+		if svc.Annotations[key] != "" {
+			ignored = append(ignored, key)
+		}
+	}
+	if len(ignored) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("%s are not sent: loxilb runs its capacity admission gate only on an AI-gateway service, "+
+		"so on this one it would never consult them. Set %s: \"true\" (or %s, or an %s other than %q) to gate its requests",
+		strings.Join(ignored, ", "), sseModeAnnotation, pdDisaggAnnotation, apiKeyAuthAnnotation, api.APIKeyAuthDisabled)
+}
+
+// recordFlowControlNotice - report flow-control annotations left out of the
+// rule.
+//
+// Said on every sync rather than when a rule is programmed: leaving them out
+// changes nothing in the rule, so adding them to a Service that already has
+// one programs nothing and would otherwise go unanswered. The event recorder
+// folds the repeats.
+func (m *Manager) recordFlowControlNotice(svc *corev1.Service, aiArgs api.AIArgs) {
+	notice := flowControlIgnoredNotice(svc, aiArgs)
+	if notice == "" {
+		return
+	}
+
+	klog.Warningf("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+	m.recordServiceWarning(svc, ReasonFlowControlIgnored, notice)
+}
+
+// recordProbeNotices - report the two things about a probe configuration that
+// the annotations do not show on their own.
+func (m *Manager) recordProbeNotices(svc *corev1.Service, probe api.EndpointProbe) {
+	if !probe.IsSet() {
+		return
+	}
+
+	if notice := probeModeNotice(svc, probe); notice != "" {
+		klog.Warningf("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+		m.recordServiceWarning(svc, ReasonProbeModeChanged, notice)
+	}
+
+	if notice := probeDowngradeNotice(m.plainLoxilbPeers(), probe); notice != "" {
+		klog.Infof("service %s/%s: %s", svc.Namespace, svc.Name, notice)
+		m.recordServiceEvent(svc, corev1.EventTypeNormal, ReasonProbeFieldsDowngraded, notice)
+	}
+}
+
+// probeModeNotice - warn when the structured fields retire a proberesp check
+// the operator did not touch.
+//
+// The five fields are not additive refinements of the legacy probe; any one of
+// them switches the prober into structured mode, where the response check
+// becomes a status-code match and proberesp stops being consulted. Someone
+// running proberesp: "OK" who adds probe-domain purely to fix SNI loses the
+// body check, and nothing in the annotation they edited suggests that.
+func probeModeNotice(svc *corev1.Service, probe api.EndpointProbe) string {
+	if svc.Annotations[probeRespAnnotation] == "" || !probe.SwitchesProberMode() {
+		return ""
+	}
+
+	return fmt.Sprintf("%s is set but will no longer be checked: the probe annotations switch loxilb to "+
+		"status-code matching, so the probe now passes on HTTP %s instead of on the response containing %q. "+
+		"Remove the probe-* annotations to keep the body check",
+		probeRespAnnotation, probe.EffectiveExpectedCodes(), svc.Annotations[probeRespAnnotation])
+}
+
+// probeDowngradeNotice - say which probe settings a plain upstream peer in the
+// pool cannot honour.
+//
+// The path itself survives: it is carried across to probereq, which upstream
+// formats into the probe URL. The rest have no upstream equivalent, so on those
+// peers the probe keeps the older behaviour.
+func probeDowngradeNotice(plainPeers []string, probe api.EndpointProbe) string {
+	if len(plainPeers) == 0 {
+		return ""
+	}
+
+	var dropped []string
+	if probe.HTTPMethod != "" {
+		dropped = append(dropped, probeMethodAnnotation)
+	}
+	if probe.ExpectedCodes != "" {
+		dropped = append(dropped, probeExpectedCodesAnnotation)
+	}
+	if probe.HTTPVersion != "" {
+		dropped = append(dropped, probeHTTPVersionAnnotation)
+	}
+	if probe.DomainName != "" {
+		dropped = append(dropped, probeDomainAnnotation)
+	}
+	if len(dropped) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("%s have no equivalent in plain upstream loxilb and are not applied on %s; "+
+		"the probe path is still honoured there, carried as %s",
+		strings.Join(dropped, ", "), strings.Join(plainPeers, ", "), probeReqAnnotation)
+}
+
+// plainLoxilbPeers - peers known to be plain upstream loxilb. Undetected peers
+// are excluded: reporting a downgrade before the flavor is known would be a
+// guess.
+func (m *Manager) plainLoxilbPeers() []string {
+	var plain []string
+
+	for _, c := range m.LoxiClients.Clients {
+		if c.FlavorDetected() && !c.IsInferenceGateway() {
+			plain = append(plain, c.Host)
+		}
+	}
+
+	return plain
+}

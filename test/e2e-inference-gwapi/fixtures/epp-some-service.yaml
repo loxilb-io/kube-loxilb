@@ -1,0 +1,15 @@
+# The Service the FailOpen pool names, created only partway through the run:
+# its arrival (and its recreation with a new cluster IP) is what the Service
+# watch has to notice. It fronts the same picker pods as the `epp` Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: some-epp
+  namespace: llm
+spec:
+  selector:
+    app: epp
+  ports:
+    - name: grpc-ext-proc
+      port: 9002
+      targetPort: 9002
