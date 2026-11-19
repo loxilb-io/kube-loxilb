@@ -1,0 +1,184 @@
+# HTTPRoutes served directly on a Gateway's HTTP listener (--gatewayAPIDirectRoutes).
+#
+# direct-gw shares the testbed's one address with inference-gw - the pool is a
+# /32, so it names the address instead of being given one - on ports of its
+# own: HTTP 8090, which is served directly, and HTTPS 8453, which stays on the
+# ingress Service until the gateway can pick certificates safely.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: web
+---
+# Backends answer with their pod name, as the model servers do.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-a
+  namespace: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: web-a}
+  template:
+    metadata:
+      labels: {app: web-a}
+    spec:
+      containers:
+        - name: server
+          image: ghcr.io/loxilb-io/nettest:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+                "${#POD_NAME}" "$POD_NAME" > /tmp/resp
+              exec socat -T5 tcp-l:8000,fork,reuseaddr system:'cat /tmp/resp'
+          ports:
+            - containerPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-b
+  namespace: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: web-b}
+  template:
+    metadata:
+      labels: {app: web-b}
+    spec:
+      containers:
+        - name: server
+          image: ghcr.io/loxilb-io/nettest:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+                "${#POD_NAME}" "$POD_NAME" > /tmp/resp
+              exec socat -T5 tcp-l:8000,fork,reuseaddr system:'cat /tmp/resp'
+          ports:
+            - containerPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-a
+  namespace: web
+spec:
+  selector: {app: web-a}
+  ports:
+    - {name: http, port: 80, targetPort: 8000}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-b
+  namespace: web
+spec:
+  selector: {app: web-b}
+  ports:
+    - {name: http, port: 80, targetPort: 8000}
+---
+# No selector: its EndpointSlice is written by hand (validation-direct.sh), as
+# Knative writes those of its public Services.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-manual
+  namespace: web
+spec:
+  ports:
+    - {name: http, port: 80, targetPort: 8000}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: direct-gw
+  namespace: web
+spec:
+  gatewayClassName: loxilb-gc
+  addresses:
+    - {type: IPAddress, value: 12.12.12.1}
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 8090
+    - name: https
+      protocol: HTTPS
+      port: 8453
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - {kind: Secret, name: web-cert}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: shop-api
+  namespace: web
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: [shop.example.com]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /api}}]
+      backendRefs: [{name: web-a, port: 80}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: shop-root
+  namespace: web
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: [shop.example.com]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /}}]
+      backendRefs: [{name: web-b, port: 80}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: manual
+  namespace: web
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: [manual.example.com]
+  rules:
+    - backendRefs: [{name: web-manual, port: 80}]
+---
+# A header match is not something a host and path rule can hold: not served,
+# and the route says so.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: headers
+  namespace: web
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: [hdr.example.com]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /}, headers: [{name: x-env, value: canary}]}]
+      backendRefs: [{name: web-a, port: 80}]
+---
+# On the HTTPS listener: through the ingress Service and an Ingress, as before.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: secure
+  namespace: web
+spec:
+  parentRefs: [{name: direct-gw, sectionName: https}]
+  hostnames: [secure.example.com]
+  rules:
+    - backendRefs: [{name: web-a, port: 80}]

@@ -80,13 +80,16 @@ if [[ -n "$configured" ]]; then
     auth_skipped="the gateway lists $features, not api_key_auth and jwt_auth_profile"
     say "stage validation-auth    SKIPPED: $auth_skipped"
   fi
+  # Last: it turns on --gatewayAPIDirectRoutes, which the older build the
+  # credential checks downgrade to does not know.
+  stage validation-direct "$HERE/validation-direct.sh"
 fi
 
 collect() {
   kubectl -n kube-system logs deploy/kube-loxilb --tail=-1 > "$DIAG/kube-loxilb.log" 2>&1
   kubectl -n kube-system logs deploy/kube-loxilb --previous > "$DIAG/kube-loxilb.previous.log" 2>&1
   kubectl get events -A --sort-by=.lastTimestamp > "$DIAG/events.txt" 2>&1
-  kubectl get svc,inferencepool,httproute -A -o yaml > "$DIAG/objects.yaml" 2>&1
+  kubectl get svc,inferencepool,httproute,gateway,ingress,endpointslice -A -o yaml > "$DIAG/objects.yaml" 2>&1
   kubectl get jwtauthprofiles -o yaml > "$DIAG/jwtauthprofiles.yaml" 2>&1
   kubectl get pods -A -o wide > "$DIAG/pods.txt" 2>&1
   local name addr
@@ -101,7 +104,7 @@ collect() {
 }
 stage diag collect
 
-for log in validation validation-auth; do
+for log in validation validation-auth validation-direct; do
   [[ -f "$RESULTS/$log.log" ]] || continue
   say ""
   say "--- $log"
@@ -111,7 +114,8 @@ done
 say ""
 if [[ -n "$configured" ]] &&
   grep -q '^SCENARIO-e2e-inference-gwapi \[OK\]' "$RESULTS/validation.log" &&
-  { [[ -n "$auth_skipped" ]] || grep -q '^SCENARIO-e2e-inference-gwapi-auth \[OK\]' "$RESULTS/validation-auth.log"; }; then
+  { [[ -n "$auth_skipped" ]] || grep -q '^SCENARIO-e2e-inference-gwapi-auth \[OK\]' "$RESULTS/validation-auth.log"; } &&
+  grep -q '^SCENARIO-e2e-direct \[OK\]' "$RESULTS/validation-direct.log"; then
   say "RESULT: PASS"
 else
   say "RESULT: FAIL"
