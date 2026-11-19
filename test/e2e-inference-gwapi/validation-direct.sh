@@ -206,6 +206,28 @@ else
   bad "the hand-written EndpointSlice moves to web-a: so does manual.example.com" "$(ask manual.example.com /)"
 fi
 
+echo "=== D7b. a route's match mode changes ==="
+# The gateway keys a rule by its match mode too: the prefix rule has to go
+# when the exact one comes, on both gateways, and come back after.
+match_is() { # <PathPrefix|Exact>
+  kubectl -n web patch httproute shop-api --type=json \
+    -p "[{\"op\":\"replace\",\"path\":\"/spec/rules/0/matches/0/path/type\",\"value\":\"$1\"}]" >/dev/null
+}
+match_is Exact
+EXACT="manual.example.com|/|prefix|4 shop.example.com|/api|exact|4 shop.example.com|/|prefix|4"
+for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
+  poll 60 rules_are "$gw" "$EXACT"
+  check "/api matched exactly on $gw, the prefix rule gone" "$(rule_keys "$gw")" "$EXACT"
+done
+poll 30 served_by shop.example.com /api web-a
+case "$(body shop.example.com /api)" in web-a-*) ok "shop.example.com/api -> web-a";; *) bad "shop.example.com/api -> web-a" "$(ask shop.example.com /api)";; esac
+case "$(body shop.example.com /api/items)" in web-b-*) ok "/api/items is not /api: web-b";; *) bad "/api/items is not /api: web-b" "$(ask shop.example.com /api/items)";; esac
+match_is PathPrefix
+for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
+  poll 60 rules_are "$gw" "$WANT"
+  check "/api by prefix again on $gw" "$(rule_keys "$gw")" "$WANT"
+done
+
 echo "=== D8. a Service that only looks like a rule is refused ==="
 kubectl apply -f - >/dev/null <<EOF
 apiVersion: v1

@@ -182,6 +182,7 @@ downgrades to does not know.
 | D5 | `/api/items` reaches web-a, `/cart` and `/apiary` web-b, `manual.example.com` its hand-written endpoints; an unknown host and the header-match route's host get 503 | path prefixes match by segment, and what a rule cannot hold is not served broadly |
 | D6 | `shop-api-dup` is not Accepted (`UnsupportedValue`, served for `web/shop-api`), nor is `headers`; `shop-api` is; `direct-gw` is Programmed | routes say why they are not served, and the Gateway reports the listener as programmed |
 | D7 | scaling web-a to one moves the `/api` rule to it; moving the hand-written EndpointSlice moves `manual.example.com` | endpoint changes are followed without the route changing |
+| D7b | `shop-api` switched to `Exact` and back: on both gateways the `/api` rule is `exact` with no `prefix` rule left, `/api` reaches web-a and `/api/items` web-b; then `prefix` again | a rule is sent again when its route changes, and the one before is deleted: the gateway keys a rule by its match mode too |
 | D8 | a hand-made Service with the rule label and annotations but no controlling Gateway gets `GatewayRouteRefused`, and no rule | a rule's host and path are only taken from a Service its Gateway controls |
 | D9 | deleting `manual` removes its rule and answers 503; the other two stay | a rule goes with its route |
 

@@ -104,6 +104,15 @@ type gatewayRoute struct {
 	backendPort      int32
 }
 
+// routeValue - the route a Service carries, or the zero route for one that
+// carries none.
+func routeValue(route *gatewayRoute) gatewayRoute {
+	if route == nil {
+		return gatewayRoute{}
+	}
+	return *route
+}
+
 // key - what tells the rule apart from the others on its listener. The match
 // mode is left out: the gateway keeps one endpoint pool for a host and a
 // path, and an Exact and a Prefix rule on the same pair would share it.

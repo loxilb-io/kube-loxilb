@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -251,6 +252,10 @@ type LbCacheEntry struct {
 	// Gateway's address: the listener's address and port are shared with the
 	// other pools there (listenerShare). "" for any other Service.
 	ListenerAddr string
+	// Route, RouteTargetPorts - for a gateway route, the rule it carries and
+	// the backend's port it is served on; zero for any other Service.
+	Route            gatewayRoute
+	RouteTargetPorts []int
 }
 
 type LbCacheTable map[string]*LbCacheEntry
@@ -965,6 +970,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 		m.lbCache[cacheKey] = <-addNewLbCacheEntryChan
 		lbCacheEntry = m.lbCache[cacheKey]
+		lbCacheEntry.Route, lbCacheEntry.RouteTargetPorts = routeValue(route), routeTargetPorts
 		m.zoneInstSelHint++
 		klog.Infof("New LbCache %s Added", cacheKey)
 	} else {
@@ -1166,6 +1172,20 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			needDelete = true
 		}
 		klog.Infof("%s: endpoint probe update", cacheKey)
+	}
+
+	// The gateway keys a rule by its match mode as well as its host and
+	// path, so a rule sent with another mode is another rule, and the one
+	// before would stay: the rules go and come back. The route's other
+	// fields and its backend's port are not seen in the endpoints either.
+	if routeValue(route) != m.lbCache[cacheKey].Route || !slices.Equal(routeTargetPorts, m.lbCache[cacheKey].RouteTargetPorts) {
+		m.lbCache[cacheKey].Route = routeValue(route)
+		m.lbCache[cacheKey].RouteTargetPorts = routeTargetPorts
+		update = true
+		if added {
+			needDelete = true
+		}
+		klog.Infof("%s: gateway route update", cacheKey)
 	}
 
 	if aiArgs != m.lbCache[cacheKey].AIArgs {

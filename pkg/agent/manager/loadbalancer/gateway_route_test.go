@@ -1,7 +1,10 @@
 package loadbalancer
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -403,5 +406,73 @@ func TestEndpointSliceQueuesItsGatewayRoutes(t *testing.T) {
 	item, _ := m.queue.Get()
 	if item != (LbCacheKey{Namespace: "infra", Name: "gw-route-1"}) {
 		t.Errorf("queued %v, want infra/gw-route-1", item)
+	}
+}
+
+// A route whose match mode changes is another rule on the gateway, which keys
+// rules by the mode too: the rule before is deleted and the new one sent. So
+// it is when the backend's port moves with the same pods. Neither shows in
+// the endpoints' addresses, and the gateway went on serving the old rule.
+func TestGatewayRouteChangeReplacesItsRule(t *testing.T) {
+	gw := newFakeLoxiLB(t, api.ProductInferenceGateway)
+	peer := gw.client(t)
+	peer.IsAlive = true
+	m, _ := addHarness(t, peer)
+
+	gateway := routeGateway()
+	gateway.Spec.Addresses = []gwv1.GatewaySpecAddress{{Value: "192.168.0.13"}}
+	m.SetGatewayLister(gwlister.NewGatewayLister(routeIndexer(gateway)), func() bool { return true })
+	route := routeService(func(s *corev1.Service) { s.Spec.LoadBalancerIP = "192.168.0.13" })
+	if _, err := m.kubeClient.CoreV1().Services(route.Namespace).Create(context.Background(), route, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create route Service: %v", err)
+	}
+	m.serviceLister = corelisters.NewServiceLister(routeIndexer(route, backendService()))
+	slicesAt := func(port int32) {
+		m.endpointSliceLister = discoverylisters.NewEndpointSliceLister(routeIndexer(
+			endpointSlice("web-1", discoveryv1.AddressTypeIPv4, "http", port, endpointAt(true, "10.1.0.1"))))
+	}
+	slicesAt(8000)
+
+	stored := func() string {
+		rule := gw.storedRule(t)
+		if rule == nil {
+			return "none"
+		}
+		return fmt.Sprint(rule["path_match_mode"])
+	}
+	if err := m.addLoadBalancer(route); err != nil {
+		t.Fatalf("addLoadBalancer: %v", err)
+	}
+	if got := stored(); got != "prefix" {
+		t.Fatalf("rule match mode = %s, want prefix", got)
+	}
+
+	exact := route.DeepCopy()
+	exact.Annotations[gatewayRoutePathMatchAnnotation] = "exact"
+	_, deletesBefore, _ := gw.counts()
+	if err := m.addLoadBalancer(exact); err != nil {
+		t.Fatalf("addLoadBalancer with the match mode changed: %v", err)
+	}
+	if _, deletes, _ := gw.counts(); deletes == deletesBefore {
+		t.Error("the rule with the old match mode was not deleted")
+	}
+	if got := stored(); got != "exact" {
+		t.Errorf("rule match mode = %s, want exact", got)
+	}
+
+	slicesAt(8001)
+	if err := m.addLoadBalancer(exact); err != nil {
+		t.Fatalf("addLoadBalancer with the backend's port moved: %v", err)
+	}
+	var sent struct {
+		Endpoints []struct {
+			TargetPort int `json:"targetPort"`
+		} `json:"endpoints"`
+	}
+	if err := json.Unmarshal([]byte(gw.lastBody(t)), &sent); err != nil {
+		t.Fatalf("last rule sent: %v", err)
+	}
+	if len(sent.Endpoints) != 1 || sent.Endpoints[0].TargetPort != 8001 {
+		t.Errorf("last rule's endpoints = %+v, want the one on 8001", sent.Endpoints)
 	}
 }
