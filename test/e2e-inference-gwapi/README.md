@@ -97,7 +97,7 @@ By hand:
 ./config.sh            # ~5 min: kube-loxilb images, network, gateways, OIDC stub, k3d, CRDs, fixtures
 EPP_SRC=~/src/loxilb-inference-gateway IGW_IMAGE=<gateway with "epp"> ./config.sh   # with the picker
 ./validation.sh        # checks 1-9
-./validation-auth.sh   # checks A0-A11, after validation.sh
+./validation-auth.sh   # checks A0-A12, after validation.sh
 ./validation-direct.sh # checks D0-D9, last: it turns on --gatewayAPIDirectRoutes
 ./rmconfig.sh          # teardown; images are kept
 ```
@@ -160,7 +160,8 @@ gateway's defaults read.
 | A8 | with igw2's REST port dropped, the pool's credential annotations are removed: igw1 loses the policy at once; once igw2 answers again, its rule - sent without the policy, which the gateway keeps - is found on read-back and re-added without it | a replace that omits `api_key_auth` keeps the stored one, and the read-back is what catches it on a peer that missed the change |
 | A9 | a second pool on the same listener declaring no policy is held with `ListenerAuthConflict`; once the older pool goes, it takes the listener and is served without a token | the oldest pool's policy holds a listener, and the one that yielded is released |
 | A10 | deleting the `JWTAuthProfile` while a rule names it: `ProfileInUse`, kept on both peers and still served; once nothing names it, it goes from both peers and from the cluster | the finalizer keeps a profile in use, and lets it go after |
-| A11 | no pool rule left on the VIP:port on either peer | everything the checks created is removed |
+| A11 | two open pools on one listener are given `jwt`/`kc` in one command and then have it removed: each time all four rules carry the new policy in under 2s, with no `LoxiLBRejected` on either pool, and requests follow | a rule the gateway refuses while the listener's other rules still declare the old policy is sent again once their pool has had its sync, not after the backoff, and is not reported |
+| A12 | no pool rule left on the VIP:port on either peer | everything the checks created is removed |
 
 A7 also reports, as a `[NOTE]`, whether the old build keeps the rule ids it is sent: one that does
 not has each rule re-added once after it is installed, when it is read back by id.

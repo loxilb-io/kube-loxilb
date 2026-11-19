@@ -66,6 +66,10 @@ type fakeLoxiLB struct {
 	dropFields []string
 	// readBacks counts the GET-by-id requests.
 	readBacks int
+	// onePolicyPerListener refuses a rule declaring another api_key_auth or
+	// jwt_auth_profile than a stored rule on its address, port and protocol,
+	// as the gateway does.
+	onePolicyPerListener bool
 
 	mu     sync.Mutex
 	bodies []string
@@ -98,9 +102,9 @@ func (f *fakeLoxiLB) storeRule(body []byte) {
 }
 
 // dropRules - remove the stored rules a DELETE names by address, port and
-// protocol.
-func (f *fakeLoxiLB) dropRules(urlPath string) {
-	parts := strings.Split(urlPath, "/")
+// protocol, and by model: one that names none matches only rules naming none.
+func (f *fakeLoxiLB) dropRules(u *url.URL) {
+	parts := strings.Split(u.Path, "/")
 	key := map[string]string{}
 	for i := 0; i+1 < len(parts); i++ {
 		switch parts[i] {
@@ -109,11 +113,36 @@ func (f *fakeLoxiLB) dropRules(urlPath string) {
 		}
 	}
 	for id, rule := range f.rules {
+		model, _ := rule["model_name"].(string)
 		if fmt.Sprint(rule["externalIP"]) == key["externalipaddress"] &&
-			fmt.Sprint(rule["port"]) == key["port"] && fmt.Sprint(rule["protocol"]) == key["protocol"] {
+			fmt.Sprint(rule["port"]) == key["port"] && fmt.Sprint(rule["protocol"]) == key["protocol"] &&
+			model == u.Query().Get("model_name") {
 			delete(f.rules, id)
 		}
 	}
+}
+
+// listenerPolicyConflict - whether a stored rule other than the POSTed one,
+// on its address, port and protocol, declares another credential policy.
+func (f *fakeLoxiLB) listenerPolicyConflict(body []byte) bool {
+	var model struct {
+		Service map[string]any `json:"serviceArguments"`
+	}
+	if err := json.Unmarshal(body, &model); err != nil {
+		return false
+	}
+	posted := model.Service
+	for id, rule := range f.rules {
+		if id == posted["id"] || fmt.Sprint(rule["externalIP"]) != fmt.Sprint(posted["externalIP"]) ||
+			fmt.Sprint(rule["port"]) != fmt.Sprint(posted["port"]) || fmt.Sprint(rule["protocol"]) != fmt.Sprint(posted["protocol"]) {
+			continue
+		}
+		if fmt.Sprint(rule["api_key_auth"]) != fmt.Sprint(posted["api_key_auth"]) ||
+			fmt.Sprint(rule["jwt_auth_profile"]) != fmt.Sprint(posted["jwt_auth_profile"]) {
+			return true
+		}
+	}
+	return false
 }
 
 func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
@@ -146,7 +175,7 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			f.deletes++
 			status, result := f.deleteStatus, f.deleteResult
 			if status == 0 {
-				f.dropRules(r.URL.Path)
+				f.dropRules(r.URL)
 			}
 			f.mu.Unlock()
 
@@ -196,6 +225,10 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			answer := fakeAnswer{status: f.createStatus, result: f.createResult}
 			if len(f.createAnswers) > 0 {
 				answer, f.createAnswers = f.createAnswers[0], f.createAnswers[1:]
+			}
+			if answer.status == 0 && f.onePolicyPerListener && f.listenerPolicyConflict(body) {
+				answer = fakeAnswer{status: http.StatusBadRequest, result: "rules that share a listener share its " +
+					"credential policy, so they must declare the same api_key_auth and jwt_auth_profile"}
 			}
 			if answer.status == 0 {
 				f.storeRule(body)
