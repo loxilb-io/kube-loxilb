@@ -146,6 +146,12 @@ type Manager struct {
 	// map write", which ends the process.
 	lbCacheMu sync.Mutex
 
+	// gatewayLister - a gatewayWatch, the Gateways a gateway route Service is
+	// checked against; see gateway_route.go.
+	gatewayLister atomic.Value
+	// serviceIndexer - the Service informer's cache, indexed by the backend a
+	// gateway route reads its endpoints from.
+	serviceIndexer cache.Indexer
 	// poolLister - an infv1lister.InferencePoolLister, stored once the
 	// inference extension is on; see SetInferencePoolLister.
 	poolLister atomic.Value
@@ -158,7 +164,8 @@ type Manager struct {
 	// see SetJWTProfiles.
 	jwtProfiles atomic.Value
 	// peerBackHook - a peerBackHook; see SetPeerBackHook.
-	peerBackHook atomic.Value
+	peerBackHook   atomic.Value
+	peerBackHookMu sync.Mutex
 }
 
 type LbArgs struct {
@@ -189,6 +196,10 @@ type LbArgs struct {
 	endpointProbe       api.EndpointProbe
 	gatewayArgs         api.GatewayArgs
 	gatewayLists        api.GatewayTLSLists
+	// route - the gateway route the Service carries, and the port its
+	// backend's pods serve it on; nil for any other Service.
+	route            *gatewayRoute
+	routeTargetPorts []int
 }
 
 type LbModelEnt struct {
@@ -358,6 +369,8 @@ func NewLoadBalancerManager(
 		resyncPeriod,
 	)
 
+	manager.watchGatewayRouteBackends(serviceInformer.Informer(), endpointSliceInformer.Informer())
+
 	return manager
 }
 
@@ -497,6 +510,33 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		}
 	}
 
+	// A gateway route is one rule on a Gateway listener, served by its
+	// backend Service's endpoints. One that is not trusted is refused rather
+	// than served as a plain Service: it asks for a Gateway's address.
+	route, err := m.gatewayRouteOf(svc)
+	if err != nil {
+		if !errors.Is(err, errGatewaysNotSynced) {
+			klog.Errorf("service %s/%s: %v", svc.Namespace, svc.Name, err)
+			m.recordServiceWarning(svc, ReasonGatewayRouteRefused, err.Error())
+		}
+		return err
+	}
+	if route != nil {
+		var refusal error
+		switch {
+		case !m.declaresFullProxy(svc):
+			refusal = fmt.Errorf("service %s/%s: a gateway route is served in fullproxy mode only: %w", svc.Namespace, svc.Name, ErrGatewayRouteInvalid)
+		case net.ParseIP(svc.Spec.LoadBalancerIP).To4() == nil:
+			// The gateway's proxy listens on IPv4 only; an IPv6 rule is
+			// accepted and its traffic dropped.
+			refusal = fmt.Errorf("service %s/%s: a gateway route is served on an IPv4 address only: %w", svc.Namespace, svc.Name, ErrGatewayRouteInvalid)
+		}
+		if refusal != nil {
+			m.recordServiceWarning(svc, ReasonGatewayRouteRefused, refusal.Error())
+			return refusal
+		}
+	}
+
 	var secIPs []string
 	numSecondarySvc := 0
 	livenessCheck := false
@@ -610,6 +650,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		} else if upn == "no" {
 			usePodNet = false
 		}
+	}
+
+	// A gateway route is served by its backend's pods directly.
+	if route != nil {
+		usePodNet = true
 	}
 
 	// Check for loxilb specific annotations - useExternalEndpoint
@@ -859,7 +904,13 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return err
 	}
 
-	endpointIPs, err := m.getEndpoints(svc, usePodNet, useExternalEndpoint, needMultusEP, epAddrType, matchNodeLabel)
+	var endpointIPs []string
+	var routeTargetPorts []int
+	if route != nil {
+		endpointIPs, routeTargetPorts, err = m.routeEndpoints(route, epAddrType)
+	} else {
+		endpointIPs, err = m.getEndpoints(svc, usePodNet, useExternalEndpoint, needMultusEP, epAddrType, matchNodeLabel)
+	}
 	if err != nil {
 		if !added {
 			klog.V(4).Infof("endpointIPs: %v", endpointIPs)
@@ -908,7 +959,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				Inst:            zoneInstName,
 				ppv2En:          enProxyProtov2,
 				LbServicePairs:  make(map[string]*LbServicePairEntry),
-				ListenerAddr:    listenerAddrOf(svc),
+				ListenerAddr:    m.listenerAddrOf(svc),
 			}
 		}()
 
@@ -1270,6 +1321,8 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			endpointProbe:       m.lbCache[cacheKey].EndpointProbe,
 			gatewayArgs:         m.lbCache[cacheKey].GatewayArgs,
 			gatewayLists:        m.lbCache[cacheKey].GatewayTLSLists,
+			route:               route,
+			routeTargetPorts:    routeTargetPorts,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -1587,6 +1640,14 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 	// model. This must run after the prefLocal branch above, which re-aliases
 	// model.Endpoints back onto the caller's slice.
 	if !c.IsInferenceGateway() {
+		// A gateway route is direct only where every peer is the gateway;
+		// the Gateway API manager chose so, and a peer that joined since
+		// must not take the rule as a plain one.
+		if model.Service.GatewayRoute {
+			err = fmt.Errorf("loxilb-lb(%s) is plain loxilb: %w", c.Host, ErrGatewayRouteOnPlainLoxilb)
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
 		if model.Service.AIArgs.IsSet() || model.Service.Sel.IsInferenceGatewayOnly() {
 			// Refuse loudly. Silently downgrading to non-AI routing would look
 			// like success while serving the wrong traffic policy.
@@ -2347,7 +2408,9 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 
 			var tports []int
 			var err error
-			if lbArgs.needMultusEP || lbArgs.usePodNetwork {
+			if lbArgs.route != nil {
+				tports = lbArgs.routeTargetPorts
+			} else if lbArgs.needMultusEP || lbArgs.usePodNetwork {
 				tports, err = k8s.GetServicePortIntValue(m.kubeClient, svc, port)
 				if err != nil {
 					return api.LoadBalancerModel{}, err
@@ -2417,6 +2480,15 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 	}
 
 	host, pathPrefix, pathMatchMode := inferenceRoutingKey(lbArgs.externalIP, lbArgs.aiArgs, lbArgs.sel)
+	var security int32
+	var backendProtocol api.BackendProtocolType
+	if r := lbArgs.route; r != nil {
+		host, pathPrefix, pathMatchMode = r.host, r.path, r.match
+		backendProtocol = r.backendProtocol
+		if r.tls {
+			security = 1
+		}
+	}
 
 	return api.LoadBalancerModel{
 		Service: api.LoadBalancerService{
@@ -2448,6 +2520,9 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			AIArgs:          lbArgs.aiArgs,
 			GatewayArgs:     lbArgs.gatewayArgs,
 			GatewayTLSLists: lbArgs.gatewayLists,
+			Security:        security,
+			BackendProtocol: backendProtocol,
+			GatewayRoute:    lbArgs.route != nil,
 		},
 		SrcIPs:       loxiLbAllowedSrcIpList,
 		SecondaryIPs: loxiSecIPModelList,

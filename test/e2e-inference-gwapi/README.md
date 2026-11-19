@@ -85,8 +85,8 @@ IGW_REPO=~/go/src/loxilb-io/loxilb-inference-gateway ./build-igw.sh   # gateway 
 ```
 
 `run.sh` survives the terminal that started it. It tears down any previous testbed, runs
-`config.sh`, `validation.sh` and `validation-auth.sh` - the last only when the gateway lists both
-credential features, and reported as skipped otherwise - collects diagnostics, and writes
+`config.sh`, `validation.sh`, `validation-auth.sh` - only when the gateway lists both credential
+features, and reported as skipped otherwise - and `validation-direct.sh`, collects diagnostics, and writes
 `summary.txt` - what was tested, each stage's exit code, every `[FAIL]` and `[NOTE]` line, and
 `RESULT: PASS|FAIL` - then `done`. `_work/results/latest` points at the newest run. The testbed is
 left up afterwards; `KUBECONFIG=_work/kubeconfig` reaches it.
@@ -98,6 +98,7 @@ By hand:
 EPP_SRC=~/src/loxilb-inference-gateway IGW_IMAGE=<gateway with "epp"> ./config.sh   # with the picker
 ./validation.sh        # checks 1-9
 ./validation-auth.sh   # checks A0-A11, after validation.sh
+./validation-direct.sh # checks D0-D9, last: it turns on --gatewayAPIDirectRoutes
 ./rmconfig.sh          # teardown; images are kept
 ```
 
@@ -163,6 +164,29 @@ Check 3 is the one that would have caught a payload regression on a real peer, a
 the ones that would catch the picker being dropped on the way to the gateway. 3a, 3b and 3c all exist because of failures this scenario
 found the first time it ran; 7's rule assertion and 9 exist because creating the routing key in 3a
 made every inference rule undeletable, and nothing here noticed.
+
+### Direct HTTP routes (`validation-direct.sh`)
+
+`fixtures/direct.yaml`: a Gateway `direct-gw` on the testbed's one address with an HTTP listener
+on 8090 and an HTTPS one on 8453, and routes to `socat` backends that answer with their pod name.
+It runs last because it turns on `--gatewayAPIDirectRoutes`, which the build `validation-auth.sh`
+downgrades to does not know.
+
+| # | Check | What it proves |
+|---|---|---|
+| D0 | kube-loxilb rolls out with `--gatewayAPIDirectRoutes` | the flag is accepted with the Gateway API on |
+| D1 | the fixtures, a TLS Secret, a hand-written EndpointSlice for the selector-less `web-manual`, and `shop-api-dup` - younger than `shop-api`, the same host and path once its trailing slash goes | the inputs the rest reads |
+| D2 | one Service per served host and path - three - controlled by `direct-gw` and each reporting the address as installed, in the zone's hostname form | the programmer writes a rule per pair, and the pair `shop-api-dup` lost is not written twice |
+| D3 | on both gateways, `host\|path\|prefix` fullproxy rules on VIP:8090; `/api`'s endpoints are web-a's pods on the target port, `manual.example.com`'s the hand-written ones | the rule's endpoints come from the backend's EndpointSlices, not a selector |
+| D4 | the ingress Service keeps only 8453 and is controlled by `direct-gw`; no Ingress for the HTTP listener, one for the HTTPS one | a listener served directly leaves the Ingress path once its rules are installed; HTTPS still takes it |
+| D5 | `/api/items` reaches web-a, `/cart` and `/apiary` web-b, `manual.example.com` its hand-written endpoints; an unknown host and the header-match route's host get 503 | path prefixes match by segment, and what a rule cannot hold is not served broadly |
+| D6 | `shop-api-dup` is not Accepted (`UnsupportedValue`, served for `web/shop-api`), nor is `headers`; `shop-api` is; `direct-gw` is Programmed | routes say why they are not served, and the Gateway reports the listener as programmed |
+| D7 | scaling web-a to one moves the `/api` rule to it; moving the hand-written EndpointSlice moves `manual.example.com` | endpoint changes are followed without the route changing |
+| D8 | a hand-made Service with the rule label and annotations but no controlling Gateway gets `GatewayRouteRefused`, and no rule | a rule's host and path are only taken from a Service its Gateway controls |
+| D9 | deleting `manual` removes its rule and answers 503; the other two stay | a rule goes with its route |
+
+An upper-case `Host` is reported as a `[NOTE]`: the gateway compares hosts case-sensitively, so
+it gets 503 until it lowercases them.
 
 ## Notes
 

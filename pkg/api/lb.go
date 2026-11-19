@@ -181,6 +181,10 @@ type LoadBalancerService struct {
 	PathMatchMode   PathMatchModeType   `json:"path_match_mode,omitempty"`
 	MtlsFrontend    *MtlsFrontend       `json:"mtls_frontend,omitempty"`
 	MtlsBackend     *MtlsBackend        `json:"mtls_backend,omitempty"`
+	// GatewayRoute - the rule serves an HTTPRoute directly on a Gateway
+	// listener. Never sent: kube-loxilb keeps it to send such a rule to
+	// loxilb-inference-gateway peers only.
+	GatewayRoute bool `json:"-"`
 
 	// AIArgs - loxilb-inference-gateway-only fields. Embedded, not named,
 	// because they sit flat inside serviceArguments on the wire. Promoted

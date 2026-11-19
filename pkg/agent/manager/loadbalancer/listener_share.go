@@ -21,19 +21,24 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// listenerAddrOf - for a Service generated from an InferencePool, the address
-// of the Gateway it is served through, named in loadBalancerIP; "" for any
-// other Service.
+// listenerAddrOf - for a Service generated from an InferencePool, or one a
+// Gateway controls, the address of the Gateway it is served through, named
+// in loadBalancerIP; "" for any other Service.
 //
 // Every pool on a Gateway listener is served on that listener's address and
-// port, and the gateway tells their rules apart by model. The address pool
-// hands an address and port to one Service, so the pools after the first
-// share what the first was given (listenerShare).
-func listenerAddrOf(svc *corev1.Service) string {
-	if svc.Labels[inferencePoolLabel] == "" {
-		return ""
+// port, and the gateway tells their rules apart by model; the gateway routes
+// on one, by host and path. The Gateway's ingress service holds the same
+// address and port while a listener moves between it and the gateway routes:
+// its L4 rule and their fullproxy rules are different rules there. The
+// address pool hands an address and port to one Service, so the Services
+// after the first share what the first was given (listenerShare). A Service
+// counts as the Gateway's only once the Gateway controls it
+// (gateway_route.go).
+func (m *Manager) listenerAddrOf(svc *corev1.Service) string {
+	if svc.Labels[inferencePoolLabel] != "" || m.gatewayControlled(svc) {
+		return svc.Spec.LoadBalancerIP
 	}
-	return svc.Spec.LoadBalancerIP
+	return ""
 }
 
 // listenerShare - the pair another pool on the same Gateway listener holds for

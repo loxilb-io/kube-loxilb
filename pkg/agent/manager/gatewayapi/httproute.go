@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -83,6 +84,10 @@ type HTTPRouteManager struct {
 	serviceListerSynced cache.InformerSynced
 	// Whether InferencePool backendRefs are served at all.
 	servesInferencePools bool
+	// directPeers - set when routes may be served directly on a Gateway's
+	// listeners (direct.go). A listener the ingress service does not carry
+	// then gets no Ingress.
+	directPeers DirectPeers
 
 	queue workqueue.RateLimitingInterface
 }
@@ -178,9 +183,14 @@ func NewHTTPRouteManager(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(cur interface{}) {
 				manager.enqueueServiceRoutes(cur)
+				manager.ingressServiceChanged(cur)
+			},
+			UpdateFunc: func(old, cur interface{}) {
+				manager.ingressServiceChanged(cur)
 			},
 			DeleteFunc: func(old interface{}) {
 				manager.enqueueServiceRoutes(old)
+				manager.ingressServiceChanged(old)
 			},
 		},
 	)
@@ -193,6 +203,101 @@ func NewHTTPRouteManager(
 	)
 
 	return manager
+}
+
+// ServeRoutesDirectly - with the Gateway manager serving routes directly
+// where peers allows it, leave the listeners its ingress service does not
+// carry without an Ingress, and report what a direct rule cannot hold.
+func (h *HTTPRouteManager) ServeRoutesDirectly(peers DirectPeers) {
+	h.directPeers = peers
+}
+
+// EnqueueAll - queue every HTTPRoute; for a change that may move any of
+// them, such as a peer reporting what it is.
+func (h *HTTPRouteManager) EnqueueAll() {
+	routes, err := h.httpRouteLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("unable to list HTTPRoutes: %v", err)
+		return
+	}
+	for _, route := range routes {
+		h.queue.Add(HTTPRouteQueueEntry{route.Namespace, route.Name})
+	}
+}
+
+// ingressServiceChanged - queue the routes of the Gateway whose ingress
+// service it is. Which ports it carries decides which listeners need an
+// Ingress.
+func (h *HTTPRouteManager) ingressServiceChanged(obj interface{}) {
+	if h.directPeers == nil {
+		return
+	}
+	if deletedState, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = deletedState.Obj
+	}
+	svc, ok := obj.(*corev1.Service)
+	if !ok || svc.Annotations["gateway-api-controller"] != h.gatewayProvider {
+		return
+	}
+	gateway := svc.Annotations["parent-gateway"]
+	if gateway == "" || svc.Name != gateway+"-ingress-service" {
+		return
+	}
+	if gw, err := h.gatewayLister.Gateways(svc.Namespace).Get(gateway); err == nil {
+		h.enqueueGatewayRoutes(gw)
+	}
+}
+
+// ingressPortsOf - the ports gw's ingress service carries; nil when routes
+// are not served directly, and every listener goes through it.
+func (h *HTTPRouteManager) ingressPortsOf(gw *v1.Gateway) map[v1.PortNumber]bool {
+	if h.directPeers == nil {
+		return nil
+	}
+	ports := map[v1.PortNumber]bool{}
+	if h.serviceLister == nil {
+		return ports
+	}
+	svc, err := h.serviceLister.Services(gw.Namespace).Get(gw.Name + "-ingress-service")
+	if err != nil {
+		return ports
+	}
+	for _, p := range svc.Spec.Ports {
+		ports[v1.PortNumber(p.Port)] = true
+	}
+	return ports
+}
+
+// directOutcome - what the direct rules of a port came to for one route:
+// whether any rule of it is served, and why parts of it are not.
+func (h *HTTPRouteManager) directOutcome(gw *v1.Gateway, port v1.PortNumber, route types.NamespacedName) (bool, []string) {
+	direct, _ := directPortsOf(gw, h.claimedListenersOf(gw), h.directPeers)
+	if !direct[port] {
+		return false, nil
+	}
+	routes, err := h.httpRouteLister.List(labels.Everything())
+	if err != nil {
+		return false, nil
+	}
+	rules, refusals := directRules(gw, port, directInputs{
+		routes: routes, nsLabels: h.namespaceLabels(), grants: h.referenceGrants, services: h.serviceLister,
+	})
+	served := false
+	for _, r := range rules {
+		if r.route == route {
+			served = true
+			break
+		}
+	}
+	return served, refusals[route]
+}
+
+func (h *HTTPRouteManager) claimedListenersOf(gw *v1.Gateway) map[v1.SectionName]bool {
+	routes, err := h.httpRouteLister.List(labels.Everything())
+	if err != nil {
+		return map[v1.SectionName]bool{}
+	}
+	return claimedListeners(gw, routes)
 }
 
 // SetServesInferencePools - say whether the InferencePool backendRefs of a
@@ -571,6 +676,8 @@ type parentAttachment struct {
 	// Unserved - why a listener the route attaches to cannot serve it, one
 	// for each such listener.
 	Unserved []string
+	// Notes - what listeners that serve the route leave out of it.
+	Notes []string
 }
 
 // routeIngresses - the Ingresses the route should have, one for each listener
@@ -599,7 +706,22 @@ func (h *HTTPRouteManager) routeIngresses(httpRoute *v1.HTTPRoute) ([]*netv1.Ing
 				parent.Attachment.Reason, parent.Attachment.Message)
 		}
 
+		ingressPorts := h.ingressPortsOf(gateway)
 		for _, la := range parent.Attachment.Listeners {
+			if ingressPorts != nil && !ingressPorts[la.Listener.Port] {
+				// Not on the ingress service: served by direct rules, or
+				// not at all. What the direct rules leave out of the route
+				// is said in its status.
+				served, why := h.directOutcome(gateway, la.Listener.Port, types.NamespacedName{Namespace: httpRoute.Namespace, Name: httpRoute.Name})
+				switch {
+				case len(why) == 0:
+				case served:
+					parent.Notes = append(parent.Notes, fmt.Sprintf("listener %s: %s", la.Listener.Name, strings.Join(why, "; ")))
+				default:
+					parent.Unserved = append(parent.Unserved, fmt.Sprintf("listener %s does not serve the route: %s", la.Listener.Name, strings.Join(why, "; ")))
+				}
+				continue
+			}
 			ing, unserved := h.listenerIngress(httpRoute, gateway, la)
 			if unserved != "" {
 				klog.Warningf("HTTPRoute %s/%s: gateway %s/%s %s",

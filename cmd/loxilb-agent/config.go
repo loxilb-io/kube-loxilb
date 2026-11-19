@@ -42,6 +42,9 @@ type AgentConfig struct {
 	EnableGatewayAPI bool `yaml:"gatewayAPI"`
 	// enable the Gateway API Inference Extension (InferencePool)
 	EnableInferenceExtension bool `yaml:"inferenceExtension"`
+	// serve HTTPRoutes as rules of loxilb-inference-gateway on the Gateway's
+	// listeners where every peer is one, instead of through loxilb-ingress
+	GatewayAPIDirectRoutes bool `yaml:"gatewayAPIDirectRoutes"`
 	// support GatewayClass manager name
 	LoxilbGatewayClass string `yaml:"loxilbGatewayClass,omitempty"`
 	// support LoadBalancer external IP

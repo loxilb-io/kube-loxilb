@@ -99,16 +99,26 @@ func (m *Manager) QueueServicesUsingProfile(name string) {
 	klog.V(2).Infof("JWT auth profile %s changed: %d services queued", name, queued)
 }
 
-type peerBackHook struct{ fn func(*api.LoxiClient) }
+type peerBackHook struct{ fns []func(*api.LoxiClient) }
 
 // SetPeerBackHook - fn is called when a peer comes (back) up, before its rules
-// are queued to be put back, so what the rules need can go first.
+// are queued to be put back, so what the rules need can go first. Each call
+// adds one; they are called in the order they were added.
 func (m *Manager) SetPeerBackHook(fn func(*api.LoxiClient)) {
-	m.peerBackHook.Store(peerBackHook{fn: fn})
+	m.peerBackHookMu.Lock()
+	defer m.peerBackHookMu.Unlock()
+	hook, _ := m.peerBackHook.Load().(peerBackHook)
+	fns := make([]func(*api.LoxiClient), 0, len(hook.fns)+1)
+	fns = append(append(fns, hook.fns...), fn)
+	m.peerBackHook.Store(peerBackHook{fns: fns})
 }
 
 func (m *Manager) callPeerBackHook(c *api.LoxiClient) {
-	if hook, ok := m.peerBackHook.Load().(peerBackHook); ok && hook.fn != nil {
-		hook.fn(c)
+	if hook, ok := m.peerBackHook.Load().(peerBackHook); ok {
+		for _, fn := range hook.fns {
+			if fn != nil {
+				fn(c)
+			}
+		}
 	}
 }
