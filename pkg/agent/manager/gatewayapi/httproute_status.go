@@ -72,8 +72,8 @@ func parentAccepted(parent parentAttachment) (bool, string, string) {
 		return false, string(a.Reason), a.Message
 	case len(parent.Unserved) == len(a.Listeners):
 		return false, string(v1.RouteReasonUnsupportedValue), strings.Join(parent.Unserved, "; ")
-	case len(parent.Unserved) > 0:
-		return true, string(v1.RouteReasonAccepted), "Accepted; " + strings.Join(parent.Unserved, "; ")
+	case len(parent.Unserved) > 0 || len(parent.Notes) > 0:
+		return true, string(v1.RouteReasonAccepted), "Accepted; " + strings.Join(append(append([]string(nil), parent.Unserved...), parent.Notes...), "; ")
 	}
 	return true, string(v1.RouteReasonAccepted), ""
 }

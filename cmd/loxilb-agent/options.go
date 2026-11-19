@@ -63,6 +63,7 @@ func (o *Options) addFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&cidr6Pools, "cidr6Pools", cidr6Pools, "CIDR6 Pools")
 	fs.BoolVar(&o.config.EnableGatewayAPI, "gatewayAPI", false, "Enable gateway API managers")
 	fs.BoolVar(&o.config.EnableInferenceExtension, "inferenceExtension", false, "Enable the Gateway API Inference Extension (InferencePool). Requires --gatewayAPI")
+	fs.BoolVar(&o.config.GatewayAPIDirectRoutes, "gatewayAPIDirectRoutes", false, "Serve HTTPRoutes on HTTP listeners as loxilb-inference-gateway rules on the Gateway's address, where every loxilb peer is loxilb-inference-gateway, instead of through loxilb-ingress. Requires --gatewayAPI")
 	fs.BoolVar(&o.config.EnableBGPCRDs, "enableBGPCRDs", false, "Enable BGP CRDs")
 	fs.BoolVar(&o.config.EnableK8sMetadata, "enableK8sMetadata", false, "Enable K8s metadata sync to loxilb")
 	fs.StringVar(&o.config.LoxilbGatewayClass, "loxilbGatewayClass", o.config.LoxilbGatewayClass, "GatewayClass manager Name")
@@ -220,6 +221,9 @@ func (o *Options) validate(args []string) error {
 	// Gateway API managers running.
 	if o.config.EnableInferenceExtension && !o.config.EnableGatewayAPI {
 		return fmt.Errorf("inferenceExtension requires gatewayAPI to be enabled")
+	}
+	if o.config.GatewayAPIDirectRoutes && !o.config.EnableGatewayAPI {
+		return fmt.Errorf("gatewayAPIDirectRoutes requires gatewayAPI to be enabled")
 	}
 
 	if o.config.SetRoles != "" {

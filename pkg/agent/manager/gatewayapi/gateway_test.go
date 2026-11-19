@@ -94,7 +94,7 @@ func TestIngressServicePorts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := portsOf(ingressServicePorts(tc.gateway, tc.claimed))
+			got := portsOf(ingressServicePorts(tc.gateway, tc.claimed, nil))
 			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
 				t.Errorf("ports = %v, want %v", got, tc.want)
 			}

@@ -35,6 +35,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	corelister "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
@@ -73,6 +74,16 @@ type GatewayManager struct {
 	// routeSources - route managers that count their routes on listeners.
 	routeSources   []RouteSource
 	routeSourcesMu sync.Mutex
+	// serviceLister - the generated Services of direct routes, and the
+	// backends they name.
+	serviceLister       corelister.ServiceLister
+	serviceListerSynced cache.InformerSynced
+
+	// directPeers - set when HTTPRoutes may be served directly on a
+	// Gateway's listeners (direct.go); nil serves them through the ingress
+	// service only.
+	directPeers     DirectPeers
+	referenceGrants *ReferenceGrants
 
 	queue workqueue.RateLimitingInterface
 }
@@ -89,6 +100,7 @@ func NewGatewayManager(
 	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
 	gatewayClassInformer := sigsInformerFactory.Gateway().V1().GatewayClasses()
 	namespaceInformer := kubeInformerFactory.Core().V1().Namespaces()
+	serviceInformer := kubeInformerFactory.Core().V1().Services()
 	manager := &GatewayManager{
 		kubeClient:          kubeClient,
 		sigsClient:          sigsClient,
@@ -106,9 +118,21 @@ func NewGatewayManager(
 		gatewayClassListerSynced: gatewayClassInformer.Informer().HasSynced,
 		namespaceLister:          namespaceInformer.Lister(),
 		namespaceListerSynced:    namespaceInformer.Informer().HasSynced,
+		serviceLister:            serviceInformer.Lister(),
+		serviceListerSynced:      serviceInformer.Informer().HasSynced,
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gateway"),
 	}
+
+	// A direct route's Service reports when its rule is on the peers, which
+	// lets the ingress service leave the port.
+	serviceInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    func(cur interface{}) { manager.enqueueServiceGateway(cur) },
+			UpdateFunc: func(old, cur interface{}) { manager.enqueueServiceGateway(cur) },
+			DeleteFunc: func(old interface{}) { manager.enqueueServiceGateway(old) },
+		},
+	)
 
 	// A Gateway is this controller's once its class names it, and the class
 	// may come after the Gateway. A class's controllerName cannot change.
@@ -213,6 +237,47 @@ func (gm *GatewayManager) enqueueClassGateways(obj interface{}) {
 	}
 }
 
+// ServeRoutesDirectly - serve HTTPRoutes on the listeners where peers allows
+// it as direct routes (direct.go), with grants for the backends in other
+// namespaces.
+func (gm *GatewayManager) ServeRoutesDirectly(peers DirectPeers, grants *ReferenceGrants) {
+	gm.directPeers = peers
+	gm.referenceGrants = grants
+	grants.AddHandler(func(v1.ReferenceGrantSpec) { gm.EnqueueAll() })
+}
+
+// EnqueueAll - queue every Gateway; for a change that may move any of them,
+// such as a peer reporting what it is.
+func (gm *GatewayManager) EnqueueAll() {
+	gateways, err := gm.gatewayLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("unable to list gateways: %v", err)
+		return
+	}
+	for _, gw := range gateways {
+		gm.queue.Add(gw)
+	}
+}
+
+// enqueueServiceGateway - queue the Gateway that controls a generated
+// Service.
+func (gm *GatewayManager) enqueueServiceGateway(obj interface{}) {
+	if deletedState, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = deletedState.Obj
+	}
+	svc, ok := obj.(*corev1.Service)
+	if !ok || svc.Labels[gatewayRouteLabel] == "" {
+		return
+	}
+	owner := metav1.GetControllerOf(svc)
+	if owner == nil || owner.Kind != "Gateway" {
+		return
+	}
+	if gw, err := gm.gatewayLister.Gateways(svc.Namespace).Get(owner.Name); err == nil {
+		gm.queue.Add(gw)
+	}
+}
+
 // namespaceUpdated - queue the gateways with a listener that selects
 // namespaces by label, when a namespace's labels change.
 func (gm *GatewayManager) namespaceUpdated(old, cur interface{}) {
@@ -293,7 +358,8 @@ func (gm *GatewayManager) Run(stopCh <-chan struct{}) {
 		gm.gatewayListerSynced,
 		gm.httpRouteListerSynced,
 		gm.gatewayClassListerSynced,
-		gm.namespaceListerSynced) {
+		gm.namespaceListerSynced,
+		gm.serviceListerSynced) {
 		return
 	}
 
@@ -422,11 +488,32 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 		klog.Infof("gateway %s/%s is assigned IP %s", gw.Namespace, gw.Name, newIP.String())
 	}
 
-	// The ingress service first: whether it could be made is part of the
+	// Direct routes first: a port leaves the ingress service only once its
+	// rules are on the peers. A port that goes back to the ingress service
+	// loses its direct routes after the ingress service has it again.
+	desiredDirect, readyDirect := map[string]bool{}, map[v1.PortNumber]bool{}
+	var directErr error
+	if gm.directPeers != nil {
+		direct, why := directPortsOf(updatedGw, gm.listenersClaimedByInferencePools(updatedGw), gm.directPeers)
+		for port, reason := range why {
+			klog.V(2).Infof("gateway %s/%s: port %d is served through the ingress service: %s", updatedGw.Namespace, updatedGw.Name, port, reason)
+		}
+		desiredDirect, readyDirect, directErr = gm.applyDirectRoutes(ctx, updatedGw, direct)
+		if directErr != nil {
+			klog.Errorf("gateway %s/%s: direct routes: %v", updatedGw.Namespace, updatedGw.Name, directErr)
+		}
+	}
+
+	// The ingress service next: whether it could be made is part of the
 	// status.
-	svc, serviceErr := gm.createIngressLbService(ctx, updatedGw)
+	svc, serviceErr := gm.createIngressLbService(ctx, updatedGw, readyDirect)
 	if serviceErr != nil {
 		klog.Errorf("gateway %s/%s failed to create service. err: %v", updatedGw.Namespace, updatedGw.Name, serviceErr)
+	}
+	if serviceErr == nil && directErr == nil {
+		if err := gm.pruneDirectRoutes(ctx, updatedGw, desiredDirect); err != nil {
+			directErr = err
+		}
 	}
 
 	if err := gm.updateGatewayStatus(ctx, updatedGw, serviceErr); err != nil {
@@ -437,6 +524,9 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 	}
 	if serviceErr != nil {
 		return serviceErr
+	}
+	if directErr != nil {
+		return directErr
 	}
 
 	if svc != nil {
@@ -485,7 +575,13 @@ func (gm *GatewayManager) listenersClaimedByInferencePools(gateway *v1.Gateway) 
 		klog.Errorf("gateway %s/%s: unable to list HTTPRoutes: %v", gateway.Namespace, gateway.Name, err)
 		return claimed
 	}
+	return claimedListeners(gateway, routes)
+}
 
+// claimedListeners - the listeners of gateway an InferencePool-backed route
+// among routes attaches to.
+func claimedListeners(gateway *v1.Gateway, routes []*v1.HTTPRoute) map[v1.SectionName]bool {
+	claimed := map[v1.SectionName]bool{}
 	for _, route := range routes {
 		if len(poolsReferencedBy(route)) == 0 {
 			continue
@@ -544,7 +640,7 @@ func (gm *GatewayManager) deleteIngressLbService(ctx context.Context, gwNs, gwNa
 // Returns:
 //   - *corev1.Service: The created or existing Service, or nil if no HTTP/HTTPS listeners exist
 //   - error: Any error encountered during service creation
-func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v1.Gateway) (*corev1.Service, error) {
+func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v1.Gateway, direct map[v1.PortNumber]bool) (*corev1.Service, error) {
 	newService := corev1.Service{}
 	newService.Name = fmt.Sprintf("%s-ingress-service", gateway.Name)
 	newService.Namespace = gateway.Namespace
@@ -555,7 +651,7 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 		return nil, fmt.Errorf("gateway has no external IP address")
 	}
 
-	servicePorts := ingressServicePorts(gateway, gm.listenersClaimedByInferencePools(gateway))
+	servicePorts := ingressServicePorts(gateway, gm.listenersClaimedByInferencePools(gateway), direct)
 
 	// If no HTTP/HTTPS listeners are left to serve, there is no service to
 	// keep - which is also how an ingress service created before a pool
@@ -573,13 +669,29 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	}
 
 	if getErr == nil {
-		if servicePortsEqual(existing.Spec.Ports, servicePorts) {
+		if servicePortsEqual(existing.Spec.Ports, servicePorts) && controlledBy(existing, gateway) {
 			return existing, nil
 		}
 
-		updated := existing.DeepCopy()
-		updated.Spec.Ports = servicePorts
-		svc, err := gm.kubeClient.CoreV1().Services(updated.Namespace).Update(ctx, updated, metav1.UpdateOptions{})
+		// Controlled by the Gateway, so the load-balancer manager lets it
+		// share the Gateway's address and ports with the direct routes while
+		// a port moves between them. The load-balancer manager writes the
+		// same Service's status, so a stale copy is read again rather than
+		// failing the Gateway on it.
+		var svc *corev1.Service
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			updated := existing.DeepCopy()
+			updated.Spec.Ports = servicePorts
+			updated.OwnerReferences = gatewayControllerRef(gateway)
+			var err error
+			svc, err = gm.kubeClient.CoreV1().Services(updated.Namespace).Update(ctx, updated, metav1.UpdateOptions{})
+			if errors.IsConflict(err) {
+				if fresh, getErr := gm.kubeClient.CoreV1().Services(existing.Namespace).Get(ctx, existing.Name, metav1.GetOptions{}); getErr == nil {
+					existing = fresh
+				}
+			}
+			return err
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -599,6 +711,7 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	newService.SetLabels(map[string]string{
 		"implementation": implementation,
 	})
+	newService.OwnerReferences = gatewayControllerRef(gateway)
 
 	loadBalancerClass := gm.networkConfig.LoxilbLoadBalancerClass
 	newService.Spec.Type = corev1.ServiceTypeLoadBalancer
@@ -638,7 +751,7 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 // InferencePool serves for any of its listeners is left to the pool: its
 // Service carries the gateway address and that port already, and a second
 // rule on them would make which one the data plane binds a race.
-func ingressServicePorts(gateway *v1.Gateway, claimed map[v1.SectionName]bool) []corev1.ServicePort {
+func ingressServicePorts(gateway *v1.Gateway, claimed map[v1.SectionName]bool, direct map[v1.PortNumber]bool) []corev1.ServicePort {
 	type port struct {
 		protocol  v1.ProtocolType
 		listeners []v1.SectionName
@@ -659,6 +772,10 @@ func ingressServicePorts(gateway *v1.Gateway, claimed map[v1.SectionName]bool) [
 		}
 		if listener.Port != 0 {
 			number = int32(listener.Port)
+		}
+		// Served by direct routes, whose rules are on the peers already.
+		if direct[v1.PortNumber(number)] {
+			continue
 		}
 
 		p, seen := ports[number]

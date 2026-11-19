@@ -379,6 +379,18 @@ func run(o *Options) error {
 			k8sClient, sigsClient, networkConfig, informerFactory, sigsInformerFactory, referenceGrants)
 		httpRouteManager.SetServesInferencePools(o.config.EnableInferenceExtension)
 
+		// HTTPRoutes on HTTP listeners served as gateway rules directly,
+		// where every peer is the gateway; the others go through the ingress
+		// service as before. A peer that comes up may have changed which.
+		if o.config.GatewayAPIDirectRoutes {
+			gatewayManager.ServeRoutesDirectly(lbManager.GatewayPeers, referenceGrants)
+			httpRouteManager.ServeRoutesDirectly(lbManager.GatewayPeers)
+			lbManager.SetPeerBackHook(func(*api.LoxiClient) {
+				gatewayManager.EnqueueAll()
+				httpRouteManager.EnqueueAll()
+			})
+		}
+
 		// Built before the shared factory starts, because it registers an
 		// HTTPRoute handler on it: an InferencePool only learns which Gateway
 		// serves it from the route that references it.
