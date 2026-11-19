@@ -187,9 +187,10 @@ func (tr *TCPRouteManager) createTCPRoute(tcpRoute *v1alpha2.TCPRoute) error {
 	// find all parent resources
 	for _, parentRef := range tcpRoute.Spec.ParentRefs {
 		// If no namespace is specified, the parent resource is searched for in the same namespace as TCPRoute.
+		// findGateway says which Gateway it could not find, in the namespace
+		// it looked in; parentRef.Namespace is nil whenever it is that one.
 		gateway, err := tr.findGateway(ctx, tcpRoute, parentRef)
 		if err != nil {
-			klog.Errorf("not found gateway %s/%s", string(*parentRef.Namespace), string(parentRef.Name))
 			return err
 		}
 

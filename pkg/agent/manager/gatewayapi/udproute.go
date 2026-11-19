@@ -187,9 +187,10 @@ func (u *UDPRouteManager) createUDPRoute(udpRoute *v1alpha2.UDPRoute) error {
 	// find all parent resources
 	for _, parentRef := range udpRoute.Spec.ParentRefs {
 		// If no namespace is specified, the parent resource is searched for in the same namespace as UDPRoute.
+		// findGateway says which Gateway it could not find, in the namespace
+		// it looked in; parentRef.Namespace is nil whenever it is that one.
 		gateway, err := u.findGateway(ctx, udpRoute, parentRef)
 		if err != nil {
-			klog.Errorf("not found gateway %s/%s", string(*parentRef.Namespace), string(parentRef.Name))
 			return err
 		}
 
