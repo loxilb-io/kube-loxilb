@@ -57,7 +57,7 @@ func cachePairs(m *Manager, svc *corev1.Service, entry *LbCacheEntry, pairs []Sv
 
 // newPoolEntry - the cache entry addLoadBalancer starts a pool's Service with.
 func newPoolEntry(pool *ippool.IPPool, svc *corev1.Service) *LbCacheEntry {
-	return &LbCacheEntry{IPPool: pool, LbServicePairs: map[string]*LbServicePairEntry{}, ListenerAddr: listenerAddrOf(svc)}
+	return &LbCacheEntry{IPPool: pool, LbServicePairs: map[string]*LbServicePairEntry{}, ListenerAddr: (&Manager{}).listenerAddrOf(svc)}
 }
 
 // The pools on one listener share its address and port: the first is given

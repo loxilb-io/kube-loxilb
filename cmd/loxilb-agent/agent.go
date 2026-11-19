@@ -304,6 +304,14 @@ func run(o *Options) error {
 	log.StartLogFileNumberMonitor(stopCh)
 	informerFactory.Start(stopCh)
 
+	// A gateway route Service is trusted once its Gateway controls it. Given
+	// before the manager runs, so that none is judged without the Gateways;
+	// they sync with the other Gateway API informers further down.
+	if o.config.EnableGatewayAPI {
+		gateways := sigsInformerFactory.Gateway().V1().Gateways()
+		lbManager.SetGatewayLister(gateways.Lister(), gateways.Informer().HasSynced)
+	}
+
 	go lbManager.Run(stopCh)
 
 	// JWT auth profiles go on the gateway peers once the JWTAuthProfile CRD

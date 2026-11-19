@@ -91,26 +91,33 @@ func listenerPolicyOf(svc *corev1.Service) [2]string {
 	return [2]string{svc.Annotations[apiKeyAuthAnnotation], svc.Annotations[jwtAuthProfileAnnotation]}
 }
 
-// routeOf - what tells a pool's rule apart from the others on its listener:
-// the model it serves. Every pool on a listener has the same host (the
-// address) and path ("/"), so two pools naming the same model, or none, make
-// the same rule. ok is false for a Service not generated from a pool, whose
-// listener the address pool does not share.
-func routeOf(svc *corev1.Service) (model string, ok bool) {
-	if svc.Labels[inferencePoolLabel] == "" {
-		return "", false
+// routeOf - what tells a rule apart from the others on its listener, and the
+// same in words. ok is false for a Service whose listener the address pool
+// does not share.
+//
+// For a pool, the model it serves: every pool on a listener has the same host
+// (the address) and path ("/"), so two pools naming the same model, or none,
+// make the same rule. For a gateway route, its host and path: the gateway
+// keeps one endpoint pool for a pair, whatever the match mode.
+func (m *Manager) routeOf(svc *corev1.Service) (key, what string, ok bool) {
+	if svc.Labels[inferencePoolLabel] != "" {
+		model := svc.Annotations[modelNameAnnotation]
+		return "model\x00" + model, fmt.Sprintf("serves the same model (%q)", model), true
 	}
-	return svc.Annotations[modelNameAnnotation], true
+	if route := m.trustedGatewayRoute(svc); route != nil {
+		return "route\x00" + route.key(), fmt.Sprintf("serves the same host and path (%q, %q)", route.host, route.path), true
+	}
+	return "", "", false
 }
 
 // conflictOf - why two Services on one listener cannot both be served there,
 // as the reason reported for the one that yields; "" when they can.
-func conflictOf(a, b *corev1.Service) string {
+func (m *Manager) conflictOf(a, b *corev1.Service) string {
 	if listenerPolicyOf(a) != listenerPolicyOf(b) {
 		return ReasonListenerAuthConflict
 	}
-	ra, oka := routeOf(a)
-	rb, okb := routeOf(b)
+	ra, _, oka := m.routeOf(a)
+	rb, _, okb := m.routeOf(b)
 	if oka && okb && ra == rb {
 		return ReasonListenerRouteConflict
 	}
@@ -241,7 +248,7 @@ func (m *Manager) judgeListeners(svc *corev1.Service) listenerVerdict {
 	// only the oldest: unlike a policy, it does not follow from agreeing with
 	// the oldest.
 	for _, other := range rivals {
-		if m.olderThan(other, svc) && conflictOf(other, svc) == ReasonListenerRouteConflict {
+		if m.olderThan(other, svc) && m.conflictOf(other, svc) == ReasonListenerRouteConflict {
 			yield(other, rivalOn[other][0], ReasonListenerRouteConflict)
 		}
 	}
@@ -253,7 +260,7 @@ func (m *Manager) judgeListeners(svc *corev1.Service) listenerVerdict {
 	// where the policies differ, and older than a rival serving its model -
 	// so the rival yields there.
 	for _, other := range rivals {
-		switch conflictOf(svc, other) {
+		switch m.conflictOf(svc, other) {
 		case ReasonListenerAuthConflict:
 			for _, l := range rivalOn[other] {
 				if first, ok := oldest[l]; !ok || m.olderThan(svc, first) {
@@ -321,10 +328,10 @@ func (m *Manager) settleListeners(svc *corev1.Service, cacheKey string) (bool, e
 			"api_key_auth or jwt_auth_profile; the gateway checks one policy for every rule on a listener, "+
 			"so this Service is not served there until the two agree", verdict.listener, rivalKey)
 		if verdict.reason == ReasonListenerRouteConflict {
-			model, _ := routeOf(svc)
-			message = fmt.Sprintf("listener %s is shared with Service %s, which is older and serves the same model "+
-				"(%q); the gateway would hold one rule for both, so this Service is not served there until "+
-				"one of them changes or goes", verdict.listener, rivalKey, model)
+			_, what, _ := m.routeOf(svc)
+			message = fmt.Sprintf("listener %s is shared with Service %s, which is older and %s; the gateway "+
+				"would hold one rule for both, so this Service is not served there until one of them changes "+
+				"or goes", verdict.listener, rivalKey, what)
 		}
 		klog.Errorf("service %s: %s", cacheKey, message)
 		m.recordServiceWarning(svc, verdict.reason, message)
