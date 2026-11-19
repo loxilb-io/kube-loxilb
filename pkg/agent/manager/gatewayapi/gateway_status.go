@@ -317,7 +317,7 @@ func (gm *GatewayManager) enqueueGatewaysOf(routeNamespace string, refs []v1.Par
 			continue
 		}
 		if gw, err := gm.gatewayLister.Gateways(namespace).Get(name); err == nil {
-			gm.queue.Add(gw)
+			gm.enqueue(gw)
 		}
 	}
 }

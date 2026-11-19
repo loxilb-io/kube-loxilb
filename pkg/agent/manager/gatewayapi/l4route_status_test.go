@@ -185,7 +185,7 @@ func TestL4AttachedRoutes(t *testing.T) {
 		t.Errorf("tcp attachedRoutes = %d, want 2", got)
 	}
 	m.enqueueObject(routes[1])
-	if item, ok := queued(t, gm.queue).(*v1.Gateway); !ok || item.Name != "l4-gw" {
+	if item := queued(t, gm.queue); item != GenKey(l4Gateway().Namespace, "l4-gw") {
 		t.Errorf("a route's change queued %v, want its Gateway", item)
 	}
 }

@@ -48,6 +48,9 @@ func TestEnqueueObjectUnwrapsTombstones(t *testing.T) {
 		Status: v1.GatewayStatus{Addresses: []v1.GatewayStatusAddress{{Value: "10.0.0.1"}}},
 	}
 
+	// The Gateway manager a case last built, for its check to read.
+	var gm *GatewayManager
+
 	cases := []struct {
 		name    string
 		obj     interface{}
@@ -70,13 +73,18 @@ func TestEnqueueObjectUnwrapsTombstones(t *testing.T) {
 			name: "Gateway",
 			obj:  gateway,
 			enqueue: func(q workqueue.RateLimitingInterface, obj interface{}) {
-				(&GatewayManager{queue: q}).enqueueObject(obj)
+				gm = &GatewayManager{queue: q}
+				gm.gatewayDeleted(obj)
 			},
 			check: func(t *testing.T, item interface{}) {
-				// The delete returns these addresses to the pool, so the
-				// queued Gateway has to be the one the tombstone carries.
-				if item != gateway {
-					t.Errorf("queued %#v, want the Gateway the tombstone carries", item)
+				if item != "gw-ns/obj" {
+					t.Errorf("queued %#v, want the key %q", item, "gw-ns/obj")
+				}
+				// The delete gives back the address noted on the Gateway,
+				// so the one kept for it has to be what the tombstone
+				// carries.
+				if gone := gm.goneGateways("gw-ns/obj", nil); len(gone) != 1 || gone[0] != gateway {
+					t.Errorf("kept %#v for the delete, want the Gateway the tombstone carries", gone)
 				}
 			},
 		},
