@@ -76,6 +76,8 @@ type HTTPRouteManager struct {
 	// For a listener that takes routes from the namespaces a selector picks.
 	namespaceLister       corev1lister.NamespaceLister
 	namespaceListerSynced cache.InformerSynced
+	// What a backendRef into another namespace needs.
+	referenceGrants *ReferenceGrants
 
 	queue workqueue.RateLimitingInterface
 }
@@ -90,7 +92,8 @@ func NewHTTPRouteManager(
 	sigsClient sigsclientset.Interface,
 	networkConfig *config.NetworkConfig,
 	kubeInformerFactory informers.SharedInformerFactory,
-	sigsInformerFactory externalversions.SharedInformerFactory) *HTTPRouteManager {
+	sigsInformerFactory externalversions.SharedInformerFactory,
+	referenceGrants *ReferenceGrants) *HTTPRouteManager {
 
 	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
 	gatewayInformer := sigsInformerFactory.Gateway().V1().Gateways()
@@ -111,6 +114,7 @@ func NewHTTPRouteManager(
 		gatewayClassListerSynced: gatewayClassInformer.Informer().HasSynced,
 		namespaceLister:          namespaceInformer.Lister(),
 		namespaceListerSynced:    namespaceInformer.Informer().HasSynced,
+		referenceGrants:          referenceGrants,
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "httpRoute"),
 	}
@@ -155,6 +159,10 @@ func NewHTTPRouteManager(
 			},
 		},
 	)
+
+	// A grant that comes or goes lets in or withdraws the backends its
+	// routes have in its namespace.
+	referenceGrants.AddHandler(manager.referenceGrantChanged)
 
 	// A listener can pick the namespaces it takes routes from by label.
 	namespaceInformer.Informer().AddEventHandler(
@@ -258,6 +266,24 @@ func (h *HTTPRouteManager) enqueueClassRoutes(obj interface{}) {
 	}
 }
 
+// referenceGrantChanged - queue the HTTPRoutes of the namespaces a grant lets
+// refer into its own.
+func (h *HTTPRouteManager) referenceGrantChanged(spec v1.ReferenceGrantSpec) {
+	for _, from := range spec.From {
+		if from.Group != v1.GroupName || from.Kind != kindHTTPRoute {
+			continue
+		}
+		routes, err := h.httpRouteLister.HTTPRoutes(string(from.Namespace)).List(labels.Everything())
+		if err != nil {
+			klog.Errorf("namespace %s: unable to list HTTPRoutes: %v", from.Namespace, err)
+			continue
+		}
+		for _, route := range routes {
+			h.queue.Add(HTTPRouteQueueEntry{route.Namespace, route.Name})
+		}
+	}
+}
+
 // namespaceUpdated - queue the routes of a namespace whose labels changed,
 // which a listener's namespace selector reads.
 func (h *HTTPRouteManager) namespaceUpdated(old, cur interface{}) {
@@ -290,6 +316,9 @@ func (h *HTTPRouteManager) Run(stopCh <-chan struct{}) {
 		h.gatewayListerSynced,
 		h.gatewayClassListerSynced,
 		h.namespaceListerSynced) {
+		return
+	}
+	if !h.referenceGrants.WaitForSync(stopCh) {
 		return
 	}
 
@@ -667,8 +696,9 @@ func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.
 }
 
 // rulePaths - the Ingress paths of one route rule, one for each match and
-// backend an Ingress can carry. A backend in another namespace is noted on
-// ing, where loxilb-ingress looks for it.
+// backend an Ingress can carry. A backend in another namespace is left out
+// unless a ReferenceGrant there permits it, and noted on ing, where
+// loxilb-ingress looks for it, when one does.
 func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteRule, ing *netv1.Ingress) []netv1.HTTPIngressPath {
 	var paths []netv1.HTTPIngressPath
 	for _, match := range rule.Matches {
@@ -692,11 +722,17 @@ func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteR
 				continue
 			}
 
-			if backref.Namespace != nil {
-				if ing.Namespace != string(*backref.Namespace) {
-					ing.Annotations["external-backend-service"] = "true"
-					ing.Annotations["service-"+string(backref.Name)+"-namespace"] = string(*backref.Namespace)
+			if backref.Namespace != nil && string(*backref.Namespace) != httpRoute.Namespace {
+				if !h.referenceGrants.Permits(
+					grantReference{Group: v1.GroupName, Kind: kindHTTPRoute, Namespace: httpRoute.Namespace},
+					grantReference{Group: "", Kind: "Service", Namespace: string(*backref.Namespace), Name: string(backref.Name)},
+				) {
+					klog.Warningf("HTTPRoute %s/%s: no ReferenceGrant in namespace %s permits backendRef %s - skipping",
+						httpRoute.Namespace, httpRoute.Name, *backref.Namespace, backendRefDescription(backref.BackendObjectReference))
+					continue
 				}
+				ing.Annotations["external-backend-service"] = "true"
+				ing.Annotations["service-"+string(backref.Name)+"-namespace"] = string(*backref.Namespace)
 			}
 
 			newIngressPath := netv1.HTTPIngressPath{

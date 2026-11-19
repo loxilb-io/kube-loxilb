@@ -535,3 +535,67 @@ func TestNamespaceUpdated(t *testing.T) {
 		t.Errorf("a label change queued %v, want only %v", got, want)
 	}
 }
+
+// A backendRef into another namespace is served only while a ReferenceGrant
+// there permits it. It used to be served on the route's word alone.
+func TestSyncHTTPRouteFollowsReferenceGrants(t *testing.T) {
+	route := webRoute()
+	section := v1.SectionName("http")
+	route.Spec.ParentRefs[0].SectionName = &section
+	route.Spec.Rules[0].BackendRefs[0].Namespace = namespacePtr("backends")
+	name := listenerIngressName("web", "llm", "web-gw", "http")
+
+	t.Run("without a grant", func(t *testing.T) {
+		h := servingManager([]*v1.Gateway{webGateway()})
+		h.referenceGrants = staticGrants()
+		if err := h.syncHTTPRoute(route); err != nil {
+			t.Fatalf("syncHTTPRoute: %v", err)
+		}
+		if got := ingressesIn(t, h, "llm"); len(got) != 0 {
+			t.Errorf("got %d Ingresses for a backend no grant permits", len(got))
+		}
+	})
+
+	t.Run("with a grant, then without", func(t *testing.T) {
+		h := servingManager([]*v1.Gateway{webGateway()})
+		h.referenceGrants = staticGrants(referenceGrant("backends", "web", grantSpec(kindHTTPRoute, "llm", "web")))
+		if err := h.syncHTTPRoute(route); err != nil {
+			t.Fatalf("syncHTTPRoute: %v", err)
+		}
+		ing, ok := ingressesIn(t, h, "llm")[name]
+		if !ok {
+			t.Fatal("no Ingress for a backend a grant permits")
+		}
+		if ing.Annotations["external-backend-service"] != "true" || ing.Annotations["service-web-namespace"] != "backends" {
+			t.Errorf("the Ingress does not say where the backend is: %v", ing.Annotations)
+		}
+
+		// The grant is withdrawn, and the route queued by it: the backend
+		// goes with it.
+		h.referenceGrants = staticGrants()
+		if err := h.syncHTTPRoute(route); err != nil {
+			t.Fatalf("syncHTTPRoute after the grant went: %v", err)
+		}
+		if _, ok := ingressesIn(t, h, "llm")[name]; ok {
+			t.Error("the Ingress outlived the grant")
+		}
+	})
+}
+
+func TestReferenceGrantChangedQueuesItsRoutes(t *testing.T) {
+	routes := []*v1.HTTPRoute{
+		routeNaming("apps", "in-apps", v1.ParentReference{Name: "gw"}),
+		routeNaming("llm", "in-llm", v1.ParentReference{Name: "gw"}),
+		routeNaming("tcp", "in-tcp", v1.ParentReference{Name: "gw"}),
+	}
+	h := withRouteObjects(httpRouteTestManager(), routes)
+
+	spec := grantSpec(kindHTTPRoute, "apps", "")
+	spec.From = append(spec.From, v1.ReferenceGrantFrom{Group: v1.GroupName, Kind: kindTCPRoute, Namespace: "tcp"})
+	h.referenceGrantChanged(spec)
+
+	want := HTTPRouteQueueEntry{"apps", "in-apps"}
+	if got := drained(h.queue); len(got) != 1 || !got[want] {
+		t.Errorf("the grant queued %v, want only %v", got, want)
+	}
+}

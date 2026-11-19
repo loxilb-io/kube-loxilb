@@ -361,8 +361,14 @@ func run(o *Options) error {
 		gatewayManager := gatewayapi.NewGatewayManager(
 			k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
 
+		// What a route refers to in another namespace needs a grant there.
+		// The grants are watched once their CRD exists; a route manager
+		// waits for them only for a while before it starts.
+		referenceGrants := gatewayapi.NewReferenceGrants()
+		go referenceGrants.Run(stopCh, k8sExtClient, sigsInformerFactory)
+
 		httpRouteManager := gatewayapi.NewHTTPRouteManager(
-			k8sClient, sigsClient, networkConfig, informerFactory, sigsInformerFactory)
+			k8sClient, sigsClient, networkConfig, informerFactory, sigsInformerFactory, referenceGrants)
 
 		// Built before the shared factory starts, because it registers an
 		// HTTPRoute handler on it: an InferencePool only learns which Gateway
