@@ -111,9 +111,12 @@ func (h *HTTPRouteManager) enqueueObject(obj interface{}) {
 			klog.Errorf("Received unexpected object: %v", obj)
 			return
 		}
-		httpRoute, ok = obj.(*v1.HTTPRoute)
+		// A delete the watch missed arrives as a tombstone. The HTTPRoute
+		// is the object it wraps, not the tombstone itself.
+		httpRoute, ok = deletedState.Obj.(*v1.HTTPRoute)
 		if !ok {
-			klog.Errorf("DeletedFinalStateUnknown contains non-Service object: %v", deletedState.Obj)
+			klog.Errorf("DeletedFinalStateUnknown contains non-HTTPRoute object: %v", deletedState.Obj)
+			return
 		}
 	}
 

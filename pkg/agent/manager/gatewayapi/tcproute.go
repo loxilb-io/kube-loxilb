@@ -110,9 +110,12 @@ func (tr *TCPRouteManager) enqueueObject(obj interface{}) {
 			klog.Errorf("Received unexpected object: %v", obj)
 			return
 		}
-		tcpRoute, ok = obj.(*v1alpha2.TCPRoute)
+		// A delete the watch missed arrives as a tombstone. The TCPRoute is
+		// the object it wraps, not the tombstone itself.
+		tcpRoute, ok = deletedState.Obj.(*v1alpha2.TCPRoute)
 		if !ok {
-			klog.Errorf("DeletedFinalStateUnknown contains non-Service object: %v", deletedState.Obj)
+			klog.Errorf("DeletedFinalStateUnknown contains non-TCPRoute object: %v", deletedState.Obj)
+			return
 		}
 	}
 

@@ -110,9 +110,12 @@ func (u *UDPRouteManager) enqueueObject(obj interface{}) {
 			klog.Errorf("Received unexpected object: %v", obj)
 			return
 		}
-		udpRoute, ok = obj.(*v1alpha2.UDPRoute)
+		// A delete the watch missed arrives as a tombstone. The UDPRoute is
+		// the object it wraps, not the tombstone itself.
+		udpRoute, ok = deletedState.Obj.(*v1alpha2.UDPRoute)
 		if !ok {
-			klog.Errorf("DeletedFinalStateUnknown contains non-Service object: %v", deletedState.Obj)
+			klog.Errorf("DeletedFinalStateUnknown contains non-UDPRoute object: %v", deletedState.Obj)
+			return
 		}
 	}
 
