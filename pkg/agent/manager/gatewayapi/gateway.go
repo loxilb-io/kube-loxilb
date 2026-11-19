@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -430,12 +431,9 @@ func (gm *GatewayManager) deleteIngressLbService(ctx context.Context, gwNs, gwNa
 }
 
 // createIngressLbService creates a LoadBalancer Service for the Gateway.
-// It extracts HTTP/HTTPS listeners from the Gateway spec and creates corresponding service ports.
-// Service is only created if there are HTTP or HTTPS protocol listeners.
-//
-// Port mapping:
-//   - Service Port: Uses the port specified in the listener (defaults to 80 for HTTP, 443 for HTTPS)
-//   - TargetPort: Always uses standard ports (80 for HTTP, 443 for HTTPS)
+// Its ports are those of the Gateway's HTTP and HTTPS listeners, as
+// ingressServicePorts gives them. Service is only created if there are
+// HTTP or HTTPS protocol listeners.
 //
 // Returns:
 //   - *corev1.Service: The created or existing Service, or nil if no HTTP/HTTPS listeners exist
@@ -451,43 +449,7 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 		return nil, fmt.Errorf("gateway has no external IP address")
 	}
 
-	// Extract HTTP/HTTPS listeners and their ports
-	claimed := gm.listenersClaimedByInferencePools(gateway)
-	var servicePorts []corev1.ServicePort
-	for _, listener := range gateway.Spec.Listeners {
-		if claimed[listener.Name] {
-			// An InferencePool serves this listener, and its Service already
-			// carries the gateway address and the listener port. Adding this
-			// one would put a second rule on the same address and port, and
-			// which of the two the data plane binds is then a race.
-			klog.Infof("gateway %s/%s: listener %s is served by an InferencePool - no ingress service port for it",
-				gateway.Namespace, gateway.Name, listener.Name)
-			continue
-		}
-		if listener.Protocol == v1.HTTPProtocolType {
-			port := int32(httpPort) // default 80
-			if listener.Port != 0 {
-				port = int32(listener.Port)
-			}
-			servicePorts = append(servicePorts, corev1.ServicePort{
-				Name:       string(listener.Name),
-				Port:       port,
-				TargetPort: intstr.FromInt(httpPort), // Always use default HTTP port 80
-				Protocol:   corev1.ProtocolTCP,
-			})
-		} else if listener.Protocol == v1.HTTPSProtocolType {
-			port := int32(httpsPort) // default 443
-			if listener.Port != 0 {
-				port = int32(listener.Port)
-			}
-			servicePorts = append(servicePorts, corev1.ServicePort{
-				Name:       string(listener.Name),
-				Port:       port,
-				TargetPort: intstr.FromInt(httpsPort), // Always use default HTTPS port 443
-				Protocol:   corev1.ProtocolTCP,
-			})
-		}
-	}
+	servicePorts := ingressServicePorts(gateway, gm.listenersClaimedByInferencePools(gateway))
 
 	// If no HTTP/HTTPS listeners are left to serve, there is no service to
 	// keep - which is also how an ingress service created before a pool
@@ -549,4 +511,86 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	}
 
 	return svc, nil
+}
+
+// ingressServicePorts - the ports of a Gateway's ingress service: one for each
+// port its HTTP and HTTPS listeners use, however many of them share it.
+//
+// Port mapping:
+//   - Service Port: the listener's port (80 for HTTP, 443 for HTTPS when unset)
+//   - TargetPort: always the standard one (80 for HTTP, 443 for HTTPS), where
+//     loxilb-ingress listens
+//
+// Listeners on one port with different hostnames are how a Gateway serves
+// several hosts there, and loxilb-ingress tells them apart by host. A Service
+// takes each port once, so a port for each listener made the API server
+// refuse the whole Service. A port is named for its protocol and number: a
+// listener name may be longer than a port name can be, and may hold dots.
+//
+// The first listener on a port decides its protocol; one of the other
+// protocol there is left out, as the two cannot share it. A port that an
+// InferencePool serves for any of its listeners is left to the pool: its
+// Service carries the gateway address and that port already, and a second
+// rule on them would make which one the data plane binds a race.
+func ingressServicePorts(gateway *v1.Gateway, claimed map[v1.SectionName]bool) []corev1.ServicePort {
+	type port struct {
+		protocol  v1.ProtocolType
+		listeners []v1.SectionName
+		claimedBy v1.SectionName
+	}
+	ports := map[int32]*port{}
+	var order []int32
+
+	for _, listener := range gateway.Spec.Listeners {
+		var number int32
+		switch listener.Protocol {
+		case v1.HTTPProtocolType:
+			number = httpPort
+		case v1.HTTPSProtocolType:
+			number = httpsPort
+		default:
+			continue
+		}
+		if listener.Port != 0 {
+			number = int32(listener.Port)
+		}
+
+		p, seen := ports[number]
+		if !seen {
+			p = &port{protocol: listener.Protocol}
+			ports[number] = p
+			order = append(order, number)
+		}
+		if p.protocol != listener.Protocol {
+			klog.Warningf("gateway %s/%s: listener %s is %s on port %d, which listener %s has as %s - no ingress service port for it",
+				gateway.Namespace, gateway.Name, listener.Name, listener.Protocol, number, p.listeners[0], p.protocol)
+			continue
+		}
+		p.listeners = append(p.listeners, listener.Name)
+		if claimed[listener.Name] && p.claimedBy == "" {
+			p.claimedBy = listener.Name
+		}
+	}
+
+	var servicePorts []corev1.ServicePort
+	for _, number := range order {
+		p := ports[number]
+		if p.claimedBy != "" {
+			klog.Infof("gateway %s/%s: listener %s is served by an InferencePool - no ingress service port %d for listeners %v",
+				gateway.Namespace, gateway.Name, p.claimedBy, number, p.listeners)
+			continue
+		}
+
+		target := httpPort
+		if p.protocol == v1.HTTPSProtocolType {
+			target = httpsPort
+		}
+		servicePorts = append(servicePorts, corev1.ServicePort{
+			Name:       fmt.Sprintf("%s-%d", strings.ToLower(string(p.protocol)), number),
+			Port:       number,
+			TargetPort: intstr.FromInt(target),
+			Protocol:   corev1.ProtocolTCP,
+		})
+	}
+	return servicePorts
 }
