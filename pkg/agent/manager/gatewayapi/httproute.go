@@ -25,6 +25,7 @@ import (
 	netv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -58,6 +59,8 @@ type HTTPRouteManager struct {
 	httpRouteInformer     sigs_v1_informer.HTTPRouteInformer
 	httpRouteLister       sigs_v1_lister.HTTPRouteLister
 	httpRouteListerSynced cache.InformerSynced
+	gatewayLister         sigs_v1_lister.GatewayLister
+	gatewayListerSynced   cache.InformerSynced
 
 	queue workqueue.RateLimitingInterface
 }
@@ -74,6 +77,7 @@ func NewHTTPRouteManager(
 	sigsInformerFactory externalversions.SharedInformerFactory) *HTTPRouteManager {
 
 	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
+	gatewayInformer := sigsInformerFactory.Gateway().V1().Gateways()
 	manager := &HTTPRouteManager{
 		kubeClient:            kubeClient,
 		sigsClient:            sigsClient,
@@ -82,6 +86,8 @@ func NewHTTPRouteManager(
 		httpRouteInformer:     httpRouteInformer,
 		httpRouteLister:       httpRouteInformer.Lister(),
 		httpRouteListerSynced: httpRouteInformer.Informer().HasSynced,
+		gatewayLister:         gatewayInformer.Lister(),
+		gatewayListerSynced:   gatewayInformer.Informer().HasSynced,
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "httpRoute"),
 	}
@@ -96,6 +102,20 @@ func NewHTTPRouteManager(
 			},
 			DeleteFunc: func(old interface{}) {
 				manager.enqueueObject(old)
+			},
+		},
+	)
+
+	// What a route attaches to is read from its Gateways, so a change to one
+	// has to reach the routes that name it.
+	gatewayInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(cur interface{}) {
+				manager.enqueueGatewayRoutes(cur)
+			},
+			UpdateFunc: manager.gatewayUpdated,
+			DeleteFunc: func(old interface{}) {
+				manager.enqueueGatewayRoutes(old)
 			},
 		},
 	)
@@ -123,6 +143,50 @@ func (h *HTTPRouteManager) enqueueObject(obj interface{}) {
 	h.queue.Add(HTTPRouteQueueEntry{httpRoute.Namespace, httpRoute.Name})
 }
 
+// gatewayUpdated - queue the routes of a Gateway whose spec changed. A status
+// write leaves the generation alone and changes nothing a route reads; the
+// Gateway manager writes one each time it handles a route's Gateway.
+func (h *HTTPRouteManager) gatewayUpdated(old, cur interface{}) {
+	oldGw, okOld := old.(*v1.Gateway)
+	curGw, okCur := cur.(*v1.Gateway)
+	if okOld && okCur && oldGw.Generation == curGw.Generation {
+		return
+	}
+	h.enqueueGatewayRoutes(cur)
+}
+
+// enqueueGatewayRoutes - queue the HTTPRoutes that name a Gateway as a parent.
+func (h *HTTPRouteManager) enqueueGatewayRoutes(obj interface{}) {
+	gw, ok := obj.(*v1.Gateway)
+	if !ok {
+		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			klog.Errorf("Received unexpected object: %v", obj)
+			return
+		}
+		gw, ok = deletedState.Obj.(*v1.Gateway)
+		if !ok {
+			klog.Errorf("DeletedFinalStateUnknown contains non-Gateway object: %v", deletedState.Obj)
+			return
+		}
+	}
+
+	routes, err := h.httpRouteLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("gateway %s/%s: unable to list HTTPRoutes: %v", gw.Namespace, gw.Name, err)
+		return
+	}
+	for _, route := range routes {
+		for _, ref := range route.Spec.ParentRefs {
+			namespace, name, ok := gatewayOf(route.Namespace, ref)
+			if ok && namespace == gw.Namespace && name == gw.Name {
+				h.queue.Add(HTTPRouteQueueEntry{route.Namespace, route.Name})
+				break
+			}
+		}
+	}
+}
+
 func (h *HTTPRouteManager) Run(stopCh <-chan struct{}) {
 	defer h.queue.ShutDown()
 
@@ -132,7 +196,8 @@ func (h *HTTPRouteManager) Run(stopCh <-chan struct{}) {
 	if !cache.WaitForNamedCacheSync(
 		httpRouteMgrName,
 		stopCh,
-		h.httpRouteListerSynced) {
+		h.httpRouteListerSynced,
+		h.gatewayListerSynced) {
 		return
 	}
 
@@ -195,15 +260,12 @@ func (h *HTTPRouteManager) createHTTPRoute(httpRoute *v1.HTTPRoute) error {
 
 	// find all parent resources
 	for _, parentRef := range httpRoute.Spec.ParentRefs {
-		// findGateway says which Gateway it could not find, in the namespace
-		// it looked in.
-		gateway, err := h.findGateway(ctx, httpRoute, parentRef)
+		gateway, err := h.findGateway(httpRoute, parentRef)
 		if err != nil {
 			return err
 		}
-
-		if len(gateway.Status.Addresses) == 0 {
-			return fmt.Errorf("gateway %s/%s has no addresses assigned", gateway.Namespace, gateway.Name)
+		if gateway == nil {
+			continue
 		}
 
 		listener := h.findListener(gateway, parentRef)
@@ -259,19 +321,23 @@ func (h *HTTPRouteManager) deleteRouteIngresses(ctx context.Context, namespace, 
 	return nil
 }
 
-func (h *HTTPRouteManager) findGateway(ctx context.Context, httpRoute *v1.HTTPRoute, parentRef v1.ParentReference) (*v1.Gateway, error) {
-	var gatewayNamespace string
-	if parentRef.Namespace != nil {
-		gatewayNamespace = string(*parentRef.Namespace)
-	} else {
-		gatewayNamespace = httpRoute.Namespace
+// findGateway - the Gateway a parentRef names, or nil when it names none that
+// exists yet. A Gateway applied after its routes queues them when it comes,
+// so the route has nothing to retry until then.
+func (h *HTTPRouteManager) findGateway(httpRoute *v1.HTTPRoute, parentRef v1.ParentReference) (*v1.Gateway, error) {
+	gatewayNamespace, gatewayName, ok := gatewayOf(httpRoute.Namespace, parentRef)
+	if !ok {
+		klog.V(4).Infof("HTTPRoute %s/%s: parentRef %s is not a Gateway", httpRoute.Namespace, httpRoute.Name, parentRef.Name)
+		return nil, nil
 	}
 
-	gatewayName := string(parentRef.Name)
-	gateway, err := h.sigsClient.GatewayV1().Gateways(gatewayNamespace).Get(ctx, gatewayName, metav1.GetOptions{})
+	gateway, err := h.gatewayLister.Gateways(gatewayNamespace).Get(gatewayName)
+	if errors.IsNotFound(err) {
+		klog.Infof("HTTPRoute %s/%s: gateway %s/%s does not exist yet", httpRoute.Namespace, httpRoute.Name, gatewayNamespace, gatewayName)
+		return nil, nil
+	}
 	if err != nil {
-		klog.Errorf("HTTPRoute %s/%s parentRefs gateway %s/%s found failure. err: %v", httpRoute.Namespace, httpRoute.Name, gatewayNamespace, gatewayName, err)
-		return nil, err
+		return nil, fmt.Errorf("HTTPRoute %s/%s: get gateway %s/%s: %w", httpRoute.Namespace, httpRoute.Name, gatewayNamespace, gatewayName, err)
 	}
 
 	return gateway, nil
