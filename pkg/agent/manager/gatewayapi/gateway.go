@@ -19,6 +19,7 @@ package gatewayapi
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path"
 	"strings"
 	"time"
@@ -29,7 +30,9 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
+	corelister "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -62,6 +65,10 @@ type GatewayManager struct {
 	// gatewayClassLister - to tell this controller's Gateways from others'.
 	gatewayClassLister       sigslister.GatewayClassLister
 	gatewayClassListerSynced cache.InformerSynced
+	// namespaceLister - for a listener that takes routes from the namespaces
+	// a selector picks, when its attached routes are counted.
+	namespaceLister       corelister.NamespaceLister
+	namespaceListerSynced cache.InformerSynced
 
 	queue workqueue.RateLimitingInterface
 }
@@ -71,11 +78,13 @@ func NewGatewayManager(
 	sigsClient sigsclientset.Interface,
 	networkConfig *config.NetworkConfig,
 	externalIPPool *ippool.IPPool,
+	kubeInformerFactory informers.SharedInformerFactory,
 	sigsInformerFactory externalversions.SharedInformerFactory) *GatewayManager {
 
 	gatewayInformer := sigsInformerFactory.Gateway().V1().Gateways()
 	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
 	gatewayClassInformer := sigsInformerFactory.Gateway().V1().GatewayClasses()
+	namespaceInformer := kubeInformerFactory.Core().V1().Namespaces()
 	manager := &GatewayManager{
 		kubeClient:          kubeClient,
 		sigsClient:          sigsClient,
@@ -91,6 +100,8 @@ func NewGatewayManager(
 
 		gatewayClassLister:       gatewayClassInformer.Lister(),
 		gatewayClassListerSynced: gatewayClassInformer.Informer().HasSynced,
+		namespaceLister:          namespaceInformer.Lister(),
+		namespaceListerSynced:    namespaceInformer.Informer().HasSynced,
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gateway"),
 	}
@@ -106,11 +117,24 @@ func NewGatewayManager(
 
 	// A route attaching an InferencePool to a listener changes what this
 	// gateway should expose, and touches no Gateway object.
+	// It also changes how many routes attach to a listener, the Gateways a
+	// route leaves included.
 	httpRouteInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(cur interface{}) { manager.enqueueRouteGateways(cur) },
-			UpdateFunc: func(old, cur interface{}) { manager.enqueueRouteGateways(cur) },
+			AddFunc: func(cur interface{}) { manager.enqueueRouteGateways(cur) },
+			UpdateFunc: func(old, cur interface{}) {
+				manager.enqueueRouteGateways(old)
+				manager.enqueueRouteGateways(cur)
+			},
 			DeleteFunc: func(old interface{}) { manager.enqueueRouteGateways(old) },
+		},
+	)
+
+	// A namespace's labels decide which routes a listener with a namespace
+	// selector takes.
+	namespaceInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			UpdateFunc: manager.namespaceUpdated,
 		},
 	)
 
@@ -185,6 +209,31 @@ func (gm *GatewayManager) enqueueClassGateways(obj interface{}) {
 	}
 }
 
+// namespaceUpdated - queue the gateways with a listener that selects
+// namespaces by label, when a namespace's labels change.
+func (gm *GatewayManager) namespaceUpdated(old, cur interface{}) {
+	oldNs, okOld := old.(*corev1.Namespace)
+	curNs, okCur := cur.(*corev1.Namespace)
+	if !okOld || !okCur || maps.Equal(oldNs.Labels, curNs.Labels) {
+		return
+	}
+
+	gateways, err := gm.gatewayLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("namespace %s: unable to list gateways: %v", curNs.Name, err)
+		return
+	}
+	for _, gw := range gateways {
+		for _, l := range gw.Spec.Listeners {
+			if l.AllowedRoutes != nil && l.AllowedRoutes.Namespaces != nil &&
+				l.AllowedRoutes.Namespaces.From != nil && *l.AllowedRoutes.Namespaces.From == v1.NamespacesFromSelector {
+				gm.queue.Add(gw)
+				break
+			}
+		}
+	}
+}
+
 // servesGateway - whether the Gateway's class names this controller.
 func (gm *GatewayManager) servesGateway(gw *v1.Gateway) bool {
 	gc, err := gm.gatewayClassLister.Get(string(gw.Spec.GatewayClassName))
@@ -239,7 +288,8 @@ func (gm *GatewayManager) Run(stopCh <-chan struct{}) {
 		stopCh,
 		gm.gatewayListerSynced,
 		gm.httpRouteListerSynced,
-		gm.gatewayClassListerSynced) {
+		gm.gatewayClassListerSynced,
+		gm.namespaceListerSynced) {
 		return
 	}
 
@@ -368,51 +418,27 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 		klog.Infof("gateway %s/%s is assigned IP %s", gw.Namespace, gw.Name, newIP.String())
 	}
 
-	// update Gateway status. If fail, no return error
-	for _, specAddress := range updatedGw.Spec.Addresses {
-		found := false
-		for _, statusAddress := range updatedGw.Status.Addresses {
-			if statusAddress.Value == specAddress.Value {
-				found = true
-				break
-			}
-		}
-		if !found {
-			updatedGw.Status.Addresses = append(updatedGw.Status.Addresses, v1.GatewayStatusAddress(specAddress))
-		}
+	// The ingress service first: whether it could be made is part of the
+	// status.
+	svc, serviceErr := gm.createIngressLbService(ctx, updatedGw)
+	if serviceErr != nil {
+		klog.Errorf("gateway %s/%s failed to create service. err: %v", updatedGw.Namespace, updatedGw.Name, serviceErr)
 	}
 
-	for i := range updatedGw.Status.Conditions {
-		if updatedGw.Status.Conditions[i].Type == string(v1.GatewayConditionAccepted) {
-			updatedGw.Status.Conditions[i].Status = metav1.ConditionTrue
-			updatedGw.Status.Conditions[i].Message = "managed by kube-loxilb"
-			updatedGw.Status.Conditions[i].Reason = string(v1.GatewayReasonAccepted)
-			updatedGw.Status.Conditions[i].LastTransitionTime = metav1.Now()
-			klog.V(4).Infof("gateway %s is accepted.", updatedGw.Name)
-
-		} else if updatedGw.Status.Conditions[i].Type == string(v1.GatewayConditionProgrammed) {
-			updatedGw.Status.Conditions[i].Status = metav1.ConditionTrue
-			updatedGw.Status.Conditions[i].Message = "managed by kube-loxilb"
-			updatedGw.Status.Conditions[i].Reason = string(v1.GatewayReasonProgrammed)
-			updatedGw.Status.Conditions[i].LastTransitionTime = metav1.Now()
-			klog.V(4).Infof("gateway %s is programmed.", updatedGw.Name)
-		}
-	}
-	newGw, err := gm.sigsClient.GatewayV1().Gateways(updatedGw.Namespace).UpdateStatus(ctx, updatedGw, metav1.UpdateOptions{})
-	if err != nil {
+	if err := gm.updateGatewayStatus(ctx, updatedGw, serviceErr); err != nil {
 		klog.Errorf("gateway %s/%s unable to update gateway status. err: %v", updatedGw.Namespace, updatedGw.Name, err)
+		if serviceErr == nil {
+			return err
+		}
 	}
-
-	svc, err := gm.createIngressLbService(ctx, newGw)
-	if err != nil {
-		klog.Errorf("gateway %s/%s failed to create service. err: %v", updatedGw.Namespace, updatedGw.Name, err)
-		return err
+	if serviceErr != nil {
+		return serviceErr
 	}
 
 	if svc != nil {
-		klog.Infof("gateway %s/%s is assigned an IP %v and created a service %s/%s.", updatedGw.Namespace, updatedGw.Name, updatedGw.Status.Addresses, svc.Namespace, svc.Name)
+		klog.Infof("gateway %s/%s is assigned an IP %v and created a service %s/%s.", updatedGw.Namespace, updatedGw.Name, updatedGw.Spec.Addresses, svc.Namespace, svc.Name)
 	} else {
-		klog.Infof("gateway %s/%s is assigned an IP %v (no service created - no HTTP/HTTPS listeners).", updatedGw.Namespace, updatedGw.Name, updatedGw.Status.Addresses)
+		klog.Infof("gateway %s/%s is assigned an IP %v (no service created - no HTTP/HTTPS listeners).", updatedGw.Namespace, updatedGw.Name, updatedGw.Spec.Addresses)
 	}
 	klog.Infof("gateway %s/%s is created.", updatedGw.Namespace, updatedGw.Name)
 	return nil
@@ -573,7 +599,7 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	loadBalancerClass := gm.networkConfig.LoxilbLoadBalancerClass
 	newService.Spec.Type = corev1.ServiceTypeLoadBalancer
 	newService.Spec.LoadBalancerClass = &loadBalancerClass
-	newService.Spec.LoadBalancerIP = gateway.Status.Addresses[0].Value
+	newService.Spec.LoadBalancerIP = gateway.Spec.Addresses[0].Value
 	newService.Spec.Ports = servicePorts
 
 	if newService.Spec.Selector == nil {

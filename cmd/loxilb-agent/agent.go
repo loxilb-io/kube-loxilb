@@ -359,7 +359,7 @@ func run(o *Options) error {
 			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
 
 		gatewayManager := gatewayapi.NewGatewayManager(
-			k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
+			k8sClient, sigsClient, networkConfig, ipPool, informerFactory, sigsInformerFactory)
 
 		// What a route refers to in another namespace needs a grant there.
 		// The grants are watched once their CRD exists; a route manager
