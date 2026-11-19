@@ -59,6 +59,9 @@ type GatewayManager struct {
 	// httpRouteLister - to see which listeners an InferencePool has claimed.
 	httpRouteLister       sigslister.HTTPRouteLister
 	httpRouteListerSynced cache.InformerSynced
+	// gatewayClassLister - to tell this controller's Gateways from others'.
+	gatewayClassLister       sigslister.GatewayClassLister
+	gatewayClassListerSynced cache.InformerSynced
 
 	queue workqueue.RateLimitingInterface
 }
@@ -72,6 +75,7 @@ func NewGatewayManager(
 
 	gatewayInformer := sigsInformerFactory.Gateway().V1().Gateways()
 	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
+	gatewayClassInformer := sigsInformerFactory.Gateway().V1().GatewayClasses()
 	manager := &GatewayManager{
 		kubeClient:          kubeClient,
 		sigsClient:          sigsClient,
@@ -85,8 +89,20 @@ func NewGatewayManager(
 		// are in the cache, and an ingress service would take its port.
 		httpRouteListerSynced: httpRouteInformer.Informer().HasSynced,
 
+		gatewayClassLister:       gatewayClassInformer.Lister(),
+		gatewayClassListerSynced: gatewayClassInformer.Informer().HasSynced,
+
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gateway"),
 	}
+
+	// A Gateway is this controller's once its class names it, and the class
+	// may come after the Gateway. A class's controllerName cannot change.
+	gatewayClassInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    func(cur interface{}) { manager.enqueueClassGateways(cur) },
+			DeleteFunc: func(old interface{}) { manager.enqueueClassGateways(old) },
+		},
+	)
 
 	// A route attaching an InferencePool to a listener changes what this
 	// gateway should expose, and touches no Gateway object.
@@ -141,6 +157,43 @@ func (gm *GatewayManager) enqueueObject(obj interface{}) {
 	gm.queue.Add(gw)
 }
 
+// enqueueClassGateways - queue the gateways of a GatewayClass.
+func (gm *GatewayManager) enqueueClassGateways(obj interface{}) {
+	gc, ok := obj.(*v1.GatewayClass)
+	if !ok {
+		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			klog.Errorf("Received unexpected object: %v", obj)
+			return
+		}
+		gc, ok = deletedState.Obj.(*v1.GatewayClass)
+		if !ok {
+			klog.Errorf("DeletedFinalStateUnknown contains non-GatewayClass object: %v", deletedState.Obj)
+			return
+		}
+	}
+
+	gateways, err := gm.gatewayLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("gatewayClass %s: unable to list gateways: %v", gc.Name, err)
+		return
+	}
+	for _, gw := range gateways {
+		if string(gw.Spec.GatewayClassName) == gc.Name {
+			gm.queue.Add(gw)
+		}
+	}
+}
+
+// servesGateway - whether the Gateway's class names this controller.
+func (gm *GatewayManager) servesGateway(gw *v1.Gateway) bool {
+	gc, err := gm.gatewayClassLister.Get(string(gw.Spec.GatewayClassName))
+	if err != nil {
+		return false
+	}
+	return gc.Spec.ControllerName == v1.GatewayController(gm.networkConfig.LoxilbGatewayClass)
+}
+
 // enqueueRouteGateways - queue the gateways a route names as parents.
 func (gm *GatewayManager) enqueueRouteGateways(obj interface{}) {
 	route, ok := obj.(*v1.HTTPRoute)
@@ -185,7 +238,8 @@ func (gm *GatewayManager) Run(stopCh <-chan struct{}) {
 		gwMgrName,
 		stopCh,
 		gm.gatewayListerSynced,
-		gm.httpRouteListerSynced) {
+		gm.httpRouteListerSynced,
+		gm.gatewayClassListerSynced) {
 		return
 	}
 
@@ -226,20 +280,32 @@ func (gm *GatewayManager) reconcile(entry *v1.Gateway) error {
 		if errors.IsNotFound(err) {
 			// object not found, could have been deleted after
 			// reconcile request, hence don't requeue
-			return gm.deleteGateway(entry.Namespace, entry.Name, entry.Status.Addresses, entry.Annotations["ident-ipam"])
+			return gm.deleteGateway(entry.Namespace, entry.Name, allocatedAddress(entry), entry.Annotations["ident-ipam"])
 		}
 		return err
 	}
 	return gm.createGateway(gw)
 }
 
-func (gm *GatewayManager) deleteGateway(ns, name string, addresses []v1.GatewayStatusAddress, identIPAM string) error {
+// allocatedAddress - the address this controller allocated for the Gateway,
+// or "" when it allocated none. Earlier builds noted it as a label.
+func allocatedAddress(gw *v1.Gateway) string {
+	if addr := gw.Annotations["ipam-address"]; addr != "" {
+		return addr
+	}
+	return gw.Labels["ipam-address"]
+}
+
+// deleteGateway - give back what this controller took for a Gateway: the
+// address it allocated, which it noted as ipam-address, and the ingress
+// service. An address the Gateway came with, or one of another controller's
+// Gateway, was never this controller's to return.
+func (gm *GatewayManager) deleteGateway(ns, name, ipamAddress, identIPAM string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
-	ipPool := gm.externalIPPool
-	for _, address := range addresses {
-		ipPool.ReturnIPAddr(address.Value, identIPAM)
+	if ipamAddress != "" {
+		gm.externalIPPool.ReturnIPAddr(ipamAddress, identIPAM)
 	}
 
 	err := gm.deleteIngressLbService(ctx, ns, name)
@@ -252,13 +318,23 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
-	_, err := gm.sigsClient.GatewayV1().GatewayClasses().Get(ctx, string(gw.Spec.GatewayClassName), metav1.GetOptions{})
-	if err != nil {
-		klog.Errorf("gateway %s/%s has wrong gatewayClass %s. err: %v", gw.Namespace, gw.Name, string(gw.Spec.GatewayClassName), err)
-		return nil
+	if !gm.servesGateway(gw) {
+		// Another controller's, or one whose class is not there yet - its
+		// coming queues the Gateway. Neither gets an address, a status or an
+		// ingress service from this one; an ingress service made while the
+		// Gateway was of this controller's class goes.
+		klog.V(2).Infof("gateway %s/%s: gatewayClass %s is not this controller's", gw.Namespace, gw.Name, gw.Spec.GatewayClassName)
+		_, err := gm.kubeClient.CoreV1().Services(gw.Namespace).Get(ctx, fmt.Sprintf("%s-ingress-service", gw.Name), metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return gm.deleteIngressLbService(ctx, gw.Namespace, gw.Name)
 	}
 
+	// The Gateway is the informer's; what follows writes into it.
+	gw = gw.DeepCopy()
 	updatedGw := gw
+	var err error
 
 	// If gateway has no address, get new IP in ipam
 	if len(gw.Spec.Addresses) == 0 {

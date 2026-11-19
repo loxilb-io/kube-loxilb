@@ -1,12 +1,22 @@
 package gatewayapi
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 
+	tk "github.com/loxilb-io/loxilib"
 	v1 "sigs.k8s.io/gateway-api/apis/v1"
+	sigsfake "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned/fake"
+	sigs_v1_lister "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1"
+
+	"github.com/loxilb-io/kube-loxilb/pkg/agent/config"
+	"github.com/loxilb-io/kube-loxilb/pkg/ippool"
 )
 
 func portsOf(ports []corev1.ServicePort) []string {
@@ -89,5 +99,149 @@ func TestIngressServicePorts(t *testing.T) {
 				t.Errorf("ports = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func gatewayTestManager(t *testing.T, pool *ippool.IPPool, gateways []*v1.Gateway, services ...*corev1.Service) *GatewayManager {
+	t.Helper()
+	kube := fake.NewClientset()
+	for _, svc := range services {
+		if _, err := kube.CoreV1().Services(svc.Namespace).Create(context.Background(), svc, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed service: %v", err)
+		}
+	}
+	// Created rather than handed to the constructor, which files a Gateway
+	// under a version the typed v1 client does not read.
+	sigs := sigsfake.NewSimpleClientset()
+	gwObjs := make([]interface{}, 0, len(gateways))
+	for _, gw := range gateways {
+		if _, err := sigs.GatewayV1().Gateways(gw.Namespace).Create(context.Background(), gw.DeepCopy(), metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed gateway: %v", err)
+		}
+		gwObjs = append(gwObjs, gw)
+	}
+	sigs.ClearActions()
+	return &GatewayManager{
+		kubeClient:     kube,
+		sigsClient:     sigs,
+		networkConfig:  &config.NetworkConfig{LoxilbGatewayClass: "loxilb.io/loxilb", LoxilbLoadBalancerClass: "loxilb.io/loxilb"},
+		externalIPPool: pool,
+		gatewayLister:  sigs_v1_lister.NewGatewayLister(newIndexer(gwObjs...)),
+		gatewayClassLister: sigs_v1_lister.NewGatewayClassLister(newIndexer(
+			gatewayClass(testClass, "loxilb.io/loxilb"),
+			gatewayClass("other-gc", "example.com/other"),
+		)),
+		queue: testQueue(),
+	}
+}
+
+func ingressService(gw *v1.Gateway) *corev1.Service {
+	return &corev1.Service{ObjectMeta: metav1.ObjectMeta{
+		Namespace: gw.Namespace, Name: gw.Name + "-ingress-service",
+		Annotations: map[string]string{"gateway-api-controller": "loxilb.io/loxilb", "parent-gateway": gw.Name},
+	}}
+}
+
+// A Gateway of another controller's class is that controller's: kube-loxilb
+// gave every Gateway an address, an ingress service and an Accepted status,
+// whichever class it named.
+func TestGatewayManagerServesOnlyItsClass(t *testing.T) {
+	for _, class := range []v1.ObjectName{"other-gc", "missing-gc"} {
+		t.Run(string(class), func(t *testing.T) {
+			gw := webGateway()
+			gw.Spec.GatewayClassName = class
+			// The pool is nil: taking an address from it would panic.
+			gm := gatewayTestManager(t, nil, []*v1.Gateway{gw}, ingressService(gw))
+
+			if err := gm.createGateway(gw); err != nil {
+				t.Fatalf("createGateway: %v", err)
+			}
+			for _, action := range gm.sigsClient.(*sigsfake.Clientset).Actions() {
+				if action.GetVerb() == "update" {
+					t.Errorf("wrote the Gateway: %v", action)
+				}
+			}
+			if _, err := gm.kubeClient.CoreV1().Services(gw.Namespace).Get(context.Background(), gw.Name+"-ingress-service", metav1.GetOptions{}); !errors.IsNotFound(err) {
+				t.Errorf("the ingress service made while the Gateway was ours is still there (%v)", err)
+			}
+		})
+	}
+}
+
+// A Gateway of this controller's gets its address and ingress service, and
+// the informer's copy of it is left as it was.
+func TestCreateGatewayLeavesTheCacheAlone(t *testing.T) {
+	pool, err := ippool.NewIPPool(tk.IpAllocatorNew(), "10.10.10.1/32", false)
+	if err != nil {
+		t.Fatalf("NewIPPool: %v", err)
+	}
+	gw := webGateway()
+	gm := gatewayTestManager(t, pool, []*v1.Gateway{gw})
+
+	if err := gm.createGateway(gw); err != nil {
+		t.Fatalf("createGateway: %v", err)
+	}
+	if len(gw.Spec.Addresses) != 0 || gw.Annotations != nil {
+		t.Errorf("the cached Gateway was written into: addresses %v, annotations %v", gw.Spec.Addresses, gw.Annotations)
+	}
+	svc, err := gm.kubeClient.CoreV1().Services(gw.Namespace).Get(context.Background(), gw.Name+"-ingress-service", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("no ingress service: %v", err)
+	}
+	if svc.Spec.LoadBalancerIP != "10.10.10.1" {
+		t.Errorf("ingress service address = %q, want the allocated one", svc.Spec.LoadBalancerIP)
+	}
+}
+
+// Deleting a Gateway gives back the address this controller allocated for it,
+// and no other: one it came with may be in use by something else.
+func TestDeleteGatewayReturnsOnlyItsOwnAddress(t *testing.T) {
+	pool, err := ippool.NewIPPool(tk.IpAllocatorNew(), "10.10.10.1/32", false)
+	if err != nil {
+		t.Fatalf("NewIPPool: %v", err)
+	}
+	if ip, _ := pool.GetNewIPAddr("someone-else", 0, ""); ip == nil {
+		t.Fatal("could not take the pool's address")
+	}
+	gm := gatewayTestManager(t, pool, nil)
+
+	// Another controller's Gateway, or one with an address of its own, that
+	// happens to hold the address: nothing of this controller's to return.
+	if err := gm.deleteGateway("llm", "their-gw", "", ""); err != nil {
+		t.Fatalf("deleteGateway: %v", err)
+	}
+	if ip, _ := pool.GetNewIPAddr("next", 0, ""); ip != nil {
+		t.Errorf("the address %v was handed back for a Gateway that never had it from the pool", ip)
+	}
+}
+
+func TestEnqueueClassGateways(t *testing.T) {
+	ours, theirs := webGateway(), webGateway()
+	theirs.Name, theirs.Spec.GatewayClassName = "their-gw", "other-gc"
+	gm := gatewayTestManager(t, nil, []*v1.Gateway{ours, theirs})
+
+	gm.enqueueClassGateways(tombstone(gatewayClass(testClass, "loxilb.io/loxilb")))
+	item := queued(t, gm.queue)
+	if gw, ok := item.(*v1.Gateway); !ok || gw.Name != "web-gw" {
+		t.Errorf("queued %v, want only the Gateway of the class", item)
+	}
+}
+
+func TestAllocatedAddress(t *testing.T) {
+	cases := []struct {
+		name        string
+		annotations map[string]string
+		labels      map[string]string
+		want        string
+	}{
+		{"allocated", map[string]string{"ipam-address": "10.0.0.1"}, nil, "10.0.0.1"},
+		{"allocated by a build that noted it as a label", nil, map[string]string{"ipam-address": "10.0.0.2"}, "10.0.0.2"},
+		{"an address of its own", nil, nil, ""},
+	}
+	for _, tc := range cases {
+		gw := &v1.Gateway{ObjectMeta: metav1.ObjectMeta{Annotations: tc.annotations, Labels: tc.labels}}
+		if got := allocatedAddress(gw); got != tc.want {
+			t.Errorf("%s: allocatedAddress = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
