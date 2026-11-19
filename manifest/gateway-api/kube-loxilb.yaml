@@ -67,6 +67,7 @@ rules:
       - tcproutes
       - udproutes
       - httproutes
+      - httproutes/status
     verbs: ["get", "watch", "list", "patch", "update"]
   - apiGroups:
       - gateway.networking.k8s.io
