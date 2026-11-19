@@ -156,6 +156,9 @@ type Manager struct {
 	// poolLister - an infv1lister.InferencePoolLister, stored once the
 	// inference extension is on; see SetInferencePoolLister.
 	poolLister atomic.Value
+	// poolCheck - a PoolServiceCheck, whether a Service with the pool label
+	// is one the InferencePool manager made; see pool_trust.go.
+	poolCheck atomic.Value
 
 	// yielding - Services kept off their listeners by an older one declaring
 	// another credential policy, by cache key, to the key of that one.
@@ -513,6 +516,17 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		} else {
 			return nil
 		}
+	}
+
+	// A pool's Service shares its Gateway listener with the other pools
+	// there. One the InferencePool manager did not make is refused rather
+	// than served as a plain Service: it asks for that listener.
+	if err := m.checkPoolService(svc); err != nil {
+		if !errors.Is(err, errPoolsNotDecided) {
+			klog.Errorf("service %s/%s: %v", svc.Namespace, svc.Name, err)
+			m.recordServiceWarning(svc, ReasonPoolServiceRefused, err.Error())
+		}
+		return err
 	}
 
 	// A gateway route is one rule on a Gateway listener, served by its

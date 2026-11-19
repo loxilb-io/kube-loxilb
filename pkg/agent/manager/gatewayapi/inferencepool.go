@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -131,6 +132,17 @@ type InferencePoolManager struct {
 	gatewaySynced   cache.InformerSynced
 	serviceLister   corev1lister.ServiceLister
 	serviceSynced   cache.InformerSynced
+	// gatewayClassLister, namespaceLister - for whether a route attaches to
+	// a listener: its Gateway's class, and the namespaces the listener takes
+	// routes from.
+	gatewayClassLister sigsv1lister.GatewayClassLister
+	gatewayClassSynced cache.InformerSynced
+	namespaceLister    corev1lister.NamespaceLister
+	namespaceSynced    cache.InformerSynced
+
+	// generated - the Services this manager made, for the load-balancer
+	// manager to tell them from a Service carrying the label (Generated).
+	generated generatedServices
 
 	queue workqueue.TypedRateLimitingInterface[InferencePoolQueueEntry]
 }
@@ -154,6 +166,13 @@ type poolTarget struct {
 	routeAnnotations map[string]string
 }
 
+// poolRefusal - a Gateway of this controller's that a route sends the pool
+// to, on no listener that takes the route.
+type poolRefusal struct {
+	gateway *v1.Gateway
+	message string
+}
+
 func NewInferencePoolManager(
 	kubeClient clientset.Interface,
 	kubeExtClient apiextensionclientset.Interface,
@@ -167,8 +186,10 @@ func NewInferencePoolManager(
 	poolInformer := infInformerFactory.Inference().V1().InferencePools()
 	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
 	gatewayInformer := sigsInformerFactory.Gateway().V1().Gateways()
+	gatewayClassInformer := sigsInformerFactory.Gateway().V1().GatewayClasses()
 	// Shared with the loadbalancer manager, which has already started it.
 	serviceInformer := kubeInformerFactory.Core().V1().Services()
+	namespaceInformer := kubeInformerFactory.Core().V1().Namespaces()
 
 	manager := &InferencePoolManager{
 		kubeClient:      kubeClient,
@@ -184,6 +205,11 @@ func NewInferencePoolManager(
 		gatewaySynced:   gatewayInformer.Informer().HasSynced,
 		serviceLister:   serviceInformer.Lister(),
 		serviceSynced:   serviceInformer.Informer().HasSynced,
+
+		gatewayClassLister: gatewayClassInformer.Lister(),
+		gatewayClassSynced: gatewayClassInformer.Informer().HasSynced,
+		namespaceLister:    namespaceInformer.Lister(),
+		namespaceSynced:    namespaceInformer.Informer().HasSynced,
 
 		queue: workqueue.NewTypedRateLimitingQueueWithConfig(
 			workqueue.NewTypedItemExponentialFailureRateLimiter[InferencePoolQueueEntry](minRetryDelay, maxRetryDelay),
@@ -550,7 +576,8 @@ func (m *InferencePoolManager) Run(stopCh <-chan struct{}) {
 	klog.Infof("Starting %s", inferencePoolMgrName)
 	defer klog.Infof("Shutting down %s", inferencePoolMgrName)
 
-	if !cache.WaitForNamedCacheSync(inferencePoolMgrName, stopCh, m.poolSynced, m.httpRouteSynced, m.gatewaySynced, m.serviceSynced) {
+	if !cache.WaitForNamedCacheSync(inferencePoolMgrName, stopCh, m.poolSynced, m.httpRouteSynced, m.gatewaySynced, m.serviceSynced,
+		m.gatewayClassSynced, m.namespaceSynced) {
 		return
 	}
 
@@ -586,28 +613,40 @@ func (m *InferencePoolManager) reconcile(namespace, name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
+	key := types.NamespacedName{Namespace: namespace, Name: name}
 	pool, err := m.poolLister.InferencePools(namespace).Get(name)
 	if err != nil {
 		if errors.IsNotFound(err) {
+			m.generated.forget(key)
 			return m.deleteOwnedServices(ctx, namespace, name, nil)
 		}
 		return err
 	}
 
-	targets, err := m.findTargets(ctx, pool)
+	targets, refusals, err := m.findTargets(ctx, pool)
 	if err != nil {
 		return err
 	}
 
 	if len(targets) == 0 {
-		// Nothing references this pool, so there is no Gateway to serve it
-		// from and no parent to report a condition under. Drop whatever we
-		// had; the route coming back re-queues the pool.
-		klog.V(2).Infof("InferencePool %s/%s is not referenced by any HTTPRoute", namespace, name)
+		// No listener takes this pool's routes, so there is nothing to
+		// serve it on. Drop whatever we had; the route coming back
+		// re-queues the pool.
+		m.generated.settle(key, nil)
 		if err := m.deleteOwnedServices(ctx, namespace, name, nil); err != nil {
 			return err
 		}
-		return m.clearStatus(ctx, pool)
+		if len(refusals) == 0 {
+			// No parent to report a condition under either.
+			klog.V(2).Infof("InferencePool %s/%s is not referenced by any HTTPRoute", namespace, name)
+			return m.clearStatus(ctx, pool)
+		}
+		klog.V(2).Infof("InferencePool %s/%s: no listener takes the routes that reference it", namespace, name)
+		picker, err := m.resolveEndpointPicker(pool)
+		if err != nil {
+			return err
+		}
+		return m.updateStatus(ctx, pool, nil, refusals, picker.report(false, "", ""))
 	}
 
 	// The gateway calls the Endpoint Picker; what this manager owes it is the
@@ -627,13 +666,18 @@ func (m *InferencePoolManager) reconcile(namespace, name string) error {
 	desired, err := m.buildServices(pool, targets, picker)
 	if err != nil {
 		klog.Errorf("InferencePool %s/%s: %v", namespace, name, err)
+		m.generated.settle(key, nil)
 		if delErr := m.deleteOwnedServices(ctx, namespace, name, nil); delErr != nil {
 			return delErr
 		}
-		return m.updateStatus(ctx, pool, targets,
+		return m.updateStatus(ctx, pool, targets, refusals,
 			picker.report(false, string(infv1.InferencePoolReasonNotSupportedByParent), err.Error()))
 	}
 
+	// Known as this manager's before they are written, so the
+	// load-balancer manager serves them on their first event; the ones on
+	// their way out stay known until they are gone.
+	m.generated.allow(key, desired)
 	keep := make(map[string]bool, len(desired))
 	for _, svc := range desired {
 		keep[svc.Name] = true
@@ -645,10 +689,11 @@ func (m *InferencePoolManager) reconcile(namespace, name string) error {
 	if err := m.deleteOwnedServices(ctx, namespace, name, keep); err != nil {
 		return err
 	}
+	m.generated.settle(key, desired)
 
 	klog.Infof("InferencePool %s/%s is reconciled into %d service(s)", namespace, name, len(desired))
 
-	return m.updateStatus(ctx, pool, targets,
+	return m.updateStatus(ctx, pool, targets, refusals,
 		picker.report(true, string(infv1.InferencePoolReasonAccepted), "managed by kube-loxilb"))
 }
 
@@ -813,10 +858,10 @@ func serviceHasPort(svc *corev1.Service, port int32) bool {
 }
 
 // findTargets - resolve every Gateway listener this pool is served on.
-func (m *InferencePoolManager) findTargets(ctx context.Context, pool *infv1.InferencePool) ([]poolTarget, error) {
+func (m *InferencePoolManager) findTargets(ctx context.Context, pool *infv1.InferencePool) ([]poolTarget, []poolRefusal, error) {
 	routes, err := m.httpRouteLister.List(labels.Everything())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Sorted so the generated Service names and the status parents do not
@@ -842,31 +887,46 @@ func (m *InferencePoolManager) findTargets(ctx context.Context, pool *infv1.Infe
 	// its annotations on this pool's Service, and which route wins would have
 	// to be decided again.
 	kept := map[listenerKey]int{}
+	nsLabels := m.namespaceLabels()
 
 	var targets []poolTarget
+	var refusals []poolRefusal
 	for _, route := range routes {
 		if !routeReferencesPool(route, pool) {
 			continue
 		}
 
 		for _, parentRef := range route.Spec.ParentRefs {
+			if _, _, ok := gatewayOf(route.Namespace, parentRef); !ok {
+				continue
+			}
 			gateway, err := m.findGatewayForRoute(ctx, route, parentRef)
 			if err != nil {
 				klog.V(4).Infof("InferencePool %s/%s: parent gateway of HTTPRoute %s/%s unresolved: %v",
 					pool.Namespace, pool.Name, route.Namespace, route.Name, err)
 				continue
 			}
+			if !m.servesGateway(gateway) {
+				klog.V(4).Infof("InferencePool %s/%s: gateway %s/%s of HTTPRoute %s/%s is not of a class this controller serves",
+					pool.Namespace, pool.Name, gateway.Namespace, gateway.Name, route.Namespace, route.Name)
+				continue
+			}
+
+			// The pool's Service takes the listener's address and port, so
+			// the route has to attach there as any route does: a listener
+			// that does not take routes from the route's namespace gives
+			// the pool nothing.
+			listener, why := poolListener(gateway, route, parentRef, nsLabels)
+			if listener == nil {
+				klog.Warningf("InferencePool %s/%s: HTTPRoute %s/%s is not served on gateway %s/%s: %s",
+					pool.Namespace, pool.Name, route.Namespace, route.Name, gateway.Namespace, gateway.Name, why)
+				refusals = append(refusals, poolRefusal{gateway: gateway, message: why})
+				continue
+			}
 			if len(gateway.Status.Addresses) == 0 {
 				// The Gateway manager assigns the address; until it has, there
 				// is nothing to put in the Service.
-				return nil, fmt.Errorf("gateway %s/%s has no address assigned yet", gateway.Namespace, gateway.Name)
-			}
-
-			listener := findListenerForRoute(gateway, parentRef)
-			if listener == nil {
-				klog.Warningf("InferencePool %s/%s: gateway %s/%s has no listener matching the parentRef of HTTPRoute %s/%s",
-					pool.Namespace, pool.Name, gateway.Namespace, gateway.Name, route.Namespace, route.Name)
-				continue
+				return nil, nil, fmt.Errorf("gateway %s/%s has no address assigned yet", gateway.Namespace, gateway.Name)
 			}
 
 			key := listenerKey{namespace: gateway.Namespace, gateway: gateway.Name, listener: listener.Name}
@@ -890,7 +950,7 @@ func (m *InferencePoolManager) findTargets(ctx context.Context, pool *infv1.Infe
 		}
 	}
 
-	return targets, nil
+	return targets, refusals, nil
 }
 
 // listenerKey - one Gateway listener, which is what a generated Service serves.

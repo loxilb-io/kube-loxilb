@@ -67,7 +67,7 @@ func addHarness(t *testing.T, peers ...*api.LoxiClient) (*Manager, *corev1.Servi
 		clients.AddLoxiClient(peer)
 	}
 
-	return &Manager{
+	m := &Manager{
 		kubeClient:  fake.NewSimpleClientset(svc, node),
 		LoxiClients: clients,
 		networkConfig: &config.NetworkConfig{
@@ -83,7 +83,16 @@ func addHarness(t *testing.T, peers ...*api.LoxiClient) (*Manager, *corev1.Servi
 		loxiInstAddrMap: map[string]net.IP{},
 		eventRecorder:   record.NewFakeRecorder(100),
 		queue:           testQueue(),
-	}, svc
+	}
+	m.SetPoolServiceCheck(trustingPools)
+	return m, svc
+}
+
+// trustingPools - a check that takes every Service with the pool label for
+// one the InferencePool manager made, as it does once it has reconciled their
+// pools.
+func trustingPools(*corev1.Service) (generated, decided bool) {
+	return true, true
 }
 
 // testQueue - a work queue like the manager's, for code that queues Services.

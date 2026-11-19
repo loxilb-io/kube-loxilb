@@ -57,7 +57,7 @@ func cachePairs(m *Manager, svc *corev1.Service, entry *LbCacheEntry, pairs []Sv
 
 // newPoolEntry - the cache entry addLoadBalancer starts a pool's Service with.
 func newPoolEntry(pool *ippool.IPPool, svc *corev1.Service) *LbCacheEntry {
-	return &LbCacheEntry{IPPool: pool, LbServicePairs: map[string]*LbServicePairEntry{}, ListenerAddr: (&Manager{}).listenerAddrOf(svc)}
+	return &LbCacheEntry{IPPool: pool, LbServicePairs: map[string]*LbServicePairEntry{}, ListenerAddr: poolTrustingManager().listenerAddrOf(svc)}
 }
 
 // The pools on one listener share its address and port: the first is given
@@ -67,7 +67,7 @@ func TestPoolsOnOneListenerShareItsPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewIPPool: %v", err)
 	}
-	m := &Manager{networkConfig: &config.NetworkConfig{}, lbCache: LbCacheTable{}}
+	m := poolTrustingManager()
 
 	a := poolService("a", "qwen", "192.168.0.13", 30001)
 	entryA := newPoolEntry(pool, a)
@@ -98,7 +98,7 @@ func TestRestoredPoolsShareTheirListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewIPPool: %v", err)
 	}
-	m := &Manager{networkConfig: &config.NetworkConfig{}, lbCache: LbCacheTable{}}
+	m := poolTrustingManager()
 	published := []corev1.LoadBalancerIngress{{IP: "192.168.0.13"}}
 
 	a := poolService("a", "qwen", "192.168.0.13", 30001)
@@ -224,4 +224,12 @@ func TestTwoPoolsOnOneListenerAreBothInstalled(t *testing.T) {
 	if strings.Join(models, ",") != "llama,qwen" {
 		t.Errorf("models installed = %v, want both pools'", models)
 	}
+}
+
+// poolTrustingManager - a manager taking every Service with the pool label for
+// one the InferencePool manager made.
+func poolTrustingManager() *Manager {
+	m := &Manager{networkConfig: &config.NetworkConfig{}, lbCache: LbCacheTable{}}
+	m.SetPoolServiceCheck(trustingPools)
+	return m
 }
