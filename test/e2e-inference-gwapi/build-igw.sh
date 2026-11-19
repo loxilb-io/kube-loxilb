@@ -3,7 +3,7 @@
 # without touching that checkout's working tree.
 #
 #   IGW_REPO=~/go/src/loxilb-io/loxilb-inference-gateway ./build-igw.sh
-#   IGW_REPO=... IGW_REF=origin/feat/helm-chart-core ./build-igw.sh
+#   IGW_REPO=... IGW_REF=origin/feat/some-branch ./build-igw.sh
 #
 # The ref is cloned into $WORK/igw-src with its submodules (loxilb-ebpf, and
 # libbpf inside it) taken from the checkout's own submodules, so nothing is
@@ -14,7 +14,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WORK="${WORK:-$HERE/_work}"
 IGW_REPO="${IGW_REPO:?set IGW_REPO to a loxilb-inference-gateway checkout}"
-IGW_REF="${IGW_REF:-origin/feat/helm-chart-core}"
+IGW_REF="${IGW_REF:-origin/main}"
 
 mkdir -p "$WORK"
 sha="$(git -C "$IGW_REPO" rev-parse --short=8 "$IGW_REF")"
