@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -87,6 +88,12 @@ type l4Route struct {
 	ParentRefs  []v1.ParentReference
 	// BackendRefs - those of every rule.
 	BackendRefs []v1.BackendRef
+
+	Generation int64
+	// Parents - the route's parent statuses, as read.
+	Parents []v1.RouteParentStatus
+	// object - the route as read, for its status to be written into.
+	object interface{}
 }
 
 // l4RouteKind - what sets TCPRoutes and UDPRoutes apart.
@@ -99,8 +106,13 @@ type l4RouteKind struct {
 
 	get  func(namespace, name string) (*l4Route, error)
 	list func(namespace string) ([]*l4Route, error)
-	// isRoute - whether an object from the informer is a route of the kind.
-	isRoute func(obj interface{}) bool
+	// view - an object from the informer as a route of the kind, or nil when
+	// it is none.
+	view func(obj interface{}) *l4Route
+	// fetch - the route as the API server holds it.
+	fetch func(ctx context.Context, client sigsclientset.Interface, namespace, name string) (*l4Route, error)
+	// putStatus - write parents into the status of the route as read.
+	putStatus func(ctx context.Context, client sigsclientset.Interface, route *l4Route, parents []v1.RouteParentStatus) error
 }
 
 type l4RouteManager struct {
@@ -117,6 +129,10 @@ type l4RouteManager struct {
 	serviceLister      corev1lister.ServiceLister
 	referenceGrants    *ReferenceGrants
 	synced             []cache.InformerSynced
+	// onRouteChange - told the parents of a route that comes, changes or
+	// goes; the Gateway manager, which counts the routes on each listener.
+	// Set before the informers start.
+	onRouteChange func(routeNamespace string, refs []v1.ParentReference)
 
 	queue workqueue.RateLimitingInterface
 }
@@ -159,9 +175,22 @@ func newL4RouteManager(
 	}
 
 	routeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    m.enqueueObject,
-		UpdateFunc: func(old, cur interface{}) { m.enqueueObject(cur) },
+		AddFunc: m.enqueueObject,
+		UpdateFunc: func(old, cur interface{}) {
+			// The Gateways a route leaves count it no longer.
+			if view := m.viewOf(old); view != nil && m.onRouteChange != nil {
+				m.onRouteChange(view.Namespace, view.ParentRefs)
+			}
+			m.enqueueObject(cur)
+		},
 		DeleteFunc: m.enqueueObject,
+	})
+
+	// A Service to copy or take that comes or goes resolves or unresolves
+	// the routes that name it.
+	serviceInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    m.enqueueServiceRoutes,
+		DeleteFunc: m.enqueueServiceRoutes,
 	})
 
 	// What a route attaches to, and the address it is served on, are read
@@ -216,9 +245,13 @@ func (m *l4RouteManager) enqueueObject(obj interface{}) {
 	if deletedState, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 		route = deletedState.Obj
 	}
-	if m.isRoute == nil || !m.isRoute(route) {
+	view := m.viewOf(route)
+	if view == nil {
 		klog.Errorf("%s: received unexpected object: %v", m.name, obj)
 		return
+	}
+	if m.onRouteChange != nil {
+		m.onRouteChange(view.Namespace, view.ParentRefs)
 	}
 	key, err := cache.MetaNamespaceKeyFunc(route)
 	if err != nil {
@@ -231,6 +264,13 @@ func (m *l4RouteManager) enqueueObject(obj interface{}) {
 		return
 	}
 	m.queue.Add(l4RouteKey{namespace, name})
+}
+
+func (m *l4RouteManager) viewOf(obj interface{}) *l4Route {
+	if m.view == nil {
+		return nil
+	}
+	return m.view(obj)
 }
 
 func (m *l4RouteManager) enqueueNamespaceRoutes(namespace string) {
@@ -350,27 +390,44 @@ func (m *l4RouteManager) reconcile(key l4RouteKey) error {
 	return m.sync(key, route)
 }
 
-// sync - make the Services of a route what it calls for, or, for a route
-// that has gone (nil), let go of them all.
+// sync - make the Services of a route what it calls for and report it in
+// the route's status, or, for a route that has gone (nil), let go of them
+// all.
 func (m *l4RouteManager) sync(key l4RouteKey, route *l4Route) error {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
-	var desired []*corev1.Service
-	if route != nil {
-		var ready bool
-		var err error
-		desired, ready, err = m.desiredServices(route)
-		if err != nil {
-			return err
-		}
-		if !ready {
-			// Its Gateway has no address yet. The address comes in a spec
-			// update, which queues the route; until then what it has stays.
-			return nil
-		}
+	if route == nil {
+		return m.applyPlan(ctx, key, l4Plan{})
 	}
 
+	plan := m.plan(route)
+	for _, parent := range plan.parents {
+		if !parent.accepted {
+			klog.Infof("%s %s/%s is not accepted by gateway %s (%s): %s", m.kind, route.Namespace, route.Name,
+				parent.ref.Name, parent.reason, parent.message)
+		}
+	}
+	if !plan.resolved.ok {
+		klog.Warningf("%s %s/%s: %s", m.kind, route.Namespace, route.Name, plan.resolved.message)
+	}
+
+	var errs []error
+	if !plan.hold {
+		if err := m.applyPlan(ctx, key, plan); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	// The status says what the route attaches to and refers to, which does
+	// not wait for its Services.
+	if err := m.updateStatus(ctx, route, plan); err != nil {
+		errs = append(errs, err)
+	}
+	return utilerrors.NewAggregate(errs)
+}
+
+// applyPlan - bring the route's Services to plan, then let go of the rest.
+func (m *l4RouteManager) applyPlan(ctx context.Context, key l4RouteKey, plan l4Plan) error {
 	owned, err := m.ownedServices(ctx, key)
 	if err != nil {
 		return err
@@ -378,7 +435,7 @@ func (m *l4RouteManager) sync(key l4RouteKey, route *l4Route) error {
 
 	var errs []error
 	keep := map[string]bool{}
-	for _, svc := range desired {
+	for _, svc := range plan.services {
 		keep[svc.Namespace+"/"+svc.Name] = true
 		if err := m.applyService(ctx, key, svc); err != nil {
 			errs = append(errs, err)
@@ -422,17 +479,29 @@ func (m *l4RouteManager) namespaceLabels() namespaceLabels {
 	}
 }
 
-// servingGateway - the Gateway of this controller's the route is served on,
-// and the listeners there that take it.
+// l4Parent - what a route came to through one parentRef that names a
+// Gateway of this controller's: its Accepted condition there.
+type l4Parent struct {
+	ref      v1.ParentReference
+	accepted bool
+	reason   v1.RouteConditionReason
+	message  string
+}
+
+// attachments - the Gateway of this controller's the route is served on,
+// the listeners there that take it, and what each parentRef to a Gateway of
+// this controller's came to.
 //
 // A Service has one address, so the route is served on the first Gateway
-// its parentRefs attach it to; one it also attaches to is said in the log.
-func (m *l4RouteManager) servingGateway(route *l4Route) (*v1.Gateway, []*v1.Listener) {
+// its parentRefs attach it to. On another one it attaches to, it is not
+// accepted, with UnsupportedValue.
+func (m *l4RouteManager) attachments(route *l4Route) (*v1.Gateway, []*v1.Listener, []l4Parent) {
 	attaching := attachingRoute{Kind: m.kind, Namespace: route.Namespace}
 	nsLabels := m.namespaceLabels()
 
 	var gateway *v1.Gateway
 	var listeners []*v1.Listener
+	var parents []l4Parent
 	for _, ref := range route.ParentRefs {
 		namespace, name, ok := gatewayOf(route.Namespace, ref)
 		if !ok {
@@ -444,24 +513,23 @@ func (m *l4RouteManager) servingGateway(route *l4Route) (*v1.Gateway, []*v1.List
 		}
 
 		attachment := attachRoute(gw, ref, attaching, nsLabels)
-		if !attachment.Accepted() {
-			klog.Infof("%s %s/%s does not attach to gateway %s/%s (%s): %s", m.kind, route.Namespace, route.Name,
-				gw.Namespace, gw.Name, attachment.Reason, attachment.Message)
+		switch {
+		case !attachment.Accepted():
+			parents = append(parents, l4Parent{ref: ref, reason: attachment.Reason, message: attachment.Message})
 			continue
-		}
-		if gateway == nil {
+		case gateway == nil:
 			gateway = gw
-		}
-		if gw.Namespace != gateway.Namespace || gw.Name != gateway.Name {
-			klog.Warningf("%s %s/%s attaches to gateway %s/%s too, but is served on %s/%s only: its Service has one address",
-				m.kind, route.Namespace, route.Name, gw.Namespace, gw.Name, gateway.Namespace, gateway.Name)
+		case gw.Namespace != gateway.Namespace || gw.Name != gateway.Name:
+			parents = append(parents, l4Parent{ref: ref, reason: v1.RouteReasonUnsupportedValue,
+				message: fmt.Sprintf("the route is served on gateway %s/%s only: its Service has one address", gateway.Namespace, gateway.Name)})
 			continue
 		}
+		parents = append(parents, l4Parent{ref: ref, accepted: true, reason: v1.RouteReasonAccepted})
 		for _, la := range attachment.Listeners {
 			listeners = append(listeners, la.Listener)
 		}
 	}
-	return gateway, listeners
+	return gateway, listeners, parents
 }
 
 // servicePorts - one port for each listener port, to the backend's port. A
@@ -488,24 +556,67 @@ func (m *l4RouteManager) servicePorts(listeners []*v1.Listener, backendPort int3
 	return ports
 }
 
-// desiredServices - the Services the route should have. ready is false when
-// the Gateway it is served on has no address yet.
-func (m *l4RouteManager) desiredServices(route *l4Route) (desired []*corev1.Service, ready bool, err error) {
-	gateway, listeners := m.servingGateway(route)
-	if gateway == nil {
-		return nil, true, nil
+// l4Resolved - the ResolvedRefs condition of a route: false, with the reason
+// of the first backendRef that does not resolve and a message naming each,
+// when one does not.
+type l4Resolved struct {
+	ok       bool
+	reason   v1.RouteConditionReason
+	problems []string
+	message  string
+}
+
+func (r *l4Resolved) note(reason v1.RouteConditionReason, problem string) {
+	if r.reason == "" {
+		r.reason = reason
 	}
-	if len(gateway.Spec.Addresses) == 0 {
-		return nil, false, nil
+	if !slices.Contains(r.problems, problem) {
+		r.problems = append(r.problems, problem)
 	}
-	address := gateway.Spec.Addresses[0].Value
+}
+
+// l4Plan - what a route calls for.
+type l4Plan struct {
+	services []*corev1.Service
+	// hold - leave the route's Services as they are: its Gateway has no
+	// address yet, which comes in a spec update that queues the route, or its
+	// serviceBehaviour is not one this controller knows.
+	hold     bool
+	parents  []l4Parent
+	resolved l4Resolved
+}
+
+// plan - the Services the route should have, and its status.
+func (m *l4RouteManager) plan(route *l4Route) (plan l4Plan) {
+	gateway, listeners, parents := m.attachments(route)
+	plan = l4Plan{parents: parents}
+	defer func() {
+		plan.resolved.ok = plan.resolved.reason == ""
+		plan.resolved.message = strings.Join(plan.resolved.problems, "; ")
+	}()
 
 	behaviour := route.Labels[l4BehaviourLabel]
 	if behaviour == "" {
 		behaviour = l4BehaviourCreate
 	}
 	if behaviour != l4BehaviourCreate && behaviour != l4BehaviourDuplicate && behaviour != l4BehaviourUpdate {
-		return nil, true, fmt.Errorf("%s %s/%s: unknown %s %q", m.kind, route.Namespace, route.Name, l4BehaviourLabel, behaviour)
+		plan.hold = true
+		for i := range plan.parents {
+			if plan.parents[i].accepted {
+				plan.parents[i] = l4Parent{ref: plan.parents[i].ref, reason: v1.RouteReasonUnsupportedValue,
+					message: fmt.Sprintf("%s %q is not one of create, duplicate and update", l4BehaviourLabel, behaviour)}
+			}
+		}
+		return plan
+	}
+
+	address := ""
+	if gateway != nil {
+		if len(gateway.Spec.Addresses) == 0 {
+			plan.hold = true
+		} else {
+			address = gateway.Spec.Addresses[0].Value
+		}
 	}
 
 	seen := map[string]bool{}
@@ -516,11 +627,11 @@ func (m *l4RouteManager) desiredServices(route *l4Route) (desired []*corev1.Serv
 		// turned into a Service reference that names an object of a
 		// different kind, so refuse instead of guessing.
 		if classifyBackendRef(obj) != backendService {
-			klog.Warningf("%s %s/%s: backendRef %s is not a Service - skipping", m.kind, route.Namespace, route.Name, backendRefDescription(obj))
+			plan.resolved.note(v1.RouteReasonInvalidKind, fmt.Sprintf("%s is not a Service", backendRefDescription(obj)))
 			continue
 		}
 		if obj.Port == nil {
-			klog.Warningf("%s %s/%s: backendRef %s has no port - skipping", m.kind, route.Namespace, route.Name, obj.Name)
+			plan.resolved.note(v1.RouteReasonInvalidKind, fmt.Sprintf("Service %s has no port", obj.Name))
 			continue
 		}
 		namespace := route.Namespace
@@ -533,21 +644,33 @@ func (m *l4RouteManager) desiredServices(route *l4Route) (desired []*corev1.Serv
 			grantReference{Group: v1.GroupName, Kind: m.kind, Namespace: route.Namespace},
 			grantReference{Group: "", Kind: "Service", Namespace: namespace, Name: string(obj.Name)},
 		) {
-			klog.Warningf("%s %s/%s: no ReferenceGrant in namespace %s permits backendRef %s - skipping",
-				m.kind, route.Namespace, route.Name, namespace, obj.Name)
+			plan.resolved.note(v1.RouteReasonRefNotPermitted,
+				fmt.Sprintf("no ReferenceGrant in namespace %s permits Service %s", namespace, obj.Name))
+			continue
+		}
+		if behaviour != l4BehaviourCreate {
+			// The Service to copy or take has to be there; it queues the
+			// route when it comes.
+			if _, err := m.serviceLister.Services(namespace).Get(string(obj.Name)); err != nil {
+				plan.resolved.note(v1.RouteReasonBackendNotFound, fmt.Sprintf("Service %s/%s does not exist", namespace, obj.Name))
+				continue
+			}
+		}
+		if gateway == nil || plan.hold {
 			continue
 		}
 
 		svc, err := m.desiredService(route, behaviour, namespace, string(obj.Name), address, m.servicePorts(listeners, int32(*obj.Port)))
 		if err != nil {
-			return nil, true, err
+			plan.resolved.note(v1.RouteReasonBackendNotFound, err.Error())
+			continue
 		}
 		if id := svc.Namespace + "/" + svc.Name; !seen[id] {
 			seen[id] = true
-			desired = append(desired, svc)
+			plan.services = append(plan.services, svc)
 		}
 	}
-	return desired, true, nil
+	return plan
 }
 
 // desiredService - the Service one backendRef calls for, as this controller

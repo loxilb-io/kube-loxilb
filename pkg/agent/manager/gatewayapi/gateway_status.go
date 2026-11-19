@@ -118,12 +118,19 @@ func listenerRefsResolved(gw *v1.Gateway, l *v1.Listener) (bool, v1.ListenerCond
 	return true, v1.ListenerReasonResolvedRefs, ""
 }
 
-// attachedRoutes - how many HTTPRoutes attach to each listener of gw.
-//
-// TCPRoutes and UDPRoutes are not counted yet: their managers do not
-// resolve attachment the way the spec does.
+// attachedRoutes - how many routes attach to each listener of gw: the
+// HTTPRoutes, and those of the route managers that count their own.
 func (gm *GatewayManager) attachedRoutes(gw *v1.Gateway) map[v1.SectionName]int32 {
 	counts := map[v1.SectionName]int32{}
+	gm.routeSourcesMu.Lock()
+	sources := append([]RouteSource(nil), gm.routeSources...)
+	gm.routeSourcesMu.Unlock()
+	for _, src := range sources {
+		for name, n := range src.AttachedRoutes(gw) {
+			counts[name] += n
+		}
+	}
+
 	if gm.httpRouteLister == nil {
 		return counts
 	}
@@ -289,4 +296,28 @@ func (gm *GatewayManager) putGatewayStatus(ctx context.Context, gw *v1.Gateway, 
 	updated.Status = next
 	_, err := gm.sigsClient.GatewayV1().Gateways(updated.Namespace).UpdateStatus(ctx, updated, metav1.UpdateOptions{})
 	return err
+}
+
+// CountRoutesOf - count the routes of src on the listeners of each Gateway,
+// and have a change to one of them queue the Gateways it names. The route
+// managers of TCPRoutes and UDPRoutes start after this one, once their CRDs
+// are known to serve the version they watch.
+func (gm *GatewayManager) CountRoutesOf(src RouteSource) {
+	gm.routeSourcesMu.Lock()
+	gm.routeSources = append(gm.routeSources, src)
+	gm.routeSourcesMu.Unlock()
+	src.NotifyGateways(gm.enqueueGatewaysOf)
+}
+
+// enqueueGatewaysOf - queue the Gateways a route's parentRefs name.
+func (gm *GatewayManager) enqueueGatewaysOf(routeNamespace string, refs []v1.ParentReference) {
+	for _, ref := range refs {
+		namespace, name, ok := gatewayOf(routeNamespace, ref)
+		if !ok {
+			continue
+		}
+		if gw, err := gm.gatewayLister.Gateways(namespace).Get(name); err == nil {
+			gm.queue.Add(gw)
+		}
+	}
 }

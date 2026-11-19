@@ -15,6 +15,7 @@ import (
 
 	v1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/gateway-api/apis/v1alpha2"
+	sigsfake "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned/fake"
 	sigs_v1_lister "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1"
 	sigs_v1alpha2_lister "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1alpha2"
 )
@@ -72,10 +73,15 @@ func (f l4Fixture) manager(t *testing.T) *l4RouteManager {
 	}
 	kube.ClearActions()
 
+	sigs := sigsfake.NewSimpleClientset()
 	routeObjs := make([]interface{}, 0, len(f.routes))
 	for _, r := range f.routes {
+		if _, err := sigs.GatewayV1alpha2().TCPRoutes(r.Namespace).Create(context.Background(), r.DeepCopy(), metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed route: %v", err)
+		}
 		routeObjs = append(routeObjs, r)
 	}
+	sigs.ClearActions()
 	gwObjs := make([]interface{}, 0, len(f.gateways))
 	for _, gw := range f.gateways {
 		gwObjs = append(gwObjs, gw)
@@ -85,6 +91,7 @@ func (f l4Fixture) manager(t *testing.T) *l4RouteManager {
 		l4RouteKind:     tcpRouteKind(sigs_v1alpha2_lister.NewTCPRouteLister(newIndexer(routeObjs...))),
 		name:            tcpRouteMgrName,
 		kubeClient:      kube,
+		sigsClient:      sigs,
 		gatewayProvider: "loxilb.io/loxilb",
 		gatewayLister:   sigs_v1_lister.NewGatewayLister(newIndexer(gwObjs...)),
 		gatewayClassLister: sigs_v1_lister.NewGatewayClassLister(newIndexer(
