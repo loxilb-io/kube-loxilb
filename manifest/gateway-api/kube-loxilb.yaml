@@ -69,6 +69,11 @@ rules:
       - httproutes
     verbs: ["get", "watch", "list", "patch", "update"]
   - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - referencegrants
+    verbs: ["get", "watch", "list"]
+  - apiGroups:
       - inference.networking.k8s.io
     resources:
       - inferencepools

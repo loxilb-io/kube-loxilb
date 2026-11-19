@@ -56,11 +56,26 @@ var crdPollInterval = 5 * time.Second
 // bring back the endlessly failing watch on a cluster that only serves v1,
 // because of a blip at startup. ok is false only when stopCh closes first.
 func WaitForServedVersion(stopCh <-chan struct{}, extClient apiextensionclientset.Interface, crdName, version string) (served, ok bool) {
+	crd, ok := waitForCRD(stopCh, extClient, crdName)
+	if !ok {
+		return false, false
+	}
+	if crd == nil {
+		klog.Infof("not allowed to read the %s CRD; watching it at %s regardless", crdName, version)
+		return true, true
+	}
+	return crdServes(crd, version), true
+}
+
+// waitForCRD - wait for the CRD to exist and return it, or nil when this
+// process is not allowed to read it. Any other error is asked again. ok is
+// false only when stopCh closes first.
+func waitForCRD(stopCh <-chan struct{}, extClient apiextensionclientset.Interface, crdName string) (crd *apiextensionsv1.CustomResourceDefinition, ok bool) {
 	waiting, failing := false, false
 
 	err := wait.PollUntilContextCancel(wait.ContextForChannel(stopCh), crdPollInterval, true,
 		func(ctx context.Context) (bool, error) {
-			crd, err := extClient.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crdName, metav1.GetOptions{})
+			got, err := extClient.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crdName, metav1.GetOptions{})
 			switch {
 			case errors.IsNotFound(err):
 				if !waiting {
@@ -69,8 +84,7 @@ func WaitForServedVersion(stopCh <-chan struct{}, extClient apiextensionclientse
 				}
 				return false, nil
 			case errors.IsForbidden(err) || errors.IsUnauthorized(err):
-				klog.Infof("not allowed to read the %s CRD (%v); watching it at %s regardless", crdName, err, version)
-				served = true
+				klog.V(2).Infof("not allowed to read the %s CRD: %v", crdName, err)
 				return true, nil
 			case err != nil:
 				if !failing {
@@ -80,11 +94,11 @@ func WaitForServedVersion(stopCh <-chan struct{}, extClient apiextensionclientse
 				return false, nil
 			}
 
-			served = crdServes(crd, version)
+			crd = got
 			return true, nil
 		})
 
-	return served, err == nil
+	return crd, err == nil
 }
 
 // crdServes - whether the CRD serves version.
