@@ -65,7 +65,9 @@ rules:
       - gateways
       - gateways/status
       - tcproutes
+      - tcproutes/status
       - udproutes
+      - udproutes/status
       - httproutes
       - httproutes/status
     verbs: ["get", "watch", "list", "patch", "update"]

@@ -22,6 +22,7 @@ import (
 	"maps"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -69,6 +70,9 @@ type GatewayManager struct {
 	// a selector picks, when its attached routes are counted.
 	namespaceLister       corelister.NamespaceLister
 	namespaceListerSynced cache.InformerSynced
+	// routeSources - route managers that count their routes on listeners.
+	routeSources   []RouteSource
+	routeSourcesMu sync.Mutex
 
 	queue workqueue.RateLimitingInterface
 }

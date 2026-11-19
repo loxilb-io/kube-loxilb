@@ -404,7 +404,7 @@ func run(o *Options) error {
 		// cluster gets one log line instead and no route manager. The manager
 		// is built only once the version is known to be served, so its
 		// informer is registered late and the factory is started again for it.
-		startRouteManager := func(crdName string, newManager func() interface{ Run(<-chan struct{}) }) {
+		startRouteManager := func(crdName string, newManager func() l4RouteManager) {
 			go func() {
 				served, ok := gatewayapi.WaitForServedVersion(stopCh, k8sExtClient, crdName, gatewayapi.RouteWatchVersion)
 				if !ok {
@@ -416,15 +416,17 @@ func run(o *Options) error {
 					return
 				}
 				manager := newManager()
+				// Its routes count on the Gateway's listeners.
+				gatewayManager.CountRoutesOf(manager)
 				sigsInformerFactory.Start(stopCh)
 				informerFactory.Start(stopCh)
 				manager.Run(stopCh)
 			}()
 		}
-		startRouteManager(gatewayapi.TCPRouteCRDName, func() interface{ Run(<-chan struct{}) } {
+		startRouteManager(gatewayapi.TCPRouteCRDName, func() l4RouteManager {
 			return gatewayapi.NewTCPRouteManager(k8sClient, sigsClient, networkConfig, informerFactory, sigsInformerFactory, referenceGrants)
 		})
-		startRouteManager(gatewayapi.UDPRouteCRDName, func() interface{ Run(<-chan struct{}) } {
+		startRouteManager(gatewayapi.UDPRouteCRDName, func() l4RouteManager {
 			return gatewayapi.NewUDPRouteManager(k8sClient, sigsClient, networkConfig, informerFactory, sigsInformerFactory, referenceGrants)
 		})
 		go httpRouteManager.Run(stopCh)
@@ -446,6 +448,12 @@ func run(o *Options) error {
 
 	klog.Info("Stopping loxilb Agent")
 	return nil
+}
+
+// l4RouteManager - a TCPRoute or UDPRoute manager.
+type l4RouteManager interface {
+	Run(<-chan struct{})
+	gatewayapi.RouteSource
 }
 
 func RegisterSignalHandlers() <-chan struct{} {

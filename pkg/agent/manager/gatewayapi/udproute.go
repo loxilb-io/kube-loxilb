@@ -17,11 +17,15 @@
 package gatewayapi
 
 import (
+	"context"
+
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
 
+	v1 "sigs.k8s.io/gateway-api/apis/v1"
 	"sigs.k8s.io/gateway-api/apis/v1alpha2"
 	sigsclientset "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 	"sigs.k8s.io/gateway-api/pkg/client/informers/externalversions"
@@ -40,7 +44,7 @@ type UDPRouteManager struct {
 func udpRouteView(r *v1alpha2.UDPRoute) *l4Route {
 	view := &l4Route{
 		Namespace: r.Namespace, Name: r.Name, Labels: r.Labels, Annotations: r.Annotations,
-		ParentRefs: r.Spec.ParentRefs,
+		ParentRefs: r.Spec.ParentRefs, Generation: r.Generation, Parents: r.Status.Parents, object: r,
 	}
 	for _, rule := range r.Spec.Rules {
 		view.BackendRefs = append(view.BackendRefs, rule.BackendRefs...)
@@ -60,9 +64,24 @@ func udpRouteKind(lister sigs_v1alpha2_lister.UDPRouteLister) l4RouteKind {
 			}
 			return udpRouteView(r), nil
 		},
-		isRoute: func(obj interface{}) bool {
-			_, ok := obj.(*v1alpha2.UDPRoute)
-			return ok
+		view: func(obj interface{}) *l4Route {
+			if r, ok := obj.(*v1alpha2.UDPRoute); ok {
+				return udpRouteView(r)
+			}
+			return nil
+		},
+		fetch: func(ctx context.Context, client sigsclientset.Interface, namespace, name string) (*l4Route, error) {
+			r, err := client.GatewayV1alpha2().UDPRoutes(namespace).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				return nil, err
+			}
+			return udpRouteView(r), nil
+		},
+		putStatus: func(ctx context.Context, client sigsclientset.Interface, route *l4Route, parents []v1.RouteParentStatus) error {
+			updated := route.object.(*v1alpha2.UDPRoute).DeepCopy()
+			updated.Status.Parents = parents
+			_, err := client.GatewayV1alpha2().UDPRoutes(updated.Namespace).UpdateStatus(ctx, updated, metav1.UpdateOptions{})
+			return err
 		},
 		list: func(namespace string) ([]*l4Route, error) {
 			routes, err := lister.UDPRoutes(namespace).List(labels.Everything())

@@ -53,7 +53,7 @@ func (h *HTTPRouteManager) routeParentStatuses(route *v1.HTTPRoute, parents []pa
 		statuses = append(statuses, v1.RouteParentStatus{
 			ParentRef:      *parent.Ref.DeepCopy(),
 			ControllerName: controller,
-			Conditions:     carryTransitionTimes(ourRouteConditions(route, controller, parent.Ref), next),
+			Conditions:     carryTransitionTimes(ourRouteConditions(route.Status.Parents, controller, parent.Ref), next),
 		})
 	}
 	return statuses
@@ -139,9 +139,10 @@ func (h *HTTPRouteManager) backendRefsResolved(route *v1.HTTPRoute) (bool, strin
 	return false, string(reason), strings.Join(problems, "; ")
 }
 
-// ourRouteConditions - the conditions this controller last wrote under ref.
-func ourRouteConditions(route *v1.HTTPRoute, controller v1.GatewayController, ref v1.ParentReference) []metav1.Condition {
-	for _, parent := range route.Status.Parents {
+// ourRouteConditions - the conditions this controller last wrote under ref,
+// among a route's parent statuses.
+func ourRouteConditions(parents []v1.RouteParentStatus, controller v1.GatewayController, ref v1.ParentReference) []metav1.Condition {
+	for _, parent := range parents {
 		if parent.ControllerName == controller && reflect.DeepEqual(parent.ParentRef, ref) {
 			return parent.Conditions
 		}
@@ -173,7 +174,7 @@ func (h *HTTPRouteManager) updateRouteStatus(ctx context.Context, route *v1.HTTP
 	if errors.IsConflict(err) {
 		fresh, getErr := h.sigsClient.GatewayV1().HTTPRoutes(route.Namespace).Get(ctx, route.Name, metav1.GetOptions{})
 		if getErr == nil {
-			err = h.putRouteParents(ctx, fresh, recarryRouteParents(fresh, ours))
+			err = h.putRouteParents(ctx, fresh, recarryRouteParents(fresh.Status.Parents, ours))
 		}
 	}
 
@@ -205,8 +206,8 @@ func (h *HTTPRouteManager) putRouteParents(ctx context.Context, route *v1.HTTPRo
 }
 
 // recarryRouteParents - ours with the transition times worked out again
-// against what the API server holds.
-func recarryRouteParents(fresh *v1.HTTPRoute, ours []v1.RouteParentStatus) []v1.RouteParentStatus {
+// against the parent statuses the API server holds.
+func recarryRouteParents(fresh []v1.RouteParentStatus, ours []v1.RouteParentStatus) []v1.RouteParentStatus {
 	out := make([]v1.RouteParentStatus, len(ours))
 	for i, parent := range ours {
 		parent.Conditions = carryTransitionTimes(ourRouteConditions(fresh, parent.ControllerName, parent.ParentRef),
