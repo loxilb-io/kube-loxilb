@@ -127,9 +127,13 @@ func (gm *GatewayManager) enqueueObject(obj interface{}) {
 			klog.Errorf("Received unexpected object: %v", obj)
 			return
 		}
-		gw, ok = obj.(*v1.Gateway)
+		// A delete the watch missed arrives as a tombstone. The Gateway is
+		// the object it wraps, and its last known addresses are what the
+		// delete hands back to the address pool.
+		gw, ok = deletedState.Obj.(*v1.Gateway)
 		if !ok {
-			klog.Errorf("DeletedFinalStateUnknown contains non-Service object: %v", deletedState.Obj)
+			klog.Errorf("DeletedFinalStateUnknown contains non-Gateway object: %v", deletedState.Obj)
+			return
 		}
 	}
 

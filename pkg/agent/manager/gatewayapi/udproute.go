@@ -110,9 +110,12 @@ func (u *UDPRouteManager) enqueueObject(obj interface{}) {
 			klog.Errorf("Received unexpected object: %v", obj)
 			return
 		}
-		udpRoute, ok = obj.(*v1alpha2.UDPRoute)
+		// A delete the watch missed arrives as a tombstone. The UDPRoute is
+		// the object it wraps, not the tombstone itself.
+		udpRoute, ok = deletedState.Obj.(*v1alpha2.UDPRoute)
 		if !ok {
-			klog.Errorf("DeletedFinalStateUnknown contains non-Service object: %v", deletedState.Obj)
+			klog.Errorf("DeletedFinalStateUnknown contains non-UDPRoute object: %v", deletedState.Obj)
+			return
 		}
 	}
 
@@ -184,9 +187,10 @@ func (u *UDPRouteManager) createUDPRoute(udpRoute *v1alpha2.UDPRoute) error {
 	// find all parent resources
 	for _, parentRef := range udpRoute.Spec.ParentRefs {
 		// If no namespace is specified, the parent resource is searched for in the same namespace as UDPRoute.
+		// findGateway says which Gateway it could not find, in the namespace
+		// it looked in; parentRef.Namespace is nil whenever it is that one.
 		gateway, err := u.findGateway(ctx, udpRoute, parentRef)
 		if err != nil {
-			klog.Errorf("not found gateway %s/%s", string(*parentRef.Namespace), string(parentRef.Name))
 			return err
 		}
 

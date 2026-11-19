@@ -95,9 +95,12 @@ func (m *GatewayClassManager) enqueueObject(obj interface{}) {
 			klog.Errorf("Received unexpected object: %v", obj)
 			return
 		}
-		gc, ok = obj.(*v1.GatewayClass)
+		// A delete the watch missed arrives as a tombstone. The GatewayClass
+		// is the object it wraps, not the tombstone itself.
+		gc, ok = deletedState.Obj.(*v1.GatewayClass)
 		if !ok {
-			klog.Errorf("DeletedFinalStateUnknown contains non-Service object: %v", deletedState.Obj)
+			klog.Errorf("DeletedFinalStateUnknown contains non-GatewayClass object: %v", deletedState.Obj)
+			return
 		}
 	}
 

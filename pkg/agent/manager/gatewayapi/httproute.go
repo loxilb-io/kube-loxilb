@@ -111,9 +111,12 @@ func (h *HTTPRouteManager) enqueueObject(obj interface{}) {
 			klog.Errorf("Received unexpected object: %v", obj)
 			return
 		}
-		httpRoute, ok = obj.(*v1.HTTPRoute)
+		// A delete the watch missed arrives as a tombstone. The HTTPRoute
+		// is the object it wraps, not the tombstone itself.
+		httpRoute, ok = deletedState.Obj.(*v1.HTTPRoute)
 		if !ok {
-			klog.Errorf("DeletedFinalStateUnknown contains non-Service object: %v", deletedState.Obj)
+			klog.Errorf("DeletedFinalStateUnknown contains non-HTTPRoute object: %v", deletedState.Obj)
+			return
 		}
 	}
 
@@ -192,14 +195,10 @@ func (h *HTTPRouteManager) createHTTPRoute(httpRoute *v1.HTTPRoute) error {
 
 	// find all parent resources
 	for _, parentRef := range httpRoute.Spec.ParentRefs {
-		// If no namespace is specified, the parent resource is searched for in the same namespace as HTTPRoute.
-		parentNs := "default"
-		if parentRef.Namespace != nil {
-			parentNs = string(*parentRef.Namespace)
-		}
+		// findGateway says which Gateway it could not find, in the namespace
+		// it looked in.
 		gateway, err := h.findGateway(ctx, httpRoute, parentRef)
 		if err != nil {
-			klog.Errorf("not found gateway %s/%s", parentNs, string(parentRef.Name))
 			return err
 		}
 

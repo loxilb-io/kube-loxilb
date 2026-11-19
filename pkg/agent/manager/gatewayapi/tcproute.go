@@ -110,9 +110,12 @@ func (tr *TCPRouteManager) enqueueObject(obj interface{}) {
 			klog.Errorf("Received unexpected object: %v", obj)
 			return
 		}
-		tcpRoute, ok = obj.(*v1alpha2.TCPRoute)
+		// A delete the watch missed arrives as a tombstone. The TCPRoute is
+		// the object it wraps, not the tombstone itself.
+		tcpRoute, ok = deletedState.Obj.(*v1alpha2.TCPRoute)
 		if !ok {
-			klog.Errorf("DeletedFinalStateUnknown contains non-Service object: %v", deletedState.Obj)
+			klog.Errorf("DeletedFinalStateUnknown contains non-TCPRoute object: %v", deletedState.Obj)
+			return
 		}
 	}
 
@@ -184,9 +187,10 @@ func (tr *TCPRouteManager) createTCPRoute(tcpRoute *v1alpha2.TCPRoute) error {
 	// find all parent resources
 	for _, parentRef := range tcpRoute.Spec.ParentRefs {
 		// If no namespace is specified, the parent resource is searched for in the same namespace as TCPRoute.
+		// findGateway says which Gateway it could not find, in the namespace
+		// it looked in; parentRef.Namespace is nil whenever it is that one.
 		gateway, err := tr.findGateway(ctx, tcpRoute, parentRef)
 		if err != nil {
-			klog.Errorf("not found gateway %s/%s", string(*parentRef.Namespace), string(parentRef.Name))
 			return err
 		}
 
