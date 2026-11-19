@@ -352,17 +352,8 @@ func (m *InferencePoolManager) enqueueGatewayPools(obj interface{}) {
 // routeAttachesTo - whether one of the route's parentRefs names the Gateway.
 func routeAttachesTo(route *v1.HTTPRoute, gateway *v1.Gateway) bool {
 	for _, ref := range route.Spec.ParentRefs {
-		if ref.Group != nil && *ref.Group != v1.GroupName {
-			continue
-		}
-		if ref.Kind != nil && *ref.Kind != "Gateway" {
-			continue
-		}
-		namespace := route.Namespace
-		if ref.Namespace != nil {
-			namespace = string(*ref.Namespace)
-		}
-		if string(ref.Name) == gateway.Name && namespace == gateway.Namespace {
+		namespace, name, ok := gatewayOf(route.Namespace, ref)
+		if ok && name == gateway.Name && namespace == gateway.Namespace {
 			return true
 		}
 	}
