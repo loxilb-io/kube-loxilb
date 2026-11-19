@@ -158,7 +158,8 @@ func TestEnqueueObjectUnwrapsTombstones(t *testing.T) {
 // A parentRef that leaves out the namespace names a Gateway in the route's
 // own. When that Gateway does not exist yet - a route applied before its
 // Gateway - the reconcile has to fail and retry, not dereference the absent
-// namespace while saying so.
+// namespace while saying so. An HTTPRoute instead waits for its Gateway to
+// queue it; see TestHTTPRouteWaitsForItsGateway.
 func TestRouteWithoutItsGatewayRetries(t *testing.T) {
 	parentRefs := []v1.ParentReference{{Name: "missing-gw"}}
 	meta := metav1.ObjectMeta{Namespace: "route-ns", Name: "route"}
@@ -167,14 +168,6 @@ func TestRouteWithoutItsGatewayRetries(t *testing.T) {
 		name      string
 		reconcile func() error
 	}{
-		{
-			name: "HTTPRoute",
-			reconcile: func() error {
-				h := &HTTPRouteManager{sigsClient: sigsfake.NewSimpleClientset()}
-				return h.createHTTPRoute(&v1.HTTPRoute{ObjectMeta: meta,
-					Spec: v1.HTTPRouteSpec{CommonRouteSpec: v1.CommonRouteSpec{ParentRefs: parentRefs}}})
-			},
-		},
 		{
 			name: "TCPRoute",
 			reconcile: func() error {
