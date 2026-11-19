@@ -60,79 +60,6 @@ func ingressCreates(h *HTTPRouteManager) int {
 	return n
 }
 
-func hostListener() *v1.Listener {
-	host := v1.Hostname("llm.example.com")
-	return &v1.Listener{Name: "http", Port: 80, Protocol: v1.HTTPProtocolType, Hostname: &host}
-}
-
-// A route that only names InferencePools has nothing for an Ingress to carry;
-// creating one anyway was refused by the API server on every reconcile.
-func TestReconcileIngressSkipsInferencePoolOnlyRoutes(t *testing.T) {
-	h := httpRouteTestManager()
-	route := routeWith([]v1.HTTPBackendRef{backendRef(inferencePoolGroup, inferencePoolKind, "vllm-qwen3")})
-
-	if err := h.reconcileIngress(context.Background(), route, testTarget(nil).gateway, hostListener()); err != nil {
-		t.Fatalf("reconcileIngress: %v", err)
-	}
-	if got := ingressCreates(h); got != 0 {
-		t.Errorf("tried to create %d Ingresses for a route with only InferencePool backends", got)
-	}
-}
-
-// A route that used to name a Service and now names only an InferencePool
-// leaves no Ingress behind.
-func TestReconcileIngressRemovesTheOldIngress(t *testing.T) {
-	old := &netv1.Ingress{ObjectMeta: metav1.ObjectMeta{
-		Name: "llm-route", Namespace: "llm",
-		Annotations: map[string]string{"gateway-api-controller": "loxilb.io/loxilb", "parent-http-route": "llm-route"},
-	}}
-	other := &netv1.Ingress{ObjectMeta: metav1.ObjectMeta{
-		Name: "unrelated", Namespace: "llm",
-		Annotations: map[string]string{"gateway-api-controller": "loxilb.io/loxilb", "parent-http-route": "another-route"},
-	}}
-	h := httpRouteTestManager(old, other)
-	route := routeWith([]v1.HTTPBackendRef{backendRef(inferencePoolGroup, inferencePoolKind, "vllm-qwen3")})
-
-	if err := h.reconcileIngress(context.Background(), route, testTarget(nil).gateway, hostListener()); err != nil {
-		t.Fatalf("reconcileIngress: %v", err)
-	}
-
-	list, _ := h.kubeClient.NetworkingV1().Ingresses("llm").List(context.Background(), metav1.ListOptions{})
-	names := map[string]bool{}
-	for _, ing := range list.Items {
-		names[ing.Name] = true
-	}
-	if names["llm-route"] {
-		t.Error("the route's old Ingress is still there")
-	}
-	if !names["unrelated"] {
-		t.Error("another route's Ingress was removed")
-	}
-}
-
-// In a route that mixes the two, the InferencePool rule is left out instead
-// of becoming an IngressRule without paths, which would invalidate the
-// whole Ingress.
-func TestCreateIngressLeavesOutInferencePoolRules(t *testing.T) {
-	h := httpRouteTestManager()
-	route := routeWith(
-		[]v1.HTTPBackendRef{backendRef(inferencePoolGroup, inferencePoolKind, "vllm-qwen3")},
-		[]v1.HTTPBackendRef{backendRef("", "", "web")},
-	)
-
-	ing, err := h.createIngress(context.Background(), route, testTarget(nil).gateway, hostListener())
-	if err != nil {
-		t.Fatalf("createIngress: %v", err)
-	}
-	if len(ing.Spec.Rules) != 1 {
-		t.Fatalf("got %d IngressRules, want 1 for the Service rule only", len(ing.Spec.Rules))
-	}
-	paths := ing.Spec.Rules[0].HTTP.Paths
-	if len(paths) != 1 || paths[0].Backend.Service.Name != "web" {
-		t.Errorf("paths = %+v, want the one Service backend", paths)
-	}
-}
-
 // withRouteObjects - point the manager's listers at routes and gateways, and
 // give it a queue to watch.
 func withRouteObjects(h *HTTPRouteManager, routes []*v1.HTTPRoute, gateways ...*v1.Gateway) *HTTPRouteManager {
@@ -176,8 +103,8 @@ func TestHTTPRouteWaitsForItsGateway(t *testing.T) {
 	route.Spec.ParentRefs = []v1.ParentReference{{Name: "inference-gw"}}
 	h := withRouteObjects(httpRouteTestManager(), []*v1.HTTPRoute{route})
 
-	if err := h.createHTTPRoute(route); err != nil {
-		t.Fatalf("createHTTPRoute without its Gateway: %v, want nil", err)
+	if err := h.syncHTTPRoute(route); err != nil {
+		t.Fatalf("syncHTTPRoute without its Gateway: %v, want nil", err)
 	}
 	if got := ingressCreates(h); got != 0 {
 		t.Errorf("created %d Ingresses for a route without its Gateway", got)

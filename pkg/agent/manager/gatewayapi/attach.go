@@ -208,6 +208,68 @@ func listenerHostnames(l *v1.Listener, route []v1.Hostname) ([]v1.Hostname, bool
 	return hosts, len(hosts) > 0
 }
 
+// moreSpecificHostname - whether listener hostname a is more specific than b,
+// where nil b, a listener without a hostname, is the least specific of all.
+// An exact name is more specific than a wildcard, and a wildcard with the
+// longer suffix more than one with the shorter. Two exact names never are:
+// they are equal or match nothing in common.
+func moreSpecificHostname(a v1.Hostname, b *v1.Hostname) bool {
+	if b == nil || *b == "" {
+		return true
+	}
+	as, bs := wildcardSuffix(a), wildcardSuffix(*b)
+	switch {
+	case as == "" && bs == "":
+		return false
+	case as == "":
+		return true
+	case bs == "":
+		return false
+	}
+	return len(as) > len(bs)
+}
+
+// servedHostnames - those of a route's hostnames on a listener that requests
+// reach it with: nil for any host, and false when none are left.
+//
+// A request goes to the listener on its port whose hostname matches it most
+// specifically. A route hostname that a more specific listener on the same
+// port matches entirely never reaches this one, whether or not the route
+// attaches there too, and is left out. One the other listener matches only in
+// part stays, as does any host: an Ingress rule names a single host or any,
+// and cannot leave out what the other listener takes.
+func servedHostnames(gw *v1.Gateway, l *v1.Listener, hosts []v1.Hostname) ([]v1.Hostname, bool) {
+	if hosts == nil {
+		return nil, true
+	}
+
+	var served []v1.Hostname
+	for _, h := range hosts {
+		if !takenByMoreSpecificListener(gw, l, h) {
+			served = append(served, h)
+		}
+	}
+	return served, len(served) > 0
+}
+
+// takenByMoreSpecificListener - whether another listener on l's port, with a
+// hostname more specific than l's, matches every host h does.
+func takenByMoreSpecificListener(gw *v1.Gateway, l *v1.Listener, h v1.Hostname) bool {
+	for i := range gw.Spec.Listeners {
+		other := &gw.Spec.Listeners[i]
+		if other.Name == l.Name || other.Port != l.Port || other.Hostname == nil || *other.Hostname == "" {
+			continue
+		}
+		if !moreSpecificHostname(*other.Hostname, l.Hostname) {
+			continue
+		}
+		if both, ok := hostnameIntersection(*other.Hostname, h); ok && both == h {
+			return true
+		}
+	}
+	return false
+}
+
 // attachingRoute - what attachment reads of a route.
 type attachingRoute struct {
 	Kind      v1.Kind

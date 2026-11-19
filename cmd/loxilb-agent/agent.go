@@ -362,7 +362,7 @@ func run(o *Options) error {
 			k8sClient, sigsClient, networkConfig, ipPool, sigsInformerFactory)
 
 		httpRouteManager := gatewayapi.NewHTTPRouteManager(
-			k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+			k8sClient, sigsClient, networkConfig, informerFactory, sigsInformerFactory)
 
 		// Built before the shared factory starts, because it registers an
 		// HTTPRoute handler on it: an InferencePool only learns which Gateway
@@ -384,6 +384,9 @@ func run(o *Options) error {
 		}
 
 		sigsInformerFactory.Start(stopCh)
+		// Started already; this starts the informers the managers above
+		// added to it since, such as the HTTPRoute manager's Namespaces.
+		informerFactory.Start(stopCh)
 
 		go gatewayClassManager.Run(stopCh)
 		go gatewayManager.Run(stopCh)

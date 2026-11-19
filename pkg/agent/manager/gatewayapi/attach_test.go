@@ -429,3 +429,81 @@ func TestAttachRoute(t *testing.T) {
 		})
 	}
 }
+
+func TestMoreSpecificHostname(t *testing.T) {
+	cases := []struct {
+		a, b string // "" for b is a listener without a hostname
+		want bool
+	}{
+		{"a.example.com", "", true},
+		{"*.example.com", "", true},
+		{"a.example.com", "*.example.com", true},
+		{"*.example.com", "a.example.com", false},
+		{"*.a.example.com", "*.example.com", true},
+		{"*.example.com", "*.a.example.com", false},
+		{"*.example.com", "*.example.com", false},
+		{"a.example.com", "b.example.com", false},
+	}
+	for _, tc := range cases {
+		var b *v1.Hostname
+		if tc.b != "" {
+			b = hostnamePtr(tc.b)
+		}
+		if got := moreSpecificHostname(v1.Hostname(tc.a), b); got != tc.want {
+			t.Errorf("moreSpecificHostname(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+// A request goes to the most specific listener on its port, so a route
+// hostname that one takes in full is not the less specific listener's to
+// serve, attached there or not.
+func TestServedHostnames(t *testing.T) {
+	gw := runaiGateway()
+	gw.Spec.Listeners = append(gw.Spec.Listeners,
+		listener("http", v1.HTTPProtocolType, 80, ""),
+		listener("http-exact", v1.HTTPProtocolType, 80, "a.example.com"),
+		listener("other-port", v1.HTTPSProtocolType, 8443, "*.runai-inference.cluster.example.com"))
+	byName := func(name string) *v1.Listener {
+		for i := range gw.Spec.Listeners {
+			if string(gw.Spec.Listeners[i].Name) == name {
+				return &gw.Spec.Listeners[i]
+			}
+		}
+		t.Fatalf("no listener %s", name)
+		return nil
+	}
+
+	cases := []struct {
+		name     string
+		listener string
+		hosts    []v1.Hostname
+		want     string // joinHostnames of the result, "" for none left
+	}{
+		{"any host stays", "http", nil, "*"},
+		{"an exact listener takes its name", "http", hostnames("a.example.com", "b.example.com"), "b.example.com"},
+		{"the exact listener keeps it", "http-exact", hostnames("a.example.com"), "a.example.com"},
+		{"a wildcard inside a more specific one goes",
+			"https-workloads", hostnames("*.runai-inference.cluster.example.com"), ""},
+		{"a name inside a more specific wildcard goes",
+			"https-workloads", hostnames("m.runai-inference.cluster.example.com", "w.cluster.example.com"), "w.cluster.example.com"},
+		{"a wildcard the other covers only in part stays",
+			"https-workloads", hostnames("*.cluster.example.com"), "*.cluster.example.com"},
+		{"the more specific listener keeps it",
+			"https-inference", hostnames("*.runai-inference.cluster.example.com"), "*.runai-inference.cluster.example.com"},
+		{"a listener on another port takes nothing",
+			"other-port", hostnames("x.runai-inference.cluster.example.com"), "x.runai-inference.cluster.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := servedHostnames(gw, byName(tc.listener), tc.hosts)
+			gotS := ""
+			if ok {
+				gotS = joinHostnames(got)
+			}
+			if gotS != tc.want {
+				t.Errorf("servedHostnames(%s, %v) = %q, want %q", tc.listener, tc.hosts, gotS, tc.want)
+			}
+		})
+	}
+}

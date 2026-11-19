@@ -18,16 +18,25 @@ package gatewayapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	netv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
+	corev1lister "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -61,6 +70,12 @@ type HTTPRouteManager struct {
 	httpRouteListerSynced cache.InformerSynced
 	gatewayLister         sigs_v1_lister.GatewayLister
 	gatewayListerSynced   cache.InformerSynced
+	// The class says whether a Gateway is this controller's to serve.
+	gatewayClassLister       sigs_v1_lister.GatewayClassLister
+	gatewayClassListerSynced cache.InformerSynced
+	// For a listener that takes routes from the namespaces a selector picks.
+	namespaceLister       corev1lister.NamespaceLister
+	namespaceListerSynced cache.InformerSynced
 
 	queue workqueue.RateLimitingInterface
 }
@@ -74,10 +89,13 @@ func NewHTTPRouteManager(
 	kubeClient clientset.Interface,
 	sigsClient sigsclientset.Interface,
 	networkConfig *config.NetworkConfig,
+	kubeInformerFactory informers.SharedInformerFactory,
 	sigsInformerFactory externalversions.SharedInformerFactory) *HTTPRouteManager {
 
 	httpRouteInformer := sigsInformerFactory.Gateway().V1().HTTPRoutes()
 	gatewayInformer := sigsInformerFactory.Gateway().V1().Gateways()
+	gatewayClassInformer := sigsInformerFactory.Gateway().V1().GatewayClasses()
+	namespaceInformer := kubeInformerFactory.Core().V1().Namespaces()
 	manager := &HTTPRouteManager{
 		kubeClient:            kubeClient,
 		sigsClient:            sigsClient,
@@ -88,6 +106,11 @@ func NewHTTPRouteManager(
 		httpRouteListerSynced: httpRouteInformer.Informer().HasSynced,
 		gatewayLister:         gatewayInformer.Lister(),
 		gatewayListerSynced:   gatewayInformer.Informer().HasSynced,
+
+		gatewayClassLister:       gatewayClassInformer.Lister(),
+		gatewayClassListerSynced: gatewayClassInformer.Informer().HasSynced,
+		namespaceLister:          namespaceInformer.Lister(),
+		namespaceListerSynced:    namespaceInformer.Informer().HasSynced,
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "httpRoute"),
 	}
@@ -117,6 +140,26 @@ func NewHTTPRouteManager(
 			DeleteFunc: func(old interface{}) {
 				manager.enqueueGatewayRoutes(old)
 			},
+		},
+	)
+
+	// A Gateway is served only once its class names this controller, and
+	// the class may come after it. Its controllerName cannot change.
+	gatewayClassInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(cur interface{}) {
+				manager.enqueueClassRoutes(cur)
+			},
+			DeleteFunc: func(old interface{}) {
+				manager.enqueueClassRoutes(old)
+			},
+		},
+	)
+
+	// A listener can pick the namespaces it takes routes from by label.
+	namespaceInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			UpdateFunc: manager.namespaceUpdated,
 		},
 	)
 
@@ -187,6 +230,53 @@ func (h *HTTPRouteManager) enqueueGatewayRoutes(obj interface{}) {
 	}
 }
 
+// enqueueClassRoutes - queue the routes of every Gateway of a GatewayClass.
+func (h *HTTPRouteManager) enqueueClassRoutes(obj interface{}) {
+	gc, ok := obj.(*v1.GatewayClass)
+	if !ok {
+		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			klog.Errorf("Received unexpected object: %v", obj)
+			return
+		}
+		gc, ok = deletedState.Obj.(*v1.GatewayClass)
+		if !ok {
+			klog.Errorf("DeletedFinalStateUnknown contains non-GatewayClass object: %v", deletedState.Obj)
+			return
+		}
+	}
+
+	gateways, err := h.gatewayLister.List(labels.Everything())
+	if err != nil {
+		klog.Errorf("gatewayClass %s: unable to list gateways: %v", gc.Name, err)
+		return
+	}
+	for _, gw := range gateways {
+		if string(gw.Spec.GatewayClassName) == gc.Name {
+			h.enqueueGatewayRoutes(gw)
+		}
+	}
+}
+
+// namespaceUpdated - queue the routes of a namespace whose labels changed,
+// which a listener's namespace selector reads.
+func (h *HTTPRouteManager) namespaceUpdated(old, cur interface{}) {
+	oldNs, okOld := old.(*corev1.Namespace)
+	curNs, okCur := cur.(*corev1.Namespace)
+	if !okOld || !okCur || maps.Equal(oldNs.Labels, curNs.Labels) {
+		return
+	}
+
+	routes, err := h.httpRouteLister.HTTPRoutes(curNs.Name).List(labels.Everything())
+	if err != nil {
+		klog.Errorf("namespace %s: unable to list HTTPRoutes: %v", curNs.Name, err)
+		return
+	}
+	for _, route := range routes {
+		h.queue.Add(HTTPRouteQueueEntry{route.Namespace, route.Name})
+	}
+}
+
 func (h *HTTPRouteManager) Run(stopCh <-chan struct{}) {
 	defer h.queue.ShutDown()
 
@@ -197,7 +287,9 @@ func (h *HTTPRouteManager) Run(stopCh <-chan struct{}) {
 		httpRouteMgrName,
 		stopCh,
 		h.httpRouteListerSynced,
-		h.gatewayListerSynced) {
+		h.gatewayListerSynced,
+		h.gatewayClassListerSynced,
+		h.namespaceListerSynced) {
 		return
 	}
 
@@ -243,10 +335,12 @@ func (h *HTTPRouteManager) reconcile(namespace, name string) error {
 		return err
 	}
 
-	return h.createHTTPRoute(httpRoute)
+	return h.syncHTTPRoute(httpRoute)
 }
 
-func (h *HTTPRouteManager) createHTTPRoute(httpRoute *v1.HTTPRoute) error {
+// syncHTTPRoute - make the route's Ingresses what its attachments call for:
+// one for each listener it attaches to, and none for a listener it left.
+func (h *HTTPRouteManager) syncHTTPRoute(httpRoute *v1.HTTPRoute) error {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
@@ -258,29 +352,45 @@ func (h *HTTPRouteManager) createHTTPRoute(httpRoute *v1.HTTPRoute) error {
 			httpRoute.Namespace, httpRoute.Name, strings.Join(refs, ", "))
 	}
 
-	// find all parent resources
-	for _, parentRef := range httpRoute.Spec.ParentRefs {
-		gateway, err := h.findGateway(httpRoute, parentRef)
-		if err != nil {
-			return err
-		}
-		if gateway == nil {
-			continue
-		}
-
-		listener := h.findListener(gateway, parentRef)
-		if listener != nil {
-			err := h.reconcileIngress(ctx, httpRoute, gateway, listener)
-			if err != nil {
-				klog.Errorf("failure reconcileIngress. err: %v", err)
-				return err
-			}
-		} else {
-			klog.Infof("Unknown Listener on gateway %s/%s", gateway.Namespace, gateway.Name)
-		}
+	desired, err := h.routeIngresses(httpRoute)
+	if err != nil {
+		return err
 	}
 
-	klog.Infof("HTTPRoute %s is reconciled.", httpRoute.Name)
+	existing, err := h.ownedIngresses(ctx, httpRoute.Namespace, httpRoute.Name)
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	keep := map[string]bool{}
+	for _, ing := range desired {
+		keep[ing.Name] = true
+		if err := h.applyIngress(ctx, ing, existing[ing.Name]); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		// The Ingresses left over stay until the rest are in place. One of
+		// them may still be serving a listener whose new Ingress failed.
+		return utilerrors.NewAggregate(errs)
+	}
+
+	for name := range existing {
+		if keep[name] {
+			continue
+		}
+		if err := h.kubeClient.NetworkingV1().Ingresses(httpRoute.Namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("HTTPRoute %s/%s: delete ingress %s: %w", httpRoute.Namespace, httpRoute.Name, name, err))
+			continue
+		}
+		klog.Infof("ingress %s/%s is deleted by HTTPRoute %s - no listener it attaches to needs it", httpRoute.Namespace, name, httpRoute.Name)
+	}
+	if len(errs) > 0 {
+		return utilerrors.NewAggregate(errs)
+	}
+
+	klog.Infof("HTTPRoute %s/%s is reconciled with %d ingresses.", httpRoute.Namespace, httpRoute.Name, len(desired))
 	return nil
 }
 
@@ -298,27 +408,40 @@ func (h *HTTPRouteManager) deleteHTTPRoute(namespace, name string) error {
 
 // deleteRouteIngresses - remove the Ingresses this manager made for the route.
 func (h *HTTPRouteManager) deleteRouteIngresses(ctx context.Context, namespace, name string) error {
-	ingList, err := h.kubeClient.NetworkingV1().Ingresses(namespace).List(ctx, metav1.ListOptions{})
+	owned, err := h.ownedIngresses(ctx, namespace, name)
 	if err != nil {
-		klog.Errorf("HTTPRoute: get ingresses list (ns: %s) failure. err: %v", namespace, err)
 		return err
 	}
 
-	for _, ingress := range ingList.Items {
-		if ingress.Annotations["gateway-api-controller"] == h.gatewayProvider &&
-			ingress.Annotations["parent-http-route"] == name {
-
-			err = h.kubeClient.NetworkingV1().Ingresses(namespace).Delete(ctx, ingress.Name, metav1.DeleteOptions{})
-			if err != nil {
-				klog.Errorf("HTTPRoute: delete ingress %s/%s failure. err: %v", namespace, ingress.Name, err)
-				return err
-			}
-			klog.Infof("ingress %s/%s is deleted by HTTPRoute %s", namespace, ingress.Name, name)
-
+	for ingName := range owned {
+		err = h.kubeClient.NetworkingV1().Ingresses(namespace).Delete(ctx, ingName, metav1.DeleteOptions{})
+		if err != nil && !errors.IsNotFound(err) {
+			klog.Errorf("HTTPRoute: delete ingress %s/%s failure. err: %v", namespace, ingName, err)
+			return err
 		}
+		klog.Infof("ingress %s/%s is deleted by HTTPRoute %s", namespace, ingName, name)
 	}
 
 	return nil
+}
+
+// ownedIngresses - the Ingresses this manager made for the route, by name.
+func (h *HTTPRouteManager) ownedIngresses(ctx context.Context, namespace, name string) (map[string]*netv1.Ingress, error) {
+	ingList, err := h.kubeClient.NetworkingV1().Ingresses(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.Errorf("HTTPRoute: get ingresses list (ns: %s) failure. err: %v", namespace, err)
+		return nil, err
+	}
+
+	owned := map[string]*netv1.Ingress{}
+	for i := range ingList.Items {
+		ingress := &ingList.Items[i]
+		if ingress.Annotations["gateway-api-controller"] == h.gatewayProvider &&
+			ingress.Annotations["parent-http-route"] == name {
+			owned[ingress.Name] = ingress
+		}
+	}
+	return owned, nil
 }
 
 // findGateway - the Gateway a parentRef names, or nil when it names none that
@@ -343,51 +466,162 @@ func (h *HTTPRouteManager) findGateway(httpRoute *v1.HTTPRoute, parentRef v1.Par
 	return gateway, nil
 }
 
-func (h *HTTPRouteManager) findListener(gateway *v1.Gateway, parentRef v1.ParentReference) *v1.Listener {
-	if parentRef.SectionName != nil {
-		for i := range gateway.Spec.Listeners {
-			if gateway.Spec.Listeners[i].Name == *parentRef.SectionName {
-				return &gateway.Spec.Listeners[i]
+// servesGateway - whether the Gateway's class names this controller. A route
+// on another controller's Gateway is that controller's to serve.
+func (h *HTTPRouteManager) servesGateway(gw *v1.Gateway) bool {
+	gc, err := h.gatewayClassLister.Get(string(gw.Spec.GatewayClassName))
+	if err != nil {
+		// Its class may not exist yet; it queues the routes when it comes.
+		klog.V(4).Infof("gateway %s/%s: gatewayClass %s: %v", gw.Namespace, gw.Name, gw.Spec.GatewayClassName, err)
+		return false
+	}
+	return gc.Spec.ControllerName == v1.GatewayController(h.gatewayProvider)
+}
+
+// namespaceLabels - the labels of a namespace, read from the cache.
+func (h *HTTPRouteManager) namespaceLabels() namespaceLabels {
+	if h.namespaceLister == nil {
+		return nil
+	}
+	return func(name string) (labels.Set, error) {
+		ns, err := h.namespaceLister.Get(name)
+		if err != nil {
+			return nil, err
+		}
+		return labels.Set(ns.Labels), nil
+	}
+}
+
+// routeIngresses - the Ingresses the route should have: one for each listener
+// it attaches to that an Ingress can serve it on.
+func (h *HTTPRouteManager) routeIngresses(httpRoute *v1.HTTPRoute) ([]*netv1.Ingress, error) {
+	route := attachingRoute{Kind: kindHTTPRoute, Namespace: httpRoute.Namespace, Hostnames: httpRoute.Spec.Hostnames}
+	nsLabels := h.namespaceLabels()
+
+	var ingresses []*netv1.Ingress
+	seen := map[string]bool{}
+	for _, parentRef := range httpRoute.Spec.ParentRefs {
+		gateway, err := h.findGateway(httpRoute, parentRef)
+		if err != nil {
+			return nil, err
+		}
+		if gateway == nil || !h.servesGateway(gateway) {
+			continue
+		}
+
+		attachment := attachRoute(gateway, parentRef, route, nsLabels)
+		if !attachment.Accepted() {
+			klog.Infof("HTTPRoute %s/%s does not attach to gateway %s/%s (%s): %s",
+				httpRoute.Namespace, httpRoute.Name, gateway.Namespace, gateway.Name, attachment.Reason, attachment.Message)
+			continue
+		}
+
+		for _, la := range attachment.Listeners {
+			ing := h.listenerIngress(httpRoute, gateway, la)
+			// Two parentRefs can select the same listener.
+			if ing == nil || seen[ing.Name] {
+				continue
 			}
+			seen[ing.Name] = true
+			ingresses = append(ingresses, ing)
+		}
+	}
+	return ingresses, nil
+}
+
+// listenerIngressName - the name of the Ingress a route has for one listener.
+// The Gateway and listener go in as a hash, which keeps the name inside the
+// API's limit and apart from those of the route's other listeners.
+func listenerIngressName(route, gwNamespace, gwName string, listener v1.SectionName) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{route, gwNamespace, gwName, string(listener)}, "/")))
+	suffix := hex.EncodeToString(sum[:4])
+
+	base := route
+	if max := validation.DNS1123SubdomainMaxLength - len(suffix) - 1; len(base) > max {
+		base = strings.TrimRight(base[:max], "-.")
+	}
+	return base + "-" + suffix
+}
+
+// listenerCertificateSecrets - the names of the Secrets a listener terminates
+// TLS with. A certificateRef of another kind is skipped.
+func listenerCertificateSecrets(l *v1.Listener) []string {
+	if l.TLS == nil {
+		return nil
+	}
+
+	var names []string
+	for _, ref := range l.TLS.CertificateRefs {
+		if ref.Group != nil && *ref.Group != "" {
+			continue
+		}
+		if ref.Kind != nil && *ref.Kind != "Secret" {
+			continue
+		}
+		names = append(names, string(ref.Name))
+	}
+	return names
+}
+
+// listenerIngress - the Ingress that serves a route on one listener it
+// attaches to, or nil when there is none to make.
+//
+// loxilb-ingress serves every loxilb Ingress on its HTTP port, or on its HTTPS
+// port for a host the Ingress has TLS for, whichever listener it came from.
+// So an HTTPS listener is served only for hosts with a certificate: one that
+// has no hostname, or no Secret, gets no Ingress rather than one that would
+// answer in plain HTTP.
+func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.Gateway, la listenerAttachment) *netv1.Ingress {
+	listener := la.Listener
+	hosts, ok := servedHostnames(gateway, listener, la.Hostnames)
+	if !ok {
+		klog.V(2).Infof("HTTPRoute %s/%s: every hostname it has on listener %s of gateway %s/%s goes to a more specific listener",
+			httpRoute.Namespace, httpRoute.Name, listener.Name, gateway.Namespace, gateway.Name)
+		return nil
+	}
+
+	// An IngressRule without a host serves any.
+	hostnames := []string{""}
+	if hosts != nil {
+		hostnames = hostnames[:0]
+		for _, host := range hosts {
+			hostnames = append(hostnames, string(host))
 		}
 	}
 
-	return nil
-}
-
-// errNoIngressBackends - the route names no backend an Ingress can carry, so
-// there is no Ingress to make.
-var errNoIngressBackends = fmt.Errorf("no backendRef an Ingress can carry")
-
-func (h *HTTPRouteManager) reconcileIngress(ctx context.Context, httpRoute *v1.HTTPRoute, gateway *v1.Gateway, listener *v1.Listener) error {
-	// create ingress
-	_, err := h.createIngress(ctx, httpRoute, gateway, listener)
-	switch {
-	case err == errNoIngressBackends:
-		// Every backend is served some other way - an InferencePool becomes a
-		// Service of its own manager's - and an Ingress with no rules is
-		// refused by the API server anyway. One left from when the route still
-		// named a Service has to go.
-		klog.V(4).Infof("HTTPRoute %s/%s: no backendRef needs an Ingress", httpRoute.Namespace, httpRoute.Name)
-		return h.deleteRouteIngresses(ctx, httpRoute.Namespace, httpRoute.Name)
-	case err != nil:
-		klog.Errorf("HTTPManager: failed to create new ingress %s/%s. err: %v", httpRoute.Namespace, httpRoute.Name, err)
+	var tls []netv1.IngressTLS
+	if listener.Protocol == v1.HTTPSProtocolType {
+		if hosts == nil {
+			klog.Warningf("HTTPRoute %s/%s: neither listener %s of gateway %s/%s nor the route names a hostname, "+
+				"and loxilb-ingress terminates TLS only for a named host; the route is not served on it",
+				httpRoute.Namespace, httpRoute.Name, listener.Name, gateway.Namespace, gateway.Name)
+			return nil
+		}
+		secrets := listenerCertificateSecrets(listener)
+		if len(secrets) == 0 {
+			klog.Warningf("HTTPRoute %s/%s: listener %s of gateway %s/%s has no Secret to terminate TLS with; the route is not served on it",
+				httpRoute.Namespace, httpRoute.Name, listener.Name, gateway.Namespace, gateway.Name)
+			return nil
+		}
+		for _, secret := range secrets {
+			tls = append(tls, netv1.IngressTLS{SecretName: secret, Hosts: hostnames})
+		}
 	}
-	return nil
-}
 
-func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTPRoute, gateway *v1.Gateway, listener *v1.Listener) (*netv1.Ingress, error) {
-	newIngress := netv1.Ingress{}
-	newIngress.Name = httpRoute.Name
+	newIngress := &netv1.Ingress{}
+	newIngress.Name = listenerIngressName(httpRoute.Name, gateway.Namespace, gateway.Name, listener.Name)
 	newIngress.Namespace = httpRoute.Namespace
 
-	newIngress.SetAnnotations(httpRoute.Annotations)
+	// A copy: the route is the informer's, and the annotations below are not
+	// its to carry.
+	newIngress.Annotations = maps.Clone(httpRoute.Annotations)
 	if newIngress.Annotations == nil {
 		newIngress.Annotations = map[string]string{}
 	}
 	newIngress.Annotations["gateway-api-controller"] = h.gatewayProvider
 	newIngress.Annotations["parent-gateway"] = gateway.Name
 	newIngress.Annotations["parent-gateway-namespace"] = gateway.Namespace
+	newIngress.Annotations["parent-listener"] = string(listener.Name)
 	newIngress.Annotations["parent-http-route"] = httpRoute.Name
 
 	newIngress.SetLabels(map[string]string{
@@ -395,95 +629,11 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 	})
 	ingressClass := "loxilb"
 	newIngress.Spec.IngressClassName = &ingressClass
-
-	// If the listener has a hostname, it takes precedence over httpRoute.
-	var hostnames []string
-	if listener.Hostname != nil {
-		hostnames = append(hostnames, string(*listener.Hostname))
-	} else {
-		for _, hostname := range httpRoute.Spec.Hostnames {
-			hostnames = append(hostnames, string(hostname))
-		}
-	}
-
-	// TODO: Currently, only TLS Kind is supported.
-	if listener.TLS != nil {
-		for _, tlsCertRef := range listener.TLS.CertificateRefs {
-			if tlsCertRef.Kind != nil && *tlsCertRef.Kind == v1.Kind("Secret") {
-				newIngressTLS := netv1.IngressTLS{
-					SecretName: string(tlsCertRef.Name),
-					Hosts:      hostnames,
-				}
-				newIngress.Spec.TLS = append(newIngress.Spec.TLS, newIngressTLS)
-			}
-		}
-	}
+	newIngress.Spec.TLS = tls
 
 	anyPath := false
 	for _, rule := range httpRoute.Spec.Rules {
-		var paths []netv1.HTTPIngressPath
-		for _, match := range rule.Matches {
-			for _, backref := range rule.BackendRefs {
-				// An Ingress backend is always a Service. A backendRef that
-				// names something else has to be skipped rather than read as
-				// one, or the Ingress ends up pointing at a Service that was
-				// never created and the route silently forwards nowhere.
-				switch classifyBackendRef(backref.BackendObjectReference) {
-				case backendService:
-				case backendInferencePool:
-					// Handled by the InferencePool controller, which programs
-					// the loxilb rule directly instead of going through an
-					// Ingress.
-					klog.V(4).Infof("HTTPRoute %s/%s: backendRef %s is an InferencePool, not an Ingress backend",
-						httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
-					continue
-				default:
-					klog.Warningf("HTTPRoute %s/%s: backendRef %s is not supported - skipping",
-						httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
-					continue
-				}
-
-				if backref.Namespace != nil {
-					if newIngress.Namespace != string(*backref.Namespace) {
-						newIngress.Annotations["external-backend-service"] = "true"
-						newIngress.Annotations["service-"+string(backref.Name)+"-namespace"] = string(*backref.Namespace)
-					}
-				}
-
-				newIngressPath := netv1.HTTPIngressPath{
-					Backend: netv1.IngressBackend{
-						Service: &netv1.IngressServiceBackend{
-							Name: string(backref.Name),
-							Port: netv1.ServiceBackendPort{},
-						},
-					},
-				}
-
-				if match.Path != nil {
-					if match.Path.Value != nil {
-						newIngressPath.Path = *match.Path.Value
-					}
-					if match.Path.Type != nil {
-						switch *match.Path.Type {
-						case v1.PathMatchExact:
-							exactType := netv1.PathTypeExact
-							newIngressPath.PathType = &exactType
-						case v1.PathMatchPathPrefix:
-							fallthrough
-						default:
-							prefixType := netv1.PathTypePrefix
-							newIngressPath.PathType = &prefixType
-						}
-					}
-				}
-				if backref.Port != nil {
-					newIngressPath.Backend.Service.Port.Number = int32(*backref.Port)
-				}
-				// TODO: now httpRoute don't support Path Type RegularExpression
-
-				paths = append(paths, newIngressPath)
-			}
-		}
+		paths := h.rulePaths(httpRoute, rule, newIngress)
 
 		// A rule whose backends are all served elsewhere adds nothing; an
 		// IngressRule without paths would make the whole Ingress invalid.
@@ -494,7 +644,7 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 
 		for _, hostname := range hostnames {
 			newRule := netv1.IngressRule{
-				Host: string(hostname),
+				Host: hostname,
 				IngressRuleValue: netv1.IngressRuleValue{
 					HTTP: &netv1.HTTPIngressRuleValue{
 						Paths: paths,
@@ -506,13 +656,121 @@ func (h *HTTPRouteManager) createIngress(ctx context.Context, httpRoute *v1.HTTP
 	}
 
 	if !anyPath {
-		return nil, errNoIngressBackends
+		// Every backend is served some other way - an InferencePool becomes a
+		// Service of its own manager's - and an Ingress with no rules is
+		// refused by the API server anyway.
+		klog.V(4).Infof("HTTPRoute %s/%s: no backendRef needs an Ingress", httpRoute.Namespace, httpRoute.Name)
+		return nil
 	}
 
-	ing, err := h.kubeClient.NetworkingV1().Ingresses(newIngress.Namespace).Create(ctx, &newIngress, metav1.CreateOptions{})
-	if err != nil {
-		return nil, err
+	return newIngress
+}
+
+// rulePaths - the Ingress paths of one route rule, one for each match and
+// backend an Ingress can carry. A backend in another namespace is noted on
+// ing, where loxilb-ingress looks for it.
+func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteRule, ing *netv1.Ingress) []netv1.HTTPIngressPath {
+	var paths []netv1.HTTPIngressPath
+	for _, match := range rule.Matches {
+		for _, backref := range rule.BackendRefs {
+			// An Ingress backend is always a Service. A backendRef that
+			// names something else has to be skipped rather than read as
+			// one, or the Ingress ends up pointing at a Service that was
+			// never created and the route silently forwards nowhere.
+			switch classifyBackendRef(backref.BackendObjectReference) {
+			case backendService:
+			case backendInferencePool:
+				// Handled by the InferencePool controller, which programs
+				// the loxilb rule directly instead of going through an
+				// Ingress.
+				klog.V(4).Infof("HTTPRoute %s/%s: backendRef %s is an InferencePool, not an Ingress backend",
+					httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
+				continue
+			default:
+				klog.Warningf("HTTPRoute %s/%s: backendRef %s is not supported - skipping",
+					httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
+				continue
+			}
+
+			if backref.Namespace != nil {
+				if ing.Namespace != string(*backref.Namespace) {
+					ing.Annotations["external-backend-service"] = "true"
+					ing.Annotations["service-"+string(backref.Name)+"-namespace"] = string(*backref.Namespace)
+				}
+			}
+
+			newIngressPath := netv1.HTTPIngressPath{
+				Backend: netv1.IngressBackend{
+					Service: &netv1.IngressServiceBackend{
+						Name: string(backref.Name),
+						Port: netv1.ServiceBackendPort{},
+					},
+				},
+			}
+
+			if match.Path != nil {
+				if match.Path.Value != nil {
+					newIngressPath.Path = *match.Path.Value
+				}
+				if match.Path.Type != nil {
+					switch *match.Path.Type {
+					case v1.PathMatchExact:
+						exactType := netv1.PathTypeExact
+						newIngressPath.PathType = &exactType
+					case v1.PathMatchPathPrefix:
+						fallthrough
+					default:
+						prefixType := netv1.PathTypePrefix
+						newIngressPath.PathType = &prefixType
+					}
+				}
+			}
+			if backref.Port != nil {
+				newIngressPath.Backend.Service.Port.Number = int32(*backref.Port)
+			}
+			// TODO: now httpRoute don't support Path Type RegularExpression
+
+			paths = append(paths, newIngressPath)
+		}
+	}
+	return paths
+}
+
+// applyIngress - create the Ingress, or bring the route's existing one of that
+// name to it.
+func (h *HTTPRouteManager) applyIngress(ctx context.Context, desired, existing *netv1.Ingress) error {
+	ingresses := h.kubeClient.NetworkingV1().Ingresses(desired.Namespace)
+	route := desired.Annotations["parent-http-route"]
+
+	if existing == nil {
+		_, err := ingresses.Create(ctx, desired, metav1.CreateOptions{})
+		if errors.IsAlreadyExists(err) {
+			// Not in the route's own, so made by someone else; it is not
+			// this manager's to overwrite.
+			return fmt.Errorf("HTTPRoute %s/%s: ingress %s exists and was not made for the route: %w",
+				desired.Namespace, route, desired.Name, err)
+		}
+		if err != nil {
+			return fmt.Errorf("HTTPRoute %s/%s: create ingress %s: %w", desired.Namespace, route, desired.Name, err)
+		}
+		klog.Infof("ingress %s/%s is created for listener %s of gateway %s/%s", desired.Namespace, desired.Name,
+			desired.Annotations["parent-listener"], desired.Annotations["parent-gateway-namespace"], desired.Annotations["parent-gateway"])
+		return nil
 	}
 
-	return ing, nil
+	if equality.Semantic.DeepEqual(existing.Spec, desired.Spec) &&
+		maps.Equal(existing.Labels, desired.Labels) &&
+		maps.Equal(existing.Annotations, desired.Annotations) {
+		return nil
+	}
+
+	updated := existing.DeepCopy()
+	updated.Spec = desired.Spec
+	updated.Labels = desired.Labels
+	updated.Annotations = desired.Annotations
+	if _, err := ingresses.Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("HTTPRoute %s/%s: update ingress %s: %w", desired.Namespace, route, desired.Name, err)
+	}
+	klog.Infof("ingress %s/%s is updated", desired.Namespace, desired.Name)
+	return nil
 }
