@@ -10,6 +10,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 
 	v1 "sigs.k8s.io/gateway-api/apis/v1"
+	sigsfake "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned/fake"
 	sigs_v1_lister "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1"
 )
 
@@ -19,7 +20,7 @@ func httpRouteTestManager(objs ...*netv1.Ingress) *HTTPRouteManager {
 		_, _ = client.NetworkingV1().Ingresses(ing.Namespace).Create(context.Background(), ing, metav1.CreateOptions{})
 	}
 	client.ClearActions()
-	return &HTTPRouteManager{kubeClient: client, gatewayProvider: "loxilb.io/loxilb"}
+	return &HTTPRouteManager{kubeClient: client, sigsClient: sigsfake.NewSimpleClientset(), gatewayProvider: "loxilb.io/loxilb"}
 }
 
 func backendRef(group, kind, name string) v1.HTTPBackendRef {

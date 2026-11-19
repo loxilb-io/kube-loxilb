@@ -369,6 +369,7 @@ func run(o *Options) error {
 
 		httpRouteManager := gatewayapi.NewHTTPRouteManager(
 			k8sClient, sigsClient, networkConfig, informerFactory, sigsInformerFactory, referenceGrants)
+		httpRouteManager.SetServesInferencePools(o.config.EnableInferenceExtension)
 
 		// Built before the shared factory starts, because it registers an
 		// HTTPRoute handler on it: an InferencePool only learns which Gateway

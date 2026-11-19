@@ -359,8 +359,12 @@ func TestListenerIngressOnHTTPS(t *testing.T) {
 		gw := webGateway()
 		gw.Spec.Listeners[1].Hostname = nil
 		la := listenerAttachment{Listener: &gw.Spec.Listeners[1]}
-		if ing := servingManager(nil).listenerIngress(route, gw, la); ing != nil {
+		ing, unserved := servingManager(nil).listenerIngress(route, gw, la)
+		if ing != nil {
 			t.Errorf("got an Ingress with rules for hosts %v", ruleHosts(*ing))
+		}
+		if !strings.Contains(unserved, "names a hostname") {
+			t.Errorf("unserved = %q, want why", unserved)
 		}
 	})
 
@@ -369,17 +373,21 @@ func TestListenerIngressOnHTTPS(t *testing.T) {
 		configMap := v1.Kind("ConfigMap")
 		gw.Spec.Listeners[1].TLS.CertificateRefs[0].Kind = &configMap
 		la := listenerAttachment{Listener: &gw.Spec.Listeners[1], Hostnames: hostnames("shop.example.com")}
-		if ing := servingManager(nil).listenerIngress(route, gw, la); ing != nil {
+		ing, unserved := servingManager(nil).listenerIngress(route, gw, la)
+		if ing != nil {
 			t.Errorf("got an Ingress with TLS %v", ing.Spec.TLS)
+		}
+		if !strings.Contains(unserved, "no Secret") {
+			t.Errorf("unserved = %q, want why", unserved)
 		}
 	})
 
 	t.Run("HTTP for any host", func(t *testing.T) {
 		gw := webGateway()
 		la := listenerAttachment{Listener: &gw.Spec.Listeners[0]}
-		ing := servingManager(nil).listenerIngress(route, gw, la)
-		if ing == nil {
-			t.Fatal("no Ingress for an HTTP listener serving any host")
+		ing, unserved := servingManager(nil).listenerIngress(route, gw, la)
+		if ing == nil || unserved != "" {
+			t.Fatalf("no Ingress for an HTTP listener serving any host (%q)", unserved)
 		}
 		if hosts := ruleHosts(*ing); len(hosts) != 1 || hosts[0] != "" {
 			t.Errorf("rule hosts = %q, want one rule for any host", hosts)
@@ -456,7 +464,7 @@ func TestListenerIngressLeavesOutInferencePoolRules(t *testing.T) {
 	route.Spec.Hostnames = hostnames("llm.example.com")
 	gw := webGateway()
 
-	ing := servingManager(nil).listenerIngress(route, gw,
+	ing, _ := servingManager(nil).listenerIngress(route, gw,
 		listenerAttachment{Listener: &gw.Spec.Listeners[0], Hostnames: route.Spec.Hostnames})
 	if ing == nil {
 		t.Fatal("no Ingress for the Service rule")
