@@ -1026,6 +1026,15 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		return errors.Wrap(err, "getIngressSvcPairs return error")
 	}
 
+	// A pair the Service no longer has - a port taken off it, an address it
+	// no longer names - is taken back here. A sync that changes nothing else
+	// would leave its rule, and one that does only forgets it.
+	if added {
+		if err := m.dropRemovedPairs(cacheKey, ingSvcPairs); err != nil {
+			return err
+		}
+	}
+
 	update := false
 	needDelete := false
 	if len(m.lbCache[cacheKey].LbServicePairs) <= 0 {
@@ -1567,6 +1576,62 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 	if releaseAll {
 		delete(m.lbCache, cacheKey)
 	}
+	return nil
+}
+
+// dropRemovedPairs - delete from every peer the rules of the pairs a cached
+// Service has that are not among current, give back what each held in the
+// address pool, and forget them.
+//
+// An address goes back only once nothing else holds it: another Service on
+// the same address and port, as the pools and routes on one Gateway listener
+// are, or another pair of this Service holding the address under the same
+// reservation, as every port does in a pool that is not shared.
+func (m *Manager) dropRemovedPairs(cacheKey string, current []SvcPair) error {
+	entry := m.lbCache[cacheKey]
+	keep := make(map[string]bool, len(current))
+	for _, p := range current {
+		keep[GenSPKey(p.IPString, uint16(p.Port), p.Protocol)] = true
+	}
+
+	for key, sp := range entry.LbServicePairs {
+		if keep[key] {
+			continue
+		}
+
+		var errChList []chan error
+		for _, lb := range sp.LbModelList {
+			for _, loxiClient := range m.LoxiClients.Clients {
+				ch := make(chan error, 1)
+				errChList = append(errChList, ch)
+				go func(client *api.LoxiClient, ch chan error, lbModel api.LoadBalancerModel) {
+					ch <- m.deleteLB(client, lbModel)
+				}(loxiClient, ch, lb)
+			}
+		}
+		var rErr error
+		for _, errCh := range errChList {
+			if err := <-errCh; err != nil {
+				rErr = err
+			}
+		}
+		if rErr != nil {
+			return fmt.Errorf("%s: unable to delete the rules of %s, which it no longer has: %v", cacheKey, key, rErr)
+		}
+
+		held := false
+		for other, osp := range entry.LbServicePairs {
+			if other != key && keep[other] && osp.ExternalIP == sp.ExternalIP && osp.IdentIPAM == sp.IdentIPAM {
+				held = true
+			}
+		}
+		if sp.InRange && !held && !m.portInUse(cacheKey, sp.ExternalIP, sp.Port, sp.Protocol) && entry.IPPool != nil {
+			entry.IPPool.ReturnIPAddr(sp.ExternalIP, sp.IdentIPAM)
+		}
+		delete(entry.LbServicePairs, key)
+		klog.Infof("%s: %s is no longer the Service's; its rules are deleted", cacheKey, key)
+	}
+
 	return nil
 }
 

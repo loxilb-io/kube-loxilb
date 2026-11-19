@@ -55,6 +55,9 @@ served_by() { body "$1" "$2" | grep -q "^$3-"; }
 api_endpoints_are() {
   [[ "$(direct_rules "$IGW1_ADDR" | jq -r '.[] | select(.serviceArguments.path_prefix=="/api") | [.endpoints[].endpointIP] | sort | join(",")')" == "$1" ]]
 }
+l4_rules_are() { # <count> - the rules on VIP:PORT with no host, on igw1
+  [[ "$(direct_rules "$IGW1_ADDR" | jq '[.[] | select((.serviceArguments.host // "") == "")] | length')" == "$1" ]]
+}
 host_rules_are() {
   [[ "$(direct_rules "$IGW1_ADDR" | jq --arg h "$1" '[.[] | select(.serviceArguments.host==$h)] | length')" == "$2" ]]
 }
@@ -106,7 +109,6 @@ kubectl -n web rollout status deploy/web-a --timeout=180s >/dev/null || bad "web
 kubectl -n web rollout status deploy/web-b --timeout=180s >/dev/null || bad "web-b ready"
 WEB_A=$(pods_of web-a)
 WEB_B=$(pods_of web-b)
-manual_slice "$WEB_B"
 # Younger than shop-api, and the same host and path once its trailing slash
 # is gone: it loses the pair.
 sleep 2
@@ -124,6 +126,19 @@ spec:
       backendRefs: [{name: web-b, port: 80}]
 EOF
 echo "  web-a pods $WEB_A; web-b pods $WEB_B"
+# The Gateway last, its routes in the cache by then, and web-manual's
+# EndpointSlice after it: until that is written, the manual.example.com rule
+# has no endpoints and is not installed, so the HTTP port stays on the
+# ingress Service and its L4 rule reaches the gateways. The checks below see
+# the port move to the rules once it is written, and that L4 rule go.
+sleep 2
+kubectl apply -f "$HERE/fixtures/direct-gateway.yaml" >/dev/null
+if poll 90 l4_rules_are 1; then
+  ok "the HTTP port is on the ingress Service's L4 rule first"
+else
+  bad "the HTTP port is on the ingress Service's L4 rule first" "$(rule_keys "$IGW1_ADDR")"
+fi
+manual_slice "$WEB_B"
 
 echo "=== D2. one Service per rule, controlled by the Gateway, installed ==="
 if poll 180 installed_is 3; then

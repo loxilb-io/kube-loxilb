@@ -229,3 +229,58 @@ func TestAddGivesUpOnAnUnsyncedPodCache(t *testing.T) {
 		}
 	}
 }
+
+// A port taken off a Service takes its rule with it. Nothing compared the
+// Service's ports with the pairs it was cached with, so the rule stayed on
+// loxilb, listening for a port the Service no longer had - and holding it
+// against anything that would take it next, as a Gateway's routes do when
+// its ingress Service lets a port go.
+func TestAPortTakenOffAServiceTakesItsRule(t *testing.T) {
+	gw := newFakeLoxiLB(t, "")
+	peer := gw.client(t)
+	peer.IsAlive = true
+	m, svc := addHarness(t, peer)
+
+	two := svc.DeepCopy()
+	two.Spec.Ports = append(two.Spec.Ports, corev1.ServicePort{
+		Name: "b", Port: 8081, Protocol: corev1.ProtocolTCP, TargetPort: intstr.FromInt(81), NodePort: 30081,
+	})
+	if _, err := m.kubeClient.CoreV1().Services("llm").Update(context.Background(), two, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update service: %v", err)
+	}
+	if err := m.addLoadBalancer(two); err != nil {
+		t.Fatalf("addLoadBalancer with two ports = %v", err)
+	}
+	if n := len(m.lbCache[GenKey("llm", "web")].LbServicePairs); n != 2 {
+		t.Fatalf("%d pairs cached, want 2", n)
+	}
+
+	one := current(t, m)
+	one.Spec.Ports = one.Spec.Ports[:1]
+	if _, err := m.kubeClient.CoreV1().Services("llm").Update(context.Background(), one, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update service: %v", err)
+	}
+	_, deletesBefore, _ := gw.counts()
+	if err := m.addLoadBalancer(current(t, m)); err != nil {
+		t.Fatalf("addLoadBalancer with the port taken off = %v", err)
+	}
+	if _, deletes, _ := gw.counts(); deletes != deletesBefore+1 {
+		t.Errorf("%d DELETEs for the port taken off, want 1", deletes-deletesBefore)
+	}
+	pairs := m.lbCache[GenKey("llm", "web")].LbServicePairs
+	if _, ok := pairs[GenSPKey("192.168.0.13", 8081, "tcp")]; ok || len(pairs) != 1 {
+		t.Errorf("pairs cached = %v, want only 8080", pairs)
+	}
+	if posts(gw) != 2 {
+		t.Errorf("POSTed %d rules, want the two of the first sync only", posts(gw))
+	}
+	// The pool is shared, one reservation per port: the port taken off goes
+	// back, the one the Service keeps does not.
+	pool := m.ipPoolTbl["defaultPool"]
+	if ip, _ := pool.GetNewIPAddr("llm/next", 8081, "tcp"); ip == nil {
+		t.Error("8081 was not given back to the address pool")
+	}
+	if ip, _ := pool.GetNewIPAddr("llm/next", 8080, "tcp"); ip != nil {
+		t.Error("8080, which the Service keeps, was given back")
+	}
+}
