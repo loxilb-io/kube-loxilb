@@ -417,14 +417,15 @@ func run(o *Options) error {
 				}
 				manager := newManager()
 				sigsInformerFactory.Start(stopCh)
+				informerFactory.Start(stopCh)
 				manager.Run(stopCh)
 			}()
 		}
 		startRouteManager(gatewayapi.TCPRouteCRDName, func() interface{ Run(<-chan struct{}) } {
-			return gatewayapi.NewTCPRouteManager(k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+			return gatewayapi.NewTCPRouteManager(k8sClient, sigsClient, networkConfig, informerFactory, sigsInformerFactory, referenceGrants)
 		})
 		startRouteManager(gatewayapi.UDPRouteCRDName, func() interface{ Run(<-chan struct{}) } {
-			return gatewayapi.NewUDPRouteManager(k8sClient, sigsClient, networkConfig, sigsInformerFactory)
+			return gatewayapi.NewUDPRouteManager(k8sClient, sigsClient, networkConfig, informerFactory, sigsInformerFactory, referenceGrants)
 		})
 		go httpRouteManager.Run(stopCh)
 

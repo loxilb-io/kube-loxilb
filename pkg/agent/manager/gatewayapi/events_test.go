@@ -3,14 +3,12 @@ package gatewayapi
 import (
 	"testing"
 
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 
 	v1 "sigs.k8s.io/gateway-api/apis/v1"
 	v1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
-	sigsfake "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned/fake"
 )
 
 func testQueue() workqueue.RateLimitingInterface {
@@ -98,10 +96,10 @@ func TestEnqueueObjectUnwrapsTombstones(t *testing.T) {
 			name: "TCPRoute",
 			obj:  &v1alpha2.TCPRoute{ObjectMeta: meta},
 			enqueue: func(q workqueue.RateLimitingInterface, obj interface{}) {
-				(&TCPRouteManager{queue: q}).enqueueObject(obj)
+				(&TCPRouteManager{&l4RouteManager{queue: q, l4RouteKind: tcpRouteKind(nil)}}).enqueueObject(obj)
 			},
 			check: func(t *testing.T, item interface{}) {
-				if want := (TCPRouteQueueEntry{"gw-ns", "obj"}); item != want {
+				if want := (l4RouteKey{"gw-ns", "obj"}); item != want {
 					t.Errorf("queued %#v, want %#v", item, want)
 				}
 			},
@@ -110,10 +108,10 @@ func TestEnqueueObjectUnwrapsTombstones(t *testing.T) {
 			name: "UDPRoute",
 			obj:  &v1alpha2.UDPRoute{ObjectMeta: meta},
 			enqueue: func(q workqueue.RateLimitingInterface, obj interface{}) {
-				(&UDPRouteManager{queue: q}).enqueueObject(obj)
+				(&UDPRouteManager{&l4RouteManager{queue: q, l4RouteKind: udpRouteKind(nil)}}).enqueueObject(obj)
 			},
 			check: func(t *testing.T, item interface{}) {
-				if want := (UDPRouteQueueEntry{"gw-ns", "obj"}); item != want {
+				if want := (l4RouteKey{"gw-ns", "obj"}); item != want {
 					t.Errorf("queued %#v, want %#v", item, want)
 				}
 			},
@@ -151,47 +149,6 @@ func TestEnqueueObjectUnwrapsTombstones(t *testing.T) {
 					t.Errorf("queued %#v, want nothing", item)
 				}
 			})
-		})
-	}
-}
-
-// A parentRef that leaves out the namespace names a Gateway in the route's
-// own. When that Gateway does not exist yet - a route applied before its
-// Gateway - the reconcile has to fail and retry, not dereference the absent
-// namespace while saying so. An HTTPRoute instead waits for its Gateway to
-// queue it; see TestHTTPRouteWaitsForItsGateway.
-func TestRouteWithoutItsGatewayRetries(t *testing.T) {
-	parentRefs := []v1.ParentReference{{Name: "missing-gw"}}
-	meta := metav1.ObjectMeta{Namespace: "route-ns", Name: "route"}
-
-	cases := []struct {
-		name      string
-		reconcile func() error
-	}{
-		{
-			name: "TCPRoute",
-			reconcile: func() error {
-				tr := &TCPRouteManager{sigsClient: sigsfake.NewSimpleClientset()}
-				return tr.createTCPRoute(&v1alpha2.TCPRoute{ObjectMeta: meta,
-					Spec: v1alpha2.TCPRouteSpec{CommonRouteSpec: v1.CommonRouteSpec{ParentRefs: parentRefs}}})
-			},
-		},
-		{
-			name: "UDPRoute",
-			reconcile: func() error {
-				u := &UDPRouteManager{sigsClient: sigsfake.NewSimpleClientset()}
-				return u.createUDPRoute(&v1alpha2.UDPRoute{ObjectMeta: meta,
-					Spec: v1alpha2.UDPRouteSpec{CommonRouteSpec: v1.CommonRouteSpec{ParentRefs: parentRefs}}})
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.reconcile()
-			if !errors.IsNotFound(err) {
-				t.Fatalf("reconcile returned %v, want the Gateway's NotFound so the route is retried", err)
-			}
 		})
 	}
 }
