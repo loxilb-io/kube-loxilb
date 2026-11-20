@@ -52,14 +52,16 @@ func listenerManager(t *testing.T, services ...*corev1.Service) (*Manager, *obje
 		}
 	}
 	recorder := &objectRecorder{}
-	return &Manager{
+	m := &Manager{
 		networkConfig: &config.NetworkConfig{LoxilbLoadBalancerClass: addTestClass},
 		serviceLister: corelisters.NewServiceLister(indexer),
 		lbCache:       LbCacheTable{},
 		LoxiClients:   api.NewLoxiClientPool(),
 		eventRecorder: recorder,
 		queue:         testQueue(),
-	}, recorder
+	}
+	m.SetPoolServiceCheck(trustingPools)
+	return m, recorder
 }
 
 func names(services []*corev1.Service) string {

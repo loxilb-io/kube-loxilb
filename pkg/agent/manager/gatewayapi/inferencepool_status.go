@@ -25,6 +25,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
+	v1 "sigs.k8s.io/gateway-api/apis/v1"
+
 	infv1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 )
 
@@ -45,33 +47,46 @@ type statusReport struct {
 	resolvedRefsMessage string
 }
 
-// updateStatus - write our conditions under each Gateway serving this pool.
+// updateStatus - write our conditions under each Gateway serving this pool,
+// and under each Gateway of ours a route sends it to on no listener that
+// takes the route.
 //
 // Status is per parent: the same pool can be accepted by one Gateway and
 // refused by another, so a single top-level condition could not express it.
-func (m *InferencePoolManager) updateStatus(ctx context.Context, pool *infv1.InferencePool, targets []poolTarget, report statusReport) error {
-	parents := make([]infv1.ParentStatus, 0, len(targets))
+func (m *InferencePoolManager) updateStatus(ctx context.Context, pool *infv1.InferencePool, targets []poolTarget, refusals []poolRefusal, report statusReport) error {
+	parents := make([]infv1.ParentStatus, 0, len(targets)+len(refusals))
 	seen := map[string]bool{}
 
-	for _, target := range targets {
-		key := target.gateway.Namespace + "/" + target.gateway.Name
+	add := func(gw *v1.Gateway, report statusReport) {
+		key := gw.Namespace + "/" + gw.Name
 		if seen[key] {
-			// Two routes through the same Gateway are one parent.
-			continue
+			// Two routes through the same Gateway are one parent, and one
+			// that is served there makes it accepted.
+			return
 		}
 		seen[key] = true
 
 		ref := infv1.ParentReference{
 			Group:     groupOf("gateway.networking.k8s.io"),
 			Kind:      "Gateway",
-			Name:      infv1.ObjectName(target.gateway.Name),
-			Namespace: infv1.Namespace(target.gateway.Namespace),
+			Name:      infv1.ObjectName(gw.Name),
+			Namespace: infv1.Namespace(gw.Namespace),
 		}
 		parents = append(parents, infv1.ParentStatus{
 			ParentRef:      ref,
 			ControllerName: inferencePoolControllerName,
 			Conditions:     carryTransitionTimes(ourConditions(pool, ref), report.conditions(pool.Generation)),
 		})
+	}
+	for _, target := range targets {
+		add(target.gateway, report)
+	}
+	for _, refusal := range refusals {
+		refused := report
+		refused.accepted = false
+		refused.acceptedReason = string(infv1.InferencePoolReasonHTTPRouteNotAccepted)
+		refused.acceptedMessage = refusal.message
+		add(refusal.gateway, refused)
 	}
 
 	sort.Slice(parents, func(i, j int) bool {

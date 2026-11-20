@@ -25,6 +25,10 @@ func testManager() *InferencePoolManager {
 			LoxilbGatewayClass:      "loxilb.io/loxilb",
 		},
 		gatewayProvider: "loxilb.io/loxilb",
+		gatewayClassLister: sigsv1lister.NewGatewayClassLister(newIndexer(
+			gatewayClass("loxilb.io/loxilb", "loxilb.io/loxilb"),
+			gatewayClass("other-gc", "example.com/other"),
+		)),
 	}
 }
 
@@ -338,7 +342,7 @@ func TestFindTargetsOneTargetPerListener(t *testing.T) {
 		poolRoute("llm", "llm-route", "vllm-qwen3", v1.ParentReference{Name: "inference-gw"}),
 	))
 
-	targets, err := m.findTargets(context.Background(), testPool(nil))
+	targets, _, err := m.findTargets(context.Background(), testPool(nil))
 	if err != nil {
 		t.Fatalf("findTargets: %v", err)
 	}

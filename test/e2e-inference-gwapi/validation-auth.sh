@@ -350,7 +350,88 @@ expect "JWTAuthProfile deleted" 180 profile_gone
 expect "profile kc gone from igw1" 30 lacks_profile "$R1" kc
 expect "profile kc gone from igw2" 30 lacks_profile "$R2" kc
 
-echo "=== A11. cleanup ==="
+echo "=== A11. two pools on one listener take a policy together, and drop it ==="
+# The InferencePool manager updates their Services in turn. The gateway
+# refuses the first rule sent with the new policy while the other pool's rule
+# still declares the old one; that rule is sent again once the other pool has
+# had its sync, not after the 2s backoff of a refused rule, and the refusal is
+# not reported.
+OPEN2_SVC=vllm-open2-inference
+OPEN_TOKEN="$(mint --roles model:qwen3-open,model:qwen3-open2)"
+sed -e "s|__ISSUER__|$OIDC_ISSUER|" -e "s|__AUDIENCE__|$OIDC_AUDIENCE|" "$FIX/jwtauthprofile.yaml" |
+  kubectl apply -f - >/dev/null
+expect "JWTAuthProfile kc on both peers again" 60 on_both_peers
+kubectl apply -f "$FIX/inferencepool-open2.yaml" >/dev/null
+# pools_policy <rest> - "rule=api_key_auth/jwt_auth_profile" for both pools' rules
+pools_policy() {
+  rules_on "$1" | jq -r --arg a "llm_$OPEN_SVC" --arg b "llm_$OPEN2_SVC" '[.lbAttr[]? | .serviceArguments
+    | select((.name|startswith($a)) or (.name|startswith($b)))
+    | "\(.name|split(":")[0])=\(.api_key_auth // "")/\(.jwt_auth_profile // "")"] | sort | join(",")'
+}
+both_pools() { # <api_key_auth/jwt_auth_profile> - on both pools' rules, on both peers
+  local want="llm_$OPEN_SVC=$1,llm_$OPEN2_SVC=$1"
+  [[ "$(pools_policy "$R1")" == "$want" && "$(pools_policy "$R2")" == "$want" ]]
+}
+rejected_since() { # <since> - LoxiLBRejected events on either pool or its Service since then
+  kubectl -n llm get events -o json | jq --arg since "$1" '[.items[] | select(.reason == "LoxiLBRejected"
+    and (.involvedObject.name|test("^vllm-open2?(-inference)?$")) and ((.lastTimestamp // .eventTime) >= $since))] | length'
+}
+# resend_gaps <first log line> - for each rule refused and waited out since
+# then, "<service> <seconds until it was sent again>", or "never"
+resend_gaps() {
+  klb_log | tail -n +"$1" | awk '
+    function t(s,  a) { split(s, a, ":"); return a[1] * 3600 + a[2] * 60 + a[3] }
+    / the gateway refused its rule on / {
+      match($0, /service llm\/[^:]+:/); name = substr($0, RSTART + 12, RLENGTH - 13); at[name] = t($2); next }
+    / add lb / { for (n in at) if (index($0, "llm_" n ":")) { printf "%s %.3f\n", n, t($2) - at[n]; delete at[n] } }
+    END { for (n in at) printf "%s never\n", n }'
+}
+expect "both pools open on both peers" 90 both_pools "/"
+# policy_change <want> <annotate args...> - change both pools in one command.
+# How long all four rules take is said, not checked: the InferencePool
+# manager's updates and the Services' status go through kube-loxilb's client
+# rate limit, which sets most of it.
+policy_change() {
+  local want=$1 since lines t0 n took gaps name gap
+  shift
+  since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  lines=$(klb_log | wc -l)
+  t0=$(date +%s.%N)
+  kubectl -n llm annotate inferencepool vllm-open vllm-open2 "$@" --overwrite >/dev/null
+  for ((n = 0; n < 300; n++)); do both_pools "$want" && break; sleep 0.2; done
+  took=$(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
+  if both_pools "$want"; then
+    ok "all four rules carry $want, after ${took}s"
+  else
+    bad "all four rules carry $want" "not after 60s: igw1 $(pools_policy "$R1"), igw2 $(pools_policy "$R2")"
+  fi
+  check "no LoxiLBRejected on either pool" "$(rejected_since "$since")" 0
+  gaps="$(resend_gaps "$((lines + 1))")"
+  if [[ -z "$gaps" ]]; then
+    note "no rule was refused and waited out this time"
+  fi
+  while read -r name gap; do
+    [[ -n "$name" ]] || continue
+    if [[ "$gap" != never ]] && awk -v g="$gap" 'BEGIN { exit !(g < 2) }'; then
+      ok "$name refused, sent again ${gap}s later, before the 2s backoff"
+    else
+      bad "$name refused, sent again before the 2s backoff" "$gap"
+    fi
+  done <<<"$gaps"
+}
+policy_change "jwt/kc" loxilb.io/api-key-auth=jwt loxilb.io/jwt-auth-profile=kc
+expect "qwen3-open needs a token" 30 answers "" qwen3-open 401
+expect "qwen3-open served with one" 30 answers "$OPEN_TOKEN" qwen3-open 200
+expect "qwen3-open2 served with one" 30 answers "$OPEN_TOKEN" qwen3-open2 200
+policy_change "/" loxilb.io/api-key-auth- loxilb.io/jwt-auth-profile-
+expect "qwen3-open served without a token" 30 answers "" qwen3-open 200
+expect "qwen3-open2 served without a token" 30 answers "" qwen3-open2 200
+kubectl delete -f "$FIX/inferencepool-open2.yaml" >/dev/null
+kubectl delete jwtauthprofile kc --wait=false >/dev/null
+expect "JWTAuthProfile deleted again" 90 profile_gone
+save_log a11
+
+echo "=== A12. cleanup ==="
 kubectl delete -f "$FIX/inferencepool-open.yaml" >/dev/null
 # The Gateway's own ingress Service takes the listener back; its rule is not
 # one of these.

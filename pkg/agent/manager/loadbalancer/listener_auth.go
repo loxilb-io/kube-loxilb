@@ -100,7 +100,7 @@ func listenerPolicyOf(svc *corev1.Service) [2]string {
 // make the same rule. For a gateway route, its host and path: the gateway
 // keeps one endpoint pool for a pair, whatever the match mode.
 func (m *Manager) routeOf(svc *corev1.Service) (key, what string, ok bool) {
-	if svc.Labels[inferencePoolLabel] != "" {
+	if m.claimsPool(svc) {
 		model := svc.Annotations[modelNameAnnotation]
 		return "model\x00" + model, fmt.Sprintf("serves the same model (%q)", model), true
 	}
@@ -153,10 +153,13 @@ func (m *Manager) handledHere(svc *corev1.Service) bool {
 // ageOf - how old a Service counts as when Services on one listener disagree.
 // A Service generated from an InferencePool counts as old as its pool: the
 // pool manager re-creates the Service if it is deleted, and the pool is what
-// the operator wrote.
+// the operator wrote. Only a Service that counts as the pool's: the label on
+// another would lend it the age of any pool in its namespace.
 func (m *Manager) ageOf(svc *corev1.Service) metav1.Time {
-	if pool := m.poolOf(svc); pool != nil {
-		return pool.CreationTimestamp
+	if m.claimsPool(svc) {
+		if pool := m.poolOf(svc); pool != nil {
+			return pool.CreationTimestamp
+		}
 	}
 	return svc.CreationTimestamp
 }
@@ -217,7 +220,7 @@ func (m *Manager) judgeListeners(svc *corev1.Service) listenerVerdict {
 		if other.Namespace == svc.Namespace && other.Name == svc.Name {
 			continue
 		}
-		if other.DeletionTimestamp != nil || !m.handledHere(other) || !m.declaresFullProxy(other) {
+		if other.DeletionTimestamp != nil || !m.handledHere(other) || !m.declaresFullProxy(other) || m.refusedHere(other) {
 			continue
 		}
 		for l := range m.listenersOf(other) {

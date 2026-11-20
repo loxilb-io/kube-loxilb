@@ -139,7 +139,7 @@ func TestUpdateStatusTransitionTimes(t *testing.T) {
 		m := testManager()
 		m.infClient = inffake.NewSimpleClientset(pool)
 
-		if err := m.updateStatus(context.Background(), pool, []poolTarget{testTarget(nil)}, resolvedReport("resolved to 10.43.12.7:9002")); err != nil {
+		if err := m.updateStatus(context.Background(), pool, []poolTarget{testTarget(nil)}, nil, resolvedReport("resolved to 10.43.12.7:9002")); err != nil {
 			t.Fatalf("updateStatus: %v", err)
 		}
 		if got := statusWrites(m); got != 0 {
@@ -152,7 +152,7 @@ func TestUpdateStatusTransitionTimes(t *testing.T) {
 		m := testManager()
 		m.infClient = inffake.NewSimpleClientset(pool)
 
-		if err := m.updateStatus(context.Background(), pool, []poolTarget{testTarget(nil)}, resolvedReport("resolved to 10.43.99.9:9002")); err != nil {
+		if err := m.updateStatus(context.Background(), pool, []poolTarget{testTarget(nil)}, nil, resolvedReport("resolved to 10.43.99.9:9002")); err != nil {
 			t.Fatalf("updateStatus: %v", err)
 		}
 		got := poolConditions(t, m)
@@ -169,7 +169,7 @@ func TestUpdateStatusTransitionTimes(t *testing.T) {
 		m := testManager()
 		m.infClient = inffake.NewSimpleClientset(pool)
 
-		if err := m.updateStatus(context.Background(), pool, []poolTarget{testTarget(nil)}, resolvedReport("resolved to 10.43.12.7:9002")); err != nil {
+		if err := m.updateStatus(context.Background(), pool, []poolTarget{testTarget(nil)}, nil, resolvedReport("resolved to 10.43.12.7:9002")); err != nil {
 			t.Fatalf("updateStatus: %v", err)
 		}
 		got := poolConditions(t, m)
@@ -336,7 +336,7 @@ func TestUpdateStatusRetriesAConflictOnce(t *testing.T) {
 		conflictOnStatusWrites(client, 1)
 		m.infClient = client
 
-		if err := m.updateStatus(ctx, pool, []poolTarget{testTarget(nil)}, report); err != nil {
+		if err := m.updateStatus(ctx, pool, []poolTarget{testTarget(nil)}, nil, report); err != nil {
 			t.Fatalf("updateStatus = %v, want the retry to succeed", err)
 		}
 		if got := statusWrites(m); got != 2 {
@@ -356,7 +356,7 @@ func TestUpdateStatusRetriesAConflictOnce(t *testing.T) {
 		conflictOnStatusWrites(client, 1)
 		m.infClient = client
 
-		if err := m.updateStatus(ctx, testPool(nil), []poolTarget{testTarget(nil)}, report); err != nil {
+		if err := m.updateStatus(ctx, testPool(nil), []poolTarget{testTarget(nil)}, nil, report); err != nil {
 			t.Fatalf("updateStatus: %v", err)
 		}
 		if got := statusWrites(m); got != 1 {
@@ -371,7 +371,7 @@ func TestUpdateStatusRetriesAConflictOnce(t *testing.T) {
 		conflictOnStatusWrites(client, 5)
 		m.infClient = client
 
-		if err := m.updateStatus(ctx, pool, []poolTarget{testTarget(nil)}, report); !apierrors.IsConflict(err) {
+		if err := m.updateStatus(ctx, pool, []poolTarget{testTarget(nil)}, nil, report); !apierrors.IsConflict(err) {
 			t.Fatalf("updateStatus = %v, want the conflict back for a requeue", err)
 		}
 		if got := statusWrites(m); got != 2 {

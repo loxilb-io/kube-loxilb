@@ -41,6 +41,7 @@ var poolWarningReasons = map[string]bool{
 	ReasonListenerRouteConflict:  true,
 	ReasonProfileNotFound:        true,
 	ReasonProfileNotProgrammed:   true,
+	ReasonPoolServiceRefused:     true,
 }
 
 // SetInferencePoolLister - the InferencePools, for the Services generated from

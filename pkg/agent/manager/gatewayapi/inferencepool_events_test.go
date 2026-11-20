@@ -211,12 +211,16 @@ func TestReconcileSeparatesSameNamedGateways(t *testing.T) {
 	ctx := context.Background()
 	m := reconcileManager(testPool(nil))
 
+	// The route is in another namespace than either Gateway, so their
+	// listeners take routes from all.
+	all := v1.NamespacesFromAll
 	for i, ns := range []string{"gw-a", "gw-b"} {
 		gw := &v1.Gateway{
 			ObjectMeta: metav1.ObjectMeta{Name: "inference-gw", Namespace: ns},
 			Spec: v1.GatewaySpec{
 				GatewayClassName: "loxilb.io/loxilb",
-				Listeners:        []v1.Listener{{Name: "http", Port: 80, Protocol: v1.HTTPProtocolType}},
+				Listeners: []v1.Listener{{Name: "http", Port: 80, Protocol: v1.HTTPProtocolType,
+					AllowedRoutes: &v1.AllowedRoutes{Namespaces: &v1.RouteNamespaces{From: &all}}}},
 			},
 			Status: v1.GatewayStatus{Addresses: []v1.GatewayStatusAddress{{Value: fmt.Sprintf("123.123.123.%d", 10+i)}}},
 		}

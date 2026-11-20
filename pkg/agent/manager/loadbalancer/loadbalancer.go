@@ -156,10 +156,17 @@ type Manager struct {
 	// poolLister - an infv1lister.InferencePoolLister, stored once the
 	// inference extension is on; see SetInferencePoolLister.
 	poolLister atomic.Value
+	// poolCheck - a PoolServiceCheck, whether a Service with the pool label
+	// is one the InferencePool manager made; see pool_trust.go.
+	poolCheck atomic.Value
 
 	// yielding - Services kept off their listeners by an older one declaring
 	// another credential policy, by cache key, to the key of that one.
 	yielding map[string]string
+	// listenerWaits - Services the gateway refused while other Services'
+	// rules on the listener declared another credential policy, by cache key,
+	// to what they wait for; see listener_wait.go.
+	listenerWaits map[string]listenerWait
 
 	// jwtProfiles - a jwtProfilesHolder, once JWTAuthProfiles are managed;
 	// see SetJWTProfiles.
@@ -450,7 +457,7 @@ func (m *Manager) processNextWorkItem() bool {
 		m.queue.Forget(key)
 	} else {
 		m.queue.AddRateLimited(key)
-		if errors.Is(err, errPeersPending) {
+		if errors.Is(err, errPeersPending) || errors.Is(err, errListenerWait) {
 			klog.V(2).Infof("LoadBalancer %s: %v, retrying", key, err)
 		} else {
 			klog.Errorf("Error syncing LoadBalancer %s, requeuing. Error: %v", key, err)
@@ -472,15 +479,22 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 
 	svcNs := lb.Namespace
 	svcName := lb.Name
+	defer m.wakeListenerWaiters(GenKey(svcNs, svcName))
 	svc, err := m.serviceLister.Services(svcNs).Get(svcName)
 	if err != nil {
 		if err := m.deleteLoadBalancer(svcNs, svcName, true); err != nil {
 			return err
 		}
 		m.releaseYielders(GenKey(svcNs, svcName))
+		m.keepListenerWait(GenKey(svcNs, svcName), nil)
 		return nil
 	}
-	return m.addLoadBalancer(svc)
+	if err := m.addLoadBalancer(svc); err != nil {
+		return err
+	}
+	// Every peer that is up has its rules, or it yields: nothing to wait for.
+	m.keepListenerWait(GenKey(svcNs, svcName), nil)
+	return nil
 }
 
 func (m *Manager) getZoneInstName() string {
@@ -513,6 +527,17 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		} else {
 			return nil
 		}
+	}
+
+	// A pool's Service shares its Gateway listener with the other pools
+	// there. One the InferencePool manager did not make is refused rather
+	// than served as a plain Service: it asks for that listener.
+	if err := m.checkPoolService(svc); err != nil {
+		if !errors.Is(err, errPoolsNotDecided) {
+			klog.Errorf("service %s/%s: %v", svc.Namespace, svc.Name, err)
+			m.recordServiceWarning(svc, ReasonPoolServiceRefused, err.Error())
+		}
+		return err
 	}
 
 	// A gateway route is one rule on a Gateway listener, served by its
@@ -1331,6 +1356,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	// Get private IP for the service (respects staticIP annotation)
 	privateIPStr := m.getServicePrivateIP(svc)
 
+	// What the gateway's refusals in this sync wait for (listener_wait.go),
+	// and what they waited for before it.
+	prevWait, wait := m.listenerWaits[cacheKey], listenerWait{}
+	defer func() { m.keepListenerWait(cacheKey, wait) }()
+
 	pending := false
 	for _, ingSvcPair := range ingSvcPairs {
 		lbArgs := LbArgs{
@@ -1396,16 +1426,37 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		if reason := refusalReason(loxilbAPIErr); reason != "" {
 			m.recordServiceWarning(svc, reason, loxilbAPIErr.Error())
 		}
-		// loxilb rejected the request itself. Retrying it unchanged will fail
-		// the same way, so the person who wrote the Service has to see the
-		// reason - and loxilb already sends one. A 5xx is not reported: that is
-		// the peer's problem and the next reconcile retries it.
-		if api.IsClientError(loxilbAPIErr) {
+
+		// Refused while other Services' rules on the listener declare
+		// another credential policy: those are waited for, and while none has
+		// had its sync since, a rule no peer took is the change on its way.
+		holders, waits := m.listenerHolders(cacheKey, lbModel, clients, errs)
+		onItsWay := waits && errCount >= len(clients)
+		for _, key := range holders {
+			wait[key] = prevWait[key]
+			if prevWait[key] {
+				onItsWay = false
+			}
+		}
+		if onItsWay {
+			klog.Infof("service %s: the gateway refused its rule on %s while the rules of %s there declare "+
+				"another credential policy; sent again once they have had their sync",
+				cacheKey, GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), strings.Join(holders, ", "))
+		} else if api.IsClientError(loxilbAPIErr) {
+			// loxilb rejected the request itself. Retrying it unchanged will
+			// fail the same way, so the person who wrote the Service has to
+			// see the reason - and loxilb already sends one. A 5xx is not
+			// reported: that is the peer's problem and the next reconcile
+			// retries it.
 			m.recordServiceWarning(svc, ReasonLoxiLBRejected, loxilbAPIErr.Error())
 		}
 
 		if loxilbAPIErr != nil && errCount >= len(clients) {
 			retIPAMOnErr = true
+			if onItsWay {
+				return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v: %w",
+					GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr, errListenerWait)
+			}
 			return fmt.Errorf("failed to add loxiLB loadBalancer - spair(%s). err: %v", GenSPKey(sp.ExternalIP, sp.Port, sp.Protocol), loxilbAPIErr)
 		}
 

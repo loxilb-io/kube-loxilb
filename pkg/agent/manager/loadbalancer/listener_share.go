@@ -33,9 +33,10 @@ import (
 // address pool hands an address and port to one Service, so the Services
 // after the first share what the first was given (listenerShare). A Service
 // counts as the Gateway's only once the Gateway controls it
-// (gateway_route.go).
+// (gateway_route.go), and as a pool's only once the InferencePool manager
+// made it (pool_trust.go).
 func (m *Manager) listenerAddrOf(svc *corev1.Service) string {
-	if svc.Labels[inferencePoolLabel] != "" || m.gatewayControlled(svc) {
+	if m.trustedPool(svc) || m.gatewayControlled(svc) {
 		return svc.Spec.LoadBalancerIP
 	}
 	return ""

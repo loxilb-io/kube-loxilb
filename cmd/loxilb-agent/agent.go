@@ -311,6 +311,12 @@ func run(o *Options) error {
 		gateways := sigsInformerFactory.Gateway().V1().Gateways()
 		lbManager.SetGatewayLister(gateways.Lister(), gateways.Informer().HasSynced)
 	}
+	// A Service with the InferencePool label shares its Gateway listener only
+	// once the InferencePool manager says it made it. Without that manager
+	// none is a pool's; with it, none is decided on until it is built below.
+	if !o.config.EnableGatewayAPI || !o.config.EnableInferenceExtension {
+		lbManager.SetPoolServiceCheck(loadbalancer.NoPoolServices)
+	}
 
 	go lbManager.Run(stopCh)
 
@@ -408,6 +414,7 @@ func run(o *Options) error {
 			// The pool manager's informer, shared: what the loadbalancer
 			// manager reports on a generated Service reaches its pool too.
 			lbManager.SetInferencePoolLister(infInformerFactory.Inference().V1().InferencePools().Lister())
+			lbManager.SetPoolServiceCheck(inferencePoolManager.Generated)
 		}
 
 		sigsInformerFactory.Start(stopCh)

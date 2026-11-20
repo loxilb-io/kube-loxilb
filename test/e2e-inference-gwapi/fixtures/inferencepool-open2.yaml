@@ -1,0 +1,29 @@
+# Another pool on vllm-open's listener, declaring no credential policy either.
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: vllm-open2
+  namespace: llm
+  annotations:
+    loxilb.io/epselect: "chwbl"
+    loxilb.io/model-name: "qwen3-open2"
+spec:
+  selector:
+    matchLabels:
+      app: vllm-qwen3
+  targetPorts:
+    - number: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: open2-route
+  namespace: llm
+spec:
+  parentRefs:
+    - name: inference-gw
+  rules:
+    - backendRefs:
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: vllm-open2

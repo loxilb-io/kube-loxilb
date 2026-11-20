@@ -193,6 +193,86 @@ func TestCreateGatewayLeavesTheCacheAlone(t *testing.T) {
 	}
 }
 
+// A Gateway is one item in the queue however many events it has. Queued as
+// the objects the events carried, each update was an item of its own, and
+// workers took the same Gateway at once - their writes to its ingress service
+// conflicting.
+func TestGatewayEventsQueueOneItem(t *testing.T) {
+	gm := gatewayTestManager(t, nil, []*v1.Gateway{webGateway()})
+	first, second := webGateway(), webGateway()
+	second.Generation = 2
+	gm.enqueueObject(first)
+	gm.enqueueObject(second)
+	gm.enqueueClassGateways(gatewayClass(testClass, "loxilb.io/loxilb"))
+	if item := queued(t, gm.queue); item != "llm/web-gw" {
+		t.Errorf("queued %v, want the Gateway's key", item)
+	}
+}
+
+// A deleted Gateway is gone from the lister by the time its key is handled,
+// and what it was allocated is noted on the object: the delete keeps it until
+// the address is given back.
+func TestReconcileGivesBackADeletedGatewaysAddress(t *testing.T) {
+	pool, err := ippool.NewIPPool(tk.IpAllocatorNew(), "10.10.10.1/32", false)
+	if err != nil {
+		t.Fatalf("NewIPPool: %v", err)
+	}
+	gm := gatewayTestManager(t, pool, nil)
+	ip, ident := pool.GetNewIPAddr("llm/web-gw", 0, "")
+	if ip == nil {
+		t.Fatal("could not take the pool's address")
+	}
+	gw := webGateway()
+	gw.UID = "old"
+	gw.Annotations = map[string]string{"ipam-address": ip.String(), "ident-ipam": ident}
+
+	gm.gatewayDeleted(gw)
+	if err := gm.reconcile("llm/web-gw"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if ip, _ := pool.GetNewIPAddr("next", 0, ""); ip == nil {
+		t.Error("the deleted Gateway's address was not given back")
+	}
+	if gone := gm.goneGateways("llm/web-gw", nil); len(gone) != 0 {
+		t.Errorf("the delete is still kept after it was handled: %v", gone)
+	}
+}
+
+// Deleted and created again under the same name before the key is handled:
+// two Gateways. The first gives back its address, and the second is served -
+// here with that same address, the only one the pool has.
+func TestReconcileGivesBackTheAddressOfAGatewayCreatedAgain(t *testing.T) {
+	pool, err := ippool.NewIPPool(tk.IpAllocatorNew(), "10.10.10.1/32", false)
+	if err != nil {
+		t.Fatalf("NewIPPool: %v", err)
+	}
+	again := webGateway()
+	again.UID = "new"
+	gm := gatewayTestManager(t, pool, []*v1.Gateway{again})
+	ip, ident := pool.GetNewIPAddr("llm/web-gw", 0, "")
+	if ip == nil {
+		t.Fatal("could not take the pool's address")
+	}
+	old := webGateway()
+	old.UID = "old"
+	old.Annotations = map[string]string{"ipam-address": ip.String(), "ident-ipam": ident}
+
+	gm.gatewayDeleted(old)
+	if err := gm.reconcile("llm/web-gw"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	svc, err := gm.kubeClient.CoreV1().Services("llm").Get(context.Background(), "web-gw-ingress-service", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("no ingress service for the Gateway created again: %v", err)
+	}
+	if svc.Spec.LoadBalancerIP != "10.10.10.1" {
+		t.Errorf("ingress service address = %q, want the address the first Gateway gave back", svc.Spec.LoadBalancerIP)
+	}
+	if gone := gm.goneGateways("llm/web-gw", again); len(gone) != 0 {
+		t.Errorf("the first Gateway's delete is still kept: %v", gone)
+	}
+}
+
 // Deleting a Gateway gives back the address this controller allocated for it,
 // and no other: one it came with may be in use by something else.
 func TestDeleteGatewayReturnsOnlyItsOwnAddress(t *testing.T) {
@@ -221,8 +301,7 @@ func TestEnqueueClassGateways(t *testing.T) {
 	gm := gatewayTestManager(t, nil, []*v1.Gateway{ours, theirs})
 
 	gm.enqueueClassGateways(tombstone(gatewayClass(testClass, "loxilb.io/loxilb")))
-	item := queued(t, gm.queue)
-	if gw, ok := item.(*v1.Gateway); !ok || gw.Name != "web-gw" {
+	if item := queued(t, gm.queue); item != "llm/web-gw" {
 		t.Errorf("queued %v, want only the Gateway of the class", item)
 	}
 }

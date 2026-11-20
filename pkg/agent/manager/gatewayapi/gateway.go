@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -93,7 +95,14 @@ type GatewayManager struct {
 	directPeers     DirectPeers
 	referenceGrants *ReferenceGrants
 
+	// queue - Gateways by key (GenKey), so that one Gateway is one item
+	// however many events it has, and no two workers take it at once.
 	queue workqueue.RateLimitingInterface
+	// gone - the Gateways deleted whose delete is not handled yet, by key
+	// and then UID: what a delete gives back is noted on the object, which
+	// the lister no longer has.
+	goneMu sync.Mutex
+	gone   map[string]map[types.UID]*v1.Gateway
 }
 
 func NewGatewayManager(
@@ -137,6 +146,7 @@ func NewGatewayManager(
 		endpointSliceListerSynced: endpointSliceInformer.Informer().HasSynced,
 
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gateway"),
+		gone:  map[string]map[types.UID]*v1.Gateway{},
 	}
 
 	// Every ingress service names the loxilb-ingress pods, wherever they run.
@@ -200,7 +210,7 @@ func NewGatewayManager(
 				manager.enqueueObject(cur)
 			},
 			DeleteFunc: func(old interface{}) {
-				manager.enqueueObject(old)
+				manager.gatewayDeleted(old)
 			},
 		},
 	)
@@ -213,25 +223,88 @@ func GenKey(ns, name string) string {
 	return path.Join(ns, name)
 }
 
-func (gm *GatewayManager) enqueueObject(obj interface{}) {
+// gatewayOfEvent - the Gateway an event carries, unwrapped from the tombstone
+// a delete the watch missed arrives as; nil for anything else.
+func gatewayOfEvent(obj interface{}) *v1.Gateway {
 	gw, ok := obj.(*v1.Gateway)
 	if !ok {
 		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			klog.Errorf("Received unexpected object: %v", obj)
-			return
+			return nil
 		}
-		// A delete the watch missed arrives as a tombstone. The Gateway is
-		// the object it wraps, and its last known addresses are what the
-		// delete hands back to the address pool.
 		gw, ok = deletedState.Obj.(*v1.Gateway)
 		if !ok {
 			klog.Errorf("DeletedFinalStateUnknown contains non-Gateway object: %v", deletedState.Obj)
-			return
+			return nil
 		}
 	}
+	return gw
+}
 
-	gm.queue.Add(gw)
+func (gm *GatewayManager) enqueueObject(obj interface{}) {
+	if gw := gatewayOfEvent(obj); gw != nil {
+		gm.enqueue(gw)
+	}
+}
+
+// enqueue - queue a Gateway by its key.
+func (gm *GatewayManager) enqueue(gw *v1.Gateway) {
+	gm.queue.Add(GenKey(gw.Namespace, gw.Name))
+}
+
+// gatewayDeleted - note a deleted Gateway as it last was, and queue its key.
+// The address it was allocated is on the object; by the time its key is
+// handled the lister has nothing under it, or another Gateway of the same
+// name.
+func (gm *GatewayManager) gatewayDeleted(obj interface{}) {
+	gw := gatewayOfEvent(obj)
+	if gw == nil {
+		return
+	}
+	key := GenKey(gw.Namespace, gw.Name)
+	gm.goneMu.Lock()
+	if gm.gone == nil {
+		gm.gone = map[string]map[types.UID]*v1.Gateway{}
+	}
+	if gm.gone[key] == nil {
+		gm.gone[key] = map[types.UID]*v1.Gateway{}
+	}
+	gm.gone[key][gw.UID] = gw
+	gm.goneMu.Unlock()
+	gm.queue.Add(key)
+}
+
+// goneGateways - the deleted Gateways under key that are not cur, the one
+// the lister has there now (nil for none).
+func (gm *GatewayManager) goneGateways(key string, cur *v1.Gateway) []*v1.Gateway {
+	gm.goneMu.Lock()
+	defer gm.goneMu.Unlock()
+	var out []*v1.Gateway
+	for uid, gw := range gm.gone[key] {
+		if cur != nil && uid == cur.UID {
+			// Deleted and back with the same UID: a watch that missed
+			// nothing never says so, but a relist can. It is not gone.
+			delete(gm.gone[key], uid)
+			continue
+		}
+		out = append(out, gw)
+	}
+	if len(gm.gone[key]) == 0 {
+		delete(gm.gone, key)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UID < out[j].UID })
+	return out
+}
+
+// forgetGone - a deleted Gateway's delete is handled.
+func (gm *GatewayManager) forgetGone(key string, gw *v1.Gateway) {
+	gm.goneMu.Lock()
+	defer gm.goneMu.Unlock()
+	delete(gm.gone[key], gw.UID)
+	if len(gm.gone[key]) == 0 {
+		delete(gm.gone, key)
+	}
 }
 
 // enqueueClassGateways - queue the gateways of a GatewayClass.
@@ -257,7 +330,7 @@ func (gm *GatewayManager) enqueueClassGateways(obj interface{}) {
 	}
 	for _, gw := range gateways {
 		if string(gw.Spec.GatewayClassName) == gc.Name {
-			gm.queue.Add(gw)
+			gm.enqueue(gw)
 		}
 	}
 }
@@ -280,7 +353,7 @@ func (gm *GatewayManager) EnqueueAll() {
 		return
 	}
 	for _, gw := range gateways {
-		gm.queue.Add(gw)
+		gm.enqueue(gw)
 	}
 }
 
@@ -299,7 +372,7 @@ func (gm *GatewayManager) enqueueServiceGateway(obj interface{}) {
 		return
 	}
 	if gw, err := gm.gatewayLister.Gateways(svc.Namespace).Get(owner.Name); err == nil {
-		gm.queue.Add(gw)
+		gm.enqueue(gw)
 	}
 }
 
@@ -321,7 +394,7 @@ func (gm *GatewayManager) namespaceUpdated(old, cur interface{}) {
 		for _, l := range gw.Spec.Listeners {
 			if l.AllowedRoutes != nil && l.AllowedRoutes.Namespaces != nil &&
 				l.AllowedRoutes.Namespaces.From != nil && *l.AllowedRoutes.Namespaces.From == v1.NamespacesFromSelector {
-				gm.queue.Add(gw)
+				gm.enqueue(gw)
 				break
 			}
 		}
@@ -361,7 +434,7 @@ func (gm *GatewayManager) enqueueRouteGateways(obj interface{}) {
 		if err != nil {
 			continue
 		}
-		gm.queue.Add(gateway)
+		gm.enqueue(gateway)
 	}
 }
 
@@ -408,7 +481,7 @@ func (gm *GatewayManager) processNextWorkItem() bool {
 	}
 	defer gm.queue.Done(obj)
 
-	if key, ok := obj.(*v1.Gateway); !ok {
+	if key, ok := obj.(string); !ok {
 		gm.queue.Forget(obj)
 		klog.Errorf("Expected string in work queue but got %#v", obj)
 		return true
@@ -416,20 +489,36 @@ func (gm *GatewayManager) processNextWorkItem() bool {
 		gm.queue.Forget(obj)
 	} else {
 		gm.queue.AddRateLimited(obj)
-		klog.Errorf("Error syncing gateway %s/%s, requeuing. Error: %v", key.Namespace, key.Name, err)
+		klog.Errorf("Error syncing gateway %s, requeuing. Error: %v", key, err)
 	}
 	return true
 }
 
-func (gm *GatewayManager) reconcile(entry *v1.Gateway) error {
-	gw, err := gm.gatewayLister.Gateways(entry.Namespace).Get(entry.Name)
+// reconcile - bring what a Gateway key stands for in line: give back what
+// each deleted Gateway under it took, then serve the one there now, if any.
+// A Gateway deleted and created again under its name before its key is
+// handled is two Gateways, and the first still has its address to give back.
+func (gm *GatewayManager) reconcile(key string) error {
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
 	if err != nil {
-		if errors.IsNotFound(err) {
-			// object not found, could have been deleted after
-			// reconcile request, hence don't requeue
-			return gm.deleteGateway(entry.Namespace, entry.Name, allocatedAddress(entry), entry.Annotations["ident-ipam"])
+		klog.Errorf("gateway key %q: %v", key, err)
+		return nil
+	}
+	gw, err := gm.gatewayLister.Gateways(namespace).Get(name)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return err
 		}
-		return err
+		gw = nil
+	}
+	for _, old := range gm.goneGateways(key, gw) {
+		if err := gm.deleteGateway(namespace, name, allocatedAddress(old), old.Annotations["ident-ipam"]); err != nil {
+			return err
+		}
+		gm.forgetGone(key, old)
+	}
+	if gw == nil {
+		return nil
 	}
 	return gm.createGateway(gw)
 }
