@@ -607,3 +607,32 @@ func TestReferenceGrantChangedQueuesItsRoutes(t *testing.T) {
 		t.Errorf("the grant queued %v, want only %v", got, want)
 	}
 }
+
+// What the loxilb-ingress pods write on a route's Ingress stays: it is not a
+// difference to write the Ingress over, and an update keeps it.
+func TestAnIngressUpdateKeepsWhatLoxilbIngressWrote(t *testing.T) {
+	desired := &netv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "shop-1", Annotations: map[string]string{"parent-http-route": "shop"}},
+		Spec:       netv1.IngressSpec{DefaultBackend: &netv1.IngressBackend{Service: &netv1.IngressServiceBackend{Name: "web", Port: netv1.ServiceBackendPort{Number: 80}}}},
+	}
+	existing := desired.DeepCopy()
+	existing.Annotations[programmedAnnotationPrefix+"lx-a"] = "1"
+	h := httpRouteTestManager(existing)
+
+	if err := h.applyIngress(context.Background(), desired, existing); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(h.kubeClient.(*fake.Clientset).Actions()); n != 0 {
+		t.Errorf("%d writes for an Ingress that differs only by a report", n)
+	}
+
+	changed := desired.DeepCopy()
+	changed.Spec.DefaultBackend.Service.Port.Number = 8080
+	if err := h.applyIngress(context.Background(), changed, existing); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.kubeClient.NetworkingV1().Ingresses("apps").Get(context.Background(), "shop-1", metav1.GetOptions{})
+	if got.Spec.DefaultBackend.Service.Port.Number != 8080 || got.Annotations[programmedAnnotationPrefix+"lx-a"] != "1" {
+		t.Errorf("updated Ingress: port %d, annotations %v; want the new port and lx-a's report", got.Spec.DefaultBackend.Service.Port.Number, got.Annotations)
+	}
+}

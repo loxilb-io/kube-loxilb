@@ -58,6 +58,10 @@ api_endpoints_are() {
 l4_rules_are() { # <count> - the rules on VIP:PORT with no host, on igw1
   [[ "$(direct_rules "$IGW1_ADDR" | jq '[.[] | select((.serviceArguments.host // "") == "")] | length')" == "$1" ]]
 }
+only_l4_on() { # <gateway addr> - on VIP:PORT, one rule with no host and none with one
+  [[ "$(direct_rules "$1" | jq -r '[([.[] | select((.serviceArguments.host // "") == "")] | length),
+                                    ([.[] | select((.serviceArguments.host // "") != "")] | length)] | join(":")')" == 1:0 ]]
+}
 host_rules_are() {
   [[ "$(direct_rules "$IGW1_ADDR" | jq --arg h "$1" '[.[] | select(.serviceArguments.host==$h)] | length')" == "$2" ]]
 }
@@ -85,6 +89,27 @@ endpoints:
 $eps
 EOF
 }
+
+klb_log() { kubectl -n kube-system logs deploy/kube-loxilb --tail=-1 2>/dev/null; }
+log_lines() { klb_log | wc -l; }
+log_has() { klb_log | grep -qF -- "$1"; }
+RELEASED="direct-gw-ingress-service: $VIP:$PORT:tcp is released to the Gateway's direct routes"
+DROPPED="direct-gw-ingress-service: $VIP:$PORT:tcp is no longer the Service's"
+PORTS_CHANGED="service web/direct-gw-ingress-service ports updated"
+# line_of <first log line> <first|last> <text> - where in the log, counted
+# from that line, the first or last line saying text is; 0 if none
+line_of() {
+  klb_log | tail -n +"$1" | awk -v t="$3" -v w="$2" 'index($0, t) { n = NR; if (w == "first") { print n; found = 1; exit } }
+    END { if (!found) print n + 0 }'
+}
+count_of() { klb_log | tail -n +"$1" | grep -cF -- "$2"; } # <first log line> <text>
+# line_of_both <first log line> <text> <text> - where in the log, counted from
+# that line, the first line saying both is; 0 if none
+line_of_both() {
+  klb_log | tail -n +"$1" | awk -v a="$2" -v b="$3" 'index($0, a) && index($0, b) { print NR; found = 1; exit }
+    END { if (!found) print 0 }'
+}
+no_rule_services() { [[ "$(gen | jq '.items | length')" == 0 ]]; }
 
 echo "=== D0. direct routes on ==="
 ARGS=$(kubectl -n kube-system get deploy kube-loxilb -o json | jq -c '.spec.template.spec.containers[0].args')
@@ -178,6 +203,18 @@ check "no Ingress for the HTTP listener" \
   "$(kubectl -n web get ingress -o json | jq -r '[.items[] | select(.metadata.annotations["parent-listener"]=="http")] | length')" "0"
 check "an Ingress for the HTTPS listener" \
   "$(kubectl -n web get ingress -o json | jq -r '[.items[] | select(.metadata.annotations["parent-listener"]=="https")] | length')" "1"
+# The L4 rule comes off first: once the port is off the ingress Service, its
+# node port is closed, and the gateway serves the L4 rule ahead of the host and
+# path rules.
+REL=$(line_of 1 first "$RELEASED")
+UPD=$(line_of 1 first "$PORTS_CHANGED")
+if [[ $REL -gt 0 && $UPD -gt $REL ]]; then
+  ok "the HTTP port's L4 rule came off the gateways before the port left the ingress Service"
+else
+  bad "the HTTP port's L4 rule came off the gateways before the port left the ingress Service" \
+    "released at log line $REL, ports changed at $UPD"
+fi
+check "the port did not leave with its L4 rule still on" "$(count_of 1 "$DROPPED")" 0
 # loxilb-ingress runs in kube-system, and a selector picks pods of the
 # Service's own namespace only: the ingress Service has none, and its
 # EndpointSlice names the loxilb-ingress pods.
@@ -250,6 +287,7 @@ match_is() { # <PathPrefix|Exact>
   kubectl -n web patch httproute shop-api --type=json \
     -p "[{\"op\":\"replace\",\"path\":\"/spec/rules/0/matches/0/path/type\",\"value\":\"$1\"}]" >/dev/null
 }
+D7B_FROM=$(($(log_lines) + 1))
 match_is Exact
 EXACT="manual.example.com|/|prefix|4 shop.example.com|/api|exact|4 shop.example.com|/|prefix|4"
 for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
@@ -264,6 +302,9 @@ for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
   poll 60 rules_are "$gw" "$WANT"
   check "/api by prefix again on $gw" "$(rule_keys "$gw")" "$WANT"
 done
+# The port stays with the direct routes while a rule of it changes; it went
+# back to the ingress Service until the new rule was installed.
+check "the ingress Service's ports did not change meanwhile" "$(count_of "$D7B_FROM" "$PORTS_CHANGED")" 0
 
 echo "=== D8. a Service that only looks like a rule is refused ==="
 kubectl apply -f - >/dev/null <<EOF
@@ -295,6 +336,7 @@ check "no rule for evil.example.com" \
 kubectl -n web delete svc lookalike >/dev/null 2>&1
 
 echo "=== D9. a route that goes takes its rule ==="
+D9_FROM=$(($(log_lines) + 1))
 kubectl -n web delete httproute manual >/dev/null
 if poll 60 host_rules_are manual.example.com 0; then
   ok "manual.example.com's rule is gone"
@@ -303,6 +345,153 @@ else
 fi
 check "manual.example.com is not served" "$(code manual.example.com /)" "503"
 check "the other rules stay" "$(installed_count)" "2"
+check "the ingress Service's ports did not change" "$(count_of "$D9_FROM" "$PORTS_CHANGED")" 0
+WANT2="shop.example.com|/api|prefix|4 shop.example.com|/|prefix|4"
+
+echo "=== D10. kube-loxilb restarts while igw2 does not answer ==="
+# No peer has said what it is when kube-loxilb starts, and igw2 does not until
+# it answers. The HTTP port stays with its direct routes meanwhile; it went
+# back to the ingress Service, and its rule Services were deleted, until igw2
+# answered.
+in_netns igw2 iptables -I INPUT -p tcp --dport 11111 -j DROP
+kubectl -n kube-system rollout restart deploy/kube-loxilb >/dev/null
+kubectl -n kube-system rollout status deploy/kube-loxilb --timeout=180s >/dev/null ||
+  bad "kube-loxilb restarted" "rollout did not finish"
+HELD="port $PORT stays with its direct routes: loxilb-lb($IGW2_ADDR) has not reported what it is yet"
+if poll 60 log_has "$HELD"; then
+  ok "the Gateway is synced while igw2 has not said what it is"
+else
+  bad "the Gateway is synced while igw2 has not said what it is" "no such line in the log"
+fi
+sleep 5
+check "the ingress Service keeps HTTPS only" \
+  "$(kubectl -n web get svc direct-gw-ingress-service -o json | jq -r '[.spec.ports[]?.port] | sort | join(",")')" "$TLS_PORT"
+check "the rule Services stay" "$(gen | jq '.items | length')" 2
+check "the rules stay on igw1" "$(rule_keys "$IGW1_ADDR")" "$WANT2"
+case "$(body shop.example.com /api/x)" in web-a-*) ok "shop.example.com/api is still served";; *) bad "shop.example.com/api is still served" "$(ask shop.example.com /api/x)";; esac
+in_netns igw2 iptables -D INPUT -p tcp --dport 11111 -j DROP
+if poll 90 log_has "loxilb-lb($IGW2_ADDR) is alive"; then
+  ok "igw2 is back"
+else
+  bad "igw2 is back" "kube-loxilb did not see it"
+fi
+poll 60 rules_are "$IGW2_ADDR" "$WANT2"
+check "the rules on igw2" "$(rule_keys "$IGW2_ADDR")" "$WANT2"
+check "and the ingress Service still keeps HTTPS only" \
+  "$(kubectl -n web get svc direct-gw-ingress-service -o json | jq -r '[.spec.ports[]?.port] | sort | join(",")')" "$TLS_PORT"
+
+echo "=== D11. the HTTP port goes back to the ingress Service, and comes again ==="
+# A port goes back once it cannot be served directly. Of the ways there are,
+# the one this testbed has that keeps the port HTTP is an HTTPS listener on it
+# as well; the ingress Service leaves that listener out, as it conflicts.
+# The port's direct rules serve it until the Ingress path can: its L4 rule is
+# held back until each loxilb-ingress pod that reports has installed the
+# port's Ingresses, and the rules go once both gateways have the L4 rule. A
+# host's requests, sent all the while, each on a new connection, are each
+# answered. Its route goes to web-a-tls, whose port is its target port, as
+# loxilb-ingress needs (D4).
+kubectl apply -f - >/dev/null <<'EOF'
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: back, namespace: web}
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: [back.example.com]
+  rules:
+    - backendRefs: [{name: web-a-tls, port: 8000}]
+EOF
+if poll 60 served_by back.example.com / web-a; then
+  ok "back.example.com is served directly"
+else
+  bad "back.example.com is served directly" "$(ask back.example.com /)"
+fi
+REPORTING=$(kubectl -n kube-system get pods -l app=loxilb-ingress,loxilb.io/programmed-report=v1 -o name | wc -l)
+PROBE="$WORK/d11-requests"
+rm -f "$PROBE" "$PROBE.stop"
+(while [[ ! -e "$PROBE.stop" ]]; do
+  printf '%s %s\n' "$(date +%T.%N | cut -c1-12)" "$(curl -s --max-time 2 -H 'Host: back.example.com' "http://$VIP:$PORT/" | head -c 6)"
+  sleep 0.05
+done >"$PROBE") &
+PROBER=$!
+sleep 1
+D11_FROM=$(($(log_lines) + 1))
+kubectl -n web patch gateway direct-gw --type=json -p '[{"op":"add","path":"/spec/listeners/-","value":
+  {"name":"https-on-http","protocol":"HTTPS","port":'"$PORT"',"tls":{"mode":"Terminate","certificateRefs":[{"kind":"Secret","name":"web-cert"}]}}}]' >/dev/null
+if poll 60 ingress_ports_are "$PORT,$TLS_PORT"; then
+  ok "the HTTP port is back on the ingress Service"
+else
+  bad "the HTTP port is back on the ingress Service" "$(kubectl -n web get svc direct-gw-ingress-service -o json | jq -c '[.spec.ports[]?.port]')"
+fi
+# A port added to a Service was not sent until something else about it changed.
+for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
+  if poll 90 only_l4_on "$gw"; then
+    ok "on $gw, the ingress Service's L4 rule for it, and no host and path rule left"
+  else
+    bad "on $gw, the ingress Service's L4 rule for it, and no host and path rule left" "$(rule_keys "$gw")"
+  fi
+done
+poll 30 no_rule_services
+check "the rule Services are gone" "$(gen | jq '.items | length')" 0
+sleep 3
+touch "$PROBE.stop"
+wait "$PROBER"
+
+# In the log: the L4 rule on each gateway, after loxilb-ingress has the
+# Ingresses, and the rule Services' deletes after both.
+SENT=$(line_of "$D11_FROM" first "the L4 rule of port $PORT is sent: ")
+L4_1=$(line_of_both "$D11_FROM" "loxilb-lb($IGW1_ADDR): add lb {{$VIP  $PORT tcp" "direct-gw-ingress-service")
+L4_2=$(line_of_both "$D11_FROM" "loxilb-lb($IGW2_ADDR): add lb {{$VIP  $PORT tcp" "direct-gw-ingress-service")
+GONE=$(line_of "$D11_FROM" first "gateway web/direct-gw: direct route service ")
+if [[ $REPORTING -gt 0 ]]; then
+  check "loxilb-ingress pods that report" "$REPORTING" "$(kubectl -n kube-system get pods -l app=loxilb-ingress -o name | wc -l)"
+  if [[ $SENT -gt 0 ]] && klb_log | tail -n +"$D11_FROM" | sed -n "${SENT}p" | grep -qF "loxilb-ingress has the port's Ingresses" &&
+     [[ $L4_1 -gt $SENT && $L4_2 -gt $SENT ]]; then
+    ok "the L4 rule went to the gateways once loxilb-ingress had the port's Ingresses"
+  else
+    bad "the L4 rule went to the gateways once loxilb-ingress had the port's Ingresses" \
+      "sent at log line $SENT ($(klb_log | tail -n +"$D11_FROM" | sed -n "${SENT}p" | cut -c1-200)), L4 rule at $L4_1 and $L4_2"
+  fi
+else
+  note "no loxilb-ingress pod reports which Ingresses it has installed: the L4 rule was not held back for it"
+fi
+if [[ $L4_1 -gt 0 && $L4_2 -gt 0 && $GONE -gt $L4_1 && $GONE -gt $L4_2 ]]; then
+  ok "the rule Services went once both gateways had the L4 rule"
+else
+  bad "the rule Services went once both gateways had the L4 rule" "L4 rule at log lines $L4_1 and $L4_2, rule Services deleted at $GONE"
+fi
+SENT_REQS=$(wc -l <"$PROBE")
+MISSED=$(grep -vc ' web-a-$' "$PROBE")
+if [[ $SENT_REQS -lt 20 ]]; then
+  bad "requests to back.example.com while the port went back" "only $SENT_REQS sent"
+elif [[ $MISSED -eq 0 ]]; then
+  ok "each of $SENT_REQS requests to back.example.com was answered while the port went back"
+elif [[ $REPORTING -gt 0 ]]; then
+  bad "each request to back.example.com was answered while the port went back" \
+    "$MISSED of $SENT_REQS were not: $(grep -v ' web-a-$' "$PROBE" | head -3 | tr '\n' ';')"
+else
+  note "$MISSED of $SENT_REQS requests to back.example.com went unanswered while the port went back: loxilb-ingress does not report, and its L4 rule was sent before it had the Ingress"
+fi
+kubectl -n web delete httproute back >/dev/null
+kubectl -n web patch gateway direct-gw --type=json -p '[{"op":"remove","path":"/spec/listeners/2"}]' >/dev/null
+if poll 90 ingress_ports_are "$TLS_PORT"; then
+  ok "the HTTP port is with the direct routes again"
+else
+  bad "the HTTP port is with the direct routes again" "$(kubectl -n web get svc direct-gw-ingress-service -o json | jq -c '[.spec.ports[]?.port]')"
+fi
+for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
+  poll 60 rules_are "$gw" "$WANT2"
+  check "the host and path rules on $gw, no L4 rule" "$(rule_keys "$gw")" "$WANT2"
+done
+BACK=$(line_of "$D11_FROM" first "$PORTS_CHANGED")
+REL=$(line_of "$D11_FROM" last "$RELEASED")
+LEFT=$(line_of "$D11_FROM" last "$PORTS_CHANGED")
+if [[ $BACK -gt 0 && $REL -gt $BACK && $LEFT -gt $REL ]]; then
+  ok "its L4 rule came off again before the port left"
+else
+  bad "its L4 rule came off again before the port left" "back at log line $BACK, released at $REL, left at $LEFT"
+fi
+check "the port did not leave with its L4 rule still on" "$(count_of "$D11_FROM" "$DROPPED")" 0
+case "$(body shop.example.com /api/x)" in web-a-*) ok "shop.example.com/api is served directly again";; *) bad "shop.example.com/api is served directly again" "$(ask shop.example.com /api/x)";; esac
 
 echo
 if [[ $fails -eq 0 ]]; then

@@ -23,8 +23,14 @@ import (
 	sigs_v1_lister "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1"
 )
 
-func gatewayPeers() (bool, string) { return true, "" }
-func plainPeers() (bool, string)   { return false, "loxilb-lb(10.0.0.1) is plain loxilb" }
+func gatewayPeers() (bool, bool, string) { return true, true, "" }
+func plainPeers() (bool, bool, string)   { return false, true, "loxilb-lb(10.0.0.1) is plain loxilb" }
+
+// unreportedPeers - a peer that has not said what it is yet, as each has not
+// when kube-loxilb starts.
+func unreportedPeers() (bool, bool, string) {
+	return false, false, "loxilb-lb(10.0.0.2) has not reported what it is yet"
+}
 
 // directGateway - Gateway infra/gw on 10.0.0.10: HTTP on 80 for any host,
 // HTTPS on 443, both taking routes from every namespace.
@@ -116,7 +122,7 @@ func TestDirectPortsOf(t *testing.T) {
 			if tc.gateway != nil {
 				tc.gateway(gw)
 			}
-			direct, why := directPortsOf(gw, tc.claimed, tc.peers)
+			direct, why, _ := directPortsOf(gw, tc.claimed, tc.peers)
 			if len(direct) != len(tc.direct) {
 				t.Errorf("direct = %v, want %v", direct, tc.direct)
 			}

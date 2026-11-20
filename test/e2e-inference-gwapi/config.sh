@@ -33,6 +33,7 @@ die() { echo "!!! $*"; exit 1; }
   die "no API-key store bootstrap script at $PG_BOOTSTRAP: run build-igw.sh, set PG_BOOTSTRAP, or IGW_KEYSTORE=no"
 docker image inspect "$IGW_IMAGE" >/dev/null 2>&1 || die "$IGW_IMAGE is not a local image"
 docker image inspect "$LOXILB_INGRESS_IMAGE" >/dev/null 2>&1 || die "$LOXILB_INGRESS_IMAGE is not a local image"
+[[ -z "$LOXILB_INGRESS_MANIFEST" || -f "$LOXILB_INGRESS_MANIFEST" ]] || die "no loxilb-ingress manifest at $LOXILB_INGRESS_MANIFEST"
 
 # build_klb <rev> - a kube-loxilb image of one commit, built from a clone so
 # the working tree does not leak into it.
@@ -127,12 +128,16 @@ kubectl apply -f "$WORK/kube-loxilb.yaml" >/dev/null || die "kube-loxilb"
 # loxilb-ingress serves the listeners a Gateway hands it through its ingress
 # Service, as the repository's manifest deploys it: in kube-system, with the
 # default certificate it mounts.
-say "8a. loxilb-ingress ($LOXILB_INGRESS_IMAGE)"
+say "8a. loxilb-ingress ($LOXILB_INGRESS_IMAGE${LOXILB_INGRESS_MANIFEST:+, $LOXILB_INGRESS_MANIFEST})"
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=loxilb-ingress" \
   -keyout "$WORK/ingress.key" -out "$WORK/ingress.crt" >/dev/null 2>&1 || die "loxilb-ingress certificate"
 kubectl -n kube-system create secret generic loxilb-ssl --from-file=server.crt="$WORK/ingress.crt" \
   --from-file=server.key="$WORK/ingress.key" >/dev/null || die "loxilb-ssl"
-git -C "$REPO" show "$KLB_REV:manifest/gateway-api/loxilb-ingress-deploy.yml" |
+if [[ -n "$LOXILB_INGRESS_MANIFEST" ]]; then
+  cat "$LOXILB_INGRESS_MANIFEST"
+else
+  git -C "$REPO" show "$KLB_REV:manifest/gateway-api/loxilb-ingress-deploy.yml"
+fi |
   sed -e "s|image: \"ghcr.io/loxilb-io/loxilb-ingress:latest\"|image: \"$LOXILB_INGRESS_IMAGE\"|" \
       -e 's|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|' > "$WORK/loxilb-ingress.yaml" || die "loxilb-ingress manifest"
 kubectl apply -f "$WORK/loxilb-ingress.yaml" >/dev/null || die "loxilb-ingress"

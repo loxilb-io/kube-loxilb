@@ -167,6 +167,9 @@ type Manager struct {
 	// rules on the listener declared another credential policy, by cache key,
 	// to what they wait for; see listener_wait.go.
 	listenerWaits map[string]listenerWait
+	// releasedPorts - the ports of a Gateway's ingress Service its direct
+	// routes serve, by cache key; see released_ports.go.
+	releasedPorts map[string]map[int32]bool
 
 	// jwtProfiles - a jwtProfilesHolder, once JWTAuthProfiles are managed;
 	// see SetJWTProfiles.
@@ -174,6 +177,8 @@ type Manager struct {
 	// peerBackHook - a peerBackHook; see SetPeerBackHook.
 	peerBackHook   atomic.Value
 	peerBackHookMu sync.Mutex
+	// syncedHook - a func(namespace, name string); see SetSyncedHook.
+	syncedHook atomic.Value
 }
 
 type LbArgs struct {
@@ -480,6 +485,7 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 	svcNs := lb.Namespace
 	svcName := lb.Name
 	defer m.wakeListenerWaiters(GenKey(svcNs, svcName))
+	defer m.callSyncedHook(svcNs, svcName)
 	svc, err := m.serviceLister.Services(svcNs).Get(svcName)
 	if err != nil {
 		if err := m.deleteLoadBalancer(svcNs, svcName, true); err != nil {
@@ -487,6 +493,7 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 		}
 		m.releaseYielders(GenKey(svcNs, svcName))
 		m.keepListenerWait(GenKey(svcNs, svcName), nil)
+		m.keepReleasedPorts(GenKey(svcNs, svcName), nil)
 		return nil
 	}
 	if err := m.addLoadBalancer(svc); err != nil {
@@ -528,6 +535,10 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			return nil
 		}
 	}
+
+	// The ports a Gateway's direct routes took over are not this Service's
+	// to serve any more, while it still lists them.
+	svc = m.withoutReleasedPorts(svc)
 
 	// A pool's Service shares its Gateway listener with the other pools
 	// there. One the InferencePool manager did not make is refused rather
@@ -1647,14 +1658,25 @@ func (m *Manager) deleteLoadBalancer(ns, name string, releaseAll bool) error {
 // are, or another pair of this Service holding the address under the same
 // reservation, as every port does in a pool that is not shared.
 func (m *Manager) dropRemovedPairs(cacheKey string, current []SvcPair) error {
-	entry := m.lbCache[cacheKey]
 	keep := make(map[string]bool, len(current))
 	for _, p := range current {
 		keep[GenSPKey(p.IPString, uint16(p.Port), p.Protocol)] = true
 	}
+	return m.dropPairs(cacheKey, func(key string, _ *LbServicePairEntry) bool { return keep[key] },
+		"is no longer the Service's")
+}
+
+// dropPairs - the same for the pairs keep does not keep; why says in the log
+// why they go.
+func (m *Manager) dropPairs(cacheKey string, keep func(string, *LbServicePairEntry) bool, why string) error {
+	entry := m.lbCache[cacheKey]
+	kept := make(map[string]bool, len(entry.LbServicePairs))
+	for key, sp := range entry.LbServicePairs {
+		kept[key] = keep(key, sp)
+	}
 
 	for key, sp := range entry.LbServicePairs {
-		if keep[key] {
+		if kept[key] {
 			continue
 		}
 
@@ -1680,7 +1702,7 @@ func (m *Manager) dropRemovedPairs(cacheKey string, current []SvcPair) error {
 
 		held := false
 		for other, osp := range entry.LbServicePairs {
-			if other != key && keep[other] && osp.ExternalIP == sp.ExternalIP && osp.IdentIPAM == sp.IdentIPAM {
+			if other != key && kept[other] && osp.ExternalIP == sp.ExternalIP && osp.IdentIPAM == sp.IdentIPAM {
 				held = true
 			}
 		}
@@ -1688,7 +1710,7 @@ func (m *Manager) dropRemovedPairs(cacheKey string, current []SvcPair) error {
 			entry.IPPool.ReturnIPAddr(sp.ExternalIP, sp.IdentIPAM)
 		}
 		delete(entry.LbServicePairs, key)
-		klog.Infof("%s: %s is no longer the Service's; its rules are deleted", cacheKey, key)
+		klog.Infof("%s: %s %s; its rules are deleted", cacheKey, key, why)
 	}
 
 	return nil
