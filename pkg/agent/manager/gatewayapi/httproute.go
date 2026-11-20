@@ -743,6 +743,41 @@ func (h *HTTPRouteManager) routeIngresses(httpRoute *v1.HTTPRoute) ([]*netv1.Ing
 	return ingresses, parents, nil
 }
 
+// IngressesOn - the Ingresses the routes attached to gw's listeners on port
+// have there once gw's ingress service carries the port, as syncHTTPRoute
+// writes them.
+func (h *HTTPRouteManager) IngressesOn(gw *v1.Gateway, port v1.PortNumber) ([]*netv1.Ingress, error) {
+	routes, err := h.httpRouteLister.List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
+	nsLabels := h.namespaceLabels()
+
+	var ingresses []*netv1.Ingress
+	seen := map[string]bool{}
+	for _, httpRoute := range routes {
+		route := attachingRoute{Kind: kindHTTPRoute, Namespace: httpRoute.Namespace, Hostnames: httpRoute.Spec.Hostnames}
+		for _, parentRef := range httpRoute.Spec.ParentRefs {
+			namespace, name, ok := gatewayOf(httpRoute.Namespace, parentRef)
+			if !ok || namespace != gw.Namespace || name != gw.Name {
+				continue
+			}
+			for _, la := range attachRoute(gw, parentRef, route, nsLabels).Listeners {
+				if la.Listener.Port != port {
+					continue
+				}
+				ing, _ := h.listenerIngress(httpRoute, gw, la)
+				if ing == nil || seen[GenKey(ing.Namespace, ing.Name)] {
+					continue
+				}
+				seen[GenKey(ing.Namespace, ing.Name)] = true
+				ingresses = append(ingresses, ing)
+			}
+		}
+	}
+	return ingresses, nil
+}
+
 // listenerIngressName - the name of the Ingress a route has for one listener.
 // The Gateway and listener go in as a hash, which keeps the name inside the
 // API's limit and apart from those of the route's other listeners.

@@ -39,9 +39,11 @@ import (
 // moved it there and back on every route change, and on a start with a peer
 // that did not answer, it took every direct route down until that peer did.
 
-// errHandoverPending - a port's rules are on the peers, and its L4 rule is
-// not off them yet.
-var errHandoverPending = errors.New("a port waits for its L4 rule to come off every peer")
+// errHandoverPending - a port is on its way between the ingress service and
+// the direct routes: going to them, its L4 rule is not off every peer yet;
+// going back, loxilb-ingress or the peers do not serve it yet
+// (ingress_programmed.go).
+var errHandoverPending = errors.New("a port is on its way between the ingress service and the direct routes")
 
 func isHandoverPending(err error) bool { return errors.Is(err, errHandoverPending) }
 
@@ -89,8 +91,9 @@ func (gm *GatewayManager) handedOver(gw *v1.Gateway, ingress *corev1.Service, di
 // handOver - the ports to keep off the ingress service: those taken over
 // already, and the direct ones whose rules are all on the peers, once the
 // load-balancer manager has their L4 rule off every peer. While one waits
-// for that, errHandoverPending brings the Gateway back.
-func (gm *GatewayManager) handOver(gw *v1.Gateway, direct, taken, ready map[v1.PortNumber]bool) (map[v1.PortNumber]bool, error) {
+// for that, errHandoverPending brings the Gateway back. The ports in hold
+// stay on the ingress service, and their L4 rule off the peers.
+func (gm *GatewayManager) handOver(gw *v1.Gateway, direct, taken, ready, hold map[v1.PortNumber]bool) (map[v1.PortNumber]bool, error) {
 	var ports []int32
 	for p := range direct {
 		if taken[p] || ready[p] {
@@ -106,7 +109,14 @@ func (gm *GatewayManager) handOver(gw *v1.Gateway, direct, taken, ready map[v1.P
 		}
 		return off, nil
 	}
-	released, err := gm.releasePorts(gw.Namespace, ingressServiceName(gw), ports)
+	release := append([]int32{}, ports...)
+	for p := range hold {
+		if !direct[p] {
+			release = append(release, int32(p))
+		}
+	}
+	sort.Slice(release, func(i, j int) bool { return release[i] < release[j] })
+	released, err := gm.releasePorts(gw.Namespace, ingressServiceName(gw), release)
 	var waiting []int32
 	for _, p := range ports {
 		if taken[v1.PortNumber(p)] || released[p] {

@@ -37,7 +37,9 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	corelister "k8s.io/client-go/listers/core/v1"
 	discoverylister "k8s.io/client-go/listers/discovery/v1"
+	netlister "k8s.io/client-go/listers/networking/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -98,6 +100,19 @@ type GatewayManager struct {
 	// takes a port's L4 rule off the peers before the port leaves the ingress
 	// service.
 	releasePorts ReleasePorts
+	// ingressLister, ingressesOn, installedPorts, eventRecorder - set by
+	// BringPortsBack: a port on its way back to the ingress service keeps
+	// its direct rules until the Ingress path serves it
+	// (ingress_programmed.go). returning - those ports, by Gateway key.
+	ingressLister       netlister.IngressLister
+	ingressListerSynced cache.InformerSynced
+	ingressesOn         IngressesOn
+	installedPorts      InstalledPorts
+	eventRecorder       record.EventRecorder
+	returningMu         sync.Mutex
+	returning           map[string]map[v1.PortNumber]*portReturn
+	// now - the clock, for tests; time.Now when nil.
+	now func() time.Time
 
 	// queue - Gateways by key (GenKey), so that one Gateway is one item
 	// however many events it has, and no two workers take it at once.
@@ -455,16 +470,19 @@ func (gm *GatewayManager) Run(stopCh <-chan struct{}) {
 	// use. A Gateway applied before its routes still has that moment; the
 	// load-balancer manager retries the pool's Service until the port is
 	// released instead of failing on it.
-	if !cache.WaitForNamedCacheSync(
-		gwMgrName,
-		stopCh,
+	synced := []cache.InformerSynced{
 		gm.gatewayListerSynced,
 		gm.httpRouteListerSynced,
 		gm.gatewayClassListerSynced,
 		gm.namespaceListerSynced,
 		gm.serviceListerSynced,
 		gm.podListerSynced,
-		gm.endpointSliceListerSynced) {
+		gm.endpointSliceListerSynced,
+	}
+	if gm.ingressListerSynced != nil {
+		synced = append(synced, gm.ingressListerSynced)
+	}
+	if !cache.WaitForNamedCacheSync(gwMgrName, stopCh, synced...) {
 		return
 	}
 
@@ -619,9 +637,11 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 	// has it again.
 	ingress, ingressErr := gm.kubeClient.CoreV1().Services(updatedGw.Namespace).Get(ctx, ingressServiceName(updatedGw), metav1.GetOptions{})
 	desiredDirect, offIngress := map[string]bool{}, map[v1.PortNumber]bool{}
-	var directErr, handoverErr error
+	var keepDirect map[v1.PortNumber]bool
+	var directErr, handoverErr, returnErr error
 	if gm.directPeers != nil {
-		direct, why, held := directPortsOf(updatedGw, gm.listenersClaimedByInferencePools(updatedGw), gm.directPeers)
+		claimed := gm.listenersClaimedByInferencePools(updatedGw)
+		direct, why, held := directPortsOf(updatedGw, claimed, gm.directPeers)
 		var current *corev1.Service
 		if ingressErr == nil {
 			current = ingress
@@ -640,7 +660,17 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 		if directErr != nil {
 			klog.Errorf("gateway %s/%s: direct routes: %v", updatedGw.Namespace, updatedGw.Name, directErr)
 		}
-		offIngress, handoverErr = gm.handOver(updatedGw, direct, taken, ready)
+		// A port the direct routes leave keeps its L4 rule back, and its
+		// direct rules, until the Ingress path serves it
+		// (ingress_programmed.go).
+		var hold map[v1.PortNumber]bool
+		if rules, err := gm.directServices(updatedGw); err != nil {
+			hold, keepDirect = map[v1.PortNumber]bool{}, map[v1.PortNumber]bool{}
+			returnErr = err
+		} else {
+			hold, keepDirect, returnErr = gm.bringBack(updatedGw, leavingPorts(rules, ingressServicePorts(updatedGw, claimed, direct)))
+		}
+		offIngress, handoverErr = gm.handOver(updatedGw, direct, taken, ready, hold)
 	}
 
 	// The ingress service next: whether it could be made is part of the
@@ -654,7 +684,7 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 		endpointsErr = gm.syncIngressEndpoints(ctx, updatedGw, svc)
 	}
 	if serviceErr == nil && directErr == nil {
-		if err := gm.pruneDirectRoutes(ctx, updatedGw, desiredDirect); err != nil {
+		if err := gm.pruneDirectRoutes(ctx, updatedGw, desiredDirect, keepDirect); err != nil {
 			directErr = err
 		}
 	}
@@ -676,6 +706,9 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 	}
 	if handoverErr != nil {
 		return handoverErr
+	}
+	if returnErr != nil {
+		return returnErr
 	}
 
 	if svc != nil {

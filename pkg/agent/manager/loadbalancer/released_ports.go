@@ -128,3 +128,68 @@ func (m *Manager) withoutReleasedPorts(svc *corev1.Service) *corev1.Service {
 	}
 	return served
 }
+
+// InstalledPorts - which of the TCP ports of a Service every peer that is up
+// has the rules of. A port still released has none to have, nor has a port
+// not synced yet; and while no peer is up, none is installed.
+//
+// A port that goes back from a Gateway's direct routes to its ingress Service
+// keeps its direct rules until then: the gateway serves the L4 rule ahead of
+// them once it has it, and not before.
+func (m *Manager) InstalledPorts(namespace, name string, ports []int32) map[int32]bool {
+	m.lbCacheMu.Lock()
+	defer m.lbCacheMu.Unlock()
+
+	installed := map[int32]bool{}
+	cacheKey := GenKey(namespace, name)
+	entry, ok := m.lbCache[cacheKey]
+	if !ok {
+		return installed
+	}
+	var alive []string
+	for _, c := range m.LoxiClients.Clients {
+		if c.IsAlive {
+			alive = append(alive, c.Host)
+		}
+	}
+	if len(alive) == 0 {
+		return installed
+	}
+
+	asked := map[int32]bool{}
+	for _, p := range ports {
+		if !m.releasedPorts[cacheKey][p] {
+			asked[p] = true
+		}
+	}
+	missing := map[int32]bool{}
+	for _, sp := range entry.LbServicePairs {
+		port := int32(sp.Port)
+		if !asked[port] || !strings.EqualFold(sp.Protocol, string(corev1.ProtocolTCP)) {
+			continue
+		}
+		installed[port] = true
+		for _, host := range alive {
+			if st, ok := sp.peers[host]; !ok || st.phase != peerInstalled {
+				missing[port] = true
+			}
+		}
+	}
+	for p := range missing {
+		delete(installed, p)
+	}
+	return installed
+}
+
+// SetSyncedHook - fn is called each time a Service's sync ends, with its
+// namespace and name. It is called with the manager's cache locked, and must
+// not call back into the manager.
+func (m *Manager) SetSyncedHook(fn func(namespace, name string)) {
+	m.syncedHook.Store(fn)
+}
+
+func (m *Manager) callSyncedHook(namespace, name string) {
+	if fn, ok := m.syncedHook.Load().(func(namespace, name string)); ok && fn != nil {
+		fn(namespace, name)
+	}
+}

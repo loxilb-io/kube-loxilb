@@ -3,11 +3,14 @@ package loadbalancer
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/loxilb-io/kube-loxilb/pkg/api"
 )
@@ -136,5 +139,66 @@ func TestAPortOfAServiceNotSyncedYetIsReleasedAtOnce(t *testing.T) {
 	}
 	if n := posts(gw); n != 0 {
 		t.Errorf("the first sync POSTed %d rules, want none for the released port", n)
+	}
+}
+
+// A port is installed once every peer that is up has its rules: not while one
+// of them refuses them, nor while the port is released, nor while no peer is
+// up.
+func TestAPortIsInstalledOnceEveryPeerThatIsUpHasIt(t *testing.T) {
+	gw := newFakeLoxiLB(t, "")
+	peer := gw.client(t)
+	peer.IsAlive = true
+	refusing := clientFor(t, rejectingLoxiLB(t, http.StatusInternalServerError, "busy"))
+	m, svc := addHarness(t, peer, refusing)
+	withSecondPort(t, m, svc)
+
+	refusing.IsAlive = true
+	if got := m.InstalledPorts("llm", "web", []int32{8080, 8081}); len(got) != 0 {
+		t.Errorf("installed with a peer up that refused them = %v, want none", got)
+	}
+
+	refusing.IsAlive = false
+	if got := fmt.Sprint(m.InstalledPorts("llm", "web", []int32{8080, 8081})); got != "map[8080:true 8081:true]" {
+		t.Errorf("installed with the refusing peer down = %s, want both", got)
+	}
+	if got := fmt.Sprint(m.InstalledPorts("llm", "web", []int32{8081, 9999})); got != "map[8081:true]" {
+		t.Errorf("installed of a port the Service lacks = %s, want the one it has", got)
+	}
+
+	if _, err := m.ReleasePorts("llm", "web", []int32{8081}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(m.InstalledPorts("llm", "web", []int32{8080, 8081})); got != "map[8080:true]" {
+		t.Errorf("installed with 8081 released = %s, want 8080 only", got)
+	}
+
+	peer.IsAlive = false
+	if got := m.InstalledPorts("llm", "web", []int32{8080}); len(got) != 0 {
+		t.Errorf("installed with no peer up = %v, want none", got)
+	}
+	if got := m.InstalledPorts("llm", "other", []int32{8080}); len(got) != 0 {
+		t.Errorf("installed of a Service never synced = %v, want none", got)
+	}
+}
+
+// The synced hook hears of each Service's sync.
+func TestTheSyncedHookHearsOfEachSync(t *testing.T) {
+	gw := newFakeLoxiLB(t, "")
+	peer := gw.client(t)
+	peer.IsAlive = true
+	m, svc := addHarness(t, peer)
+	services := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	if err := services.Add(svc); err != nil {
+		t.Fatal(err)
+	}
+	m.serviceLister = corelisters.NewServiceLister(services)
+	var heard []string
+	m.SetSyncedHook(func(namespace, name string) { heard = append(heard, namespace+"/"+name) })
+	if err := m.syncLoadBalancer(LbCacheKey{Namespace: "llm", Name: "web"}); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(heard) != "[llm/web]" {
+		t.Errorf("heard %v", heard)
 	}
 }

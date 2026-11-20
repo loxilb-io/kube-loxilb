@@ -391,6 +391,10 @@ func run(o *Options) error {
 		if o.config.GatewayAPIDirectRoutes {
 			gatewayManager.ServeRoutesDirectly(lbManager.GatewayPeers, referenceGrants, lbManager.ReleasePorts)
 			httpRouteManager.ServeRoutesDirectly(lbManager.GatewayPeers)
+			// A port going back to the ingress service keeps its direct
+			// rules until loxilb-ingress and its L4 rule serve it.
+			gatewayManager.BringPortsBack(informerFactory, httpRouteManager.IngressesOn, lbManager.InstalledPorts)
+			lbManager.SetSyncedHook(gatewayManager.IngressServiceSynced)
 			lbManager.SetPeerBackHook(func(*api.LoxiClient) {
 				gatewayManager.EnqueueAll()
 				httpRouteManager.EnqueueAll()

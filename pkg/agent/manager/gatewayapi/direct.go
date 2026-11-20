@@ -595,16 +595,19 @@ func (gm *GatewayManager) applyDirectRoutes(ctx context.Context, gw *v1.Gateway,
 }
 
 // pruneDirectRoutes - delete the generated Services gw controls that desired
-// does not name. Done after the ingress service has taken a port back, so
-// the port is not left without rules in between for long.
-func (gm *GatewayManager) pruneDirectRoutes(ctx context.Context, gw *v1.Gateway, desired map[string]bool) error {
+// does not name, but those on the ports in keep: ports on their way back to
+// the ingress service, whose L4 rule does not serve them yet.
+func (gm *GatewayManager) pruneDirectRoutes(ctx context.Context, gw *v1.Gateway, desired map[string]bool, keep map[v1.PortNumber]bool) error {
 	existing, err := gm.directServices(gw)
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for name := range existing {
+	for name, svc := range existing {
 		if desired[name] {
+			continue
+		}
+		if len(svc.Spec.Ports) > 0 && keep[v1.PortNumber(svc.Spec.Ports[0].Port)] {
 			continue
 		}
 		if err := gm.kubeClient.CoreV1().Services(gw.Namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {

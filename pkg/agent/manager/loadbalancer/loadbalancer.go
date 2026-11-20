@@ -177,6 +177,8 @@ type Manager struct {
 	// peerBackHook - a peerBackHook; see SetPeerBackHook.
 	peerBackHook   atomic.Value
 	peerBackHookMu sync.Mutex
+	// syncedHook - a func(namespace, name string); see SetSyncedHook.
+	syncedHook atomic.Value
 }
 
 type LbArgs struct {
@@ -483,6 +485,7 @@ func (m *Manager) syncLoadBalancer(lb LbCacheKey) error {
 	svcNs := lb.Namespace
 	svcName := lb.Name
 	defer m.wakeListenerWaiters(GenKey(svcNs, svcName))
+	defer m.callSyncedHook(svcNs, svcName)
 	svc, err := m.serviceLister.Services(svcNs).Get(svcName)
 	if err != nil {
 		if err := m.deleteLoadBalancer(svcNs, svcName, true); err != nil {
