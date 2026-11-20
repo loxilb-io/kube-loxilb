@@ -2,8 +2,10 @@ package loadbalancer
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -282,5 +284,44 @@ func TestAPortTakenOffAServiceTakesItsRule(t *testing.T) {
 	}
 	if ip, _ := pool.GetNewIPAddr("llm/next", 8080, "tcp"); ip != nil {
 		t.Error("8080, which the Service keeps, was given back")
+	}
+}
+
+// A port added to a Service is sent to the peers. Only the cached pairs were
+// compared, so its rule waited for some other change to the Service.
+func TestAPortAddedToAServiceGetsItsRule(t *testing.T) {
+	gw := newFakeLoxiLB(t, "")
+	peer := gw.client(t)
+	peer.IsAlive = true
+	m, svc := addHarness(t, peer)
+	if err := m.addLoadBalancer(svc); err != nil {
+		t.Fatalf("addLoadBalancer = %v", err)
+	}
+
+	two := current(t, m)
+	two.Spec.Ports = append(two.Spec.Ports, corev1.ServicePort{
+		Name: "b", Port: 8081, Protocol: corev1.ProtocolTCP, TargetPort: intstr.FromInt(81), NodePort: 30081,
+	})
+	if _, err := m.kubeClient.CoreV1().Services("llm").Update(context.Background(), two, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update service: %v", err)
+	}
+	if err := m.addLoadBalancer(current(t, m)); err != nil {
+		t.Fatalf("addLoadBalancer with a port added = %v", err)
+	}
+	pairs := m.lbCache[GenKey("llm", "web")].LbServicePairs
+	if sp, ok := pairs[GenSPKey("192.168.0.13", 8081, "tcp")]; !ok || len(sp.LbModelList) == 0 {
+		t.Errorf("pairs cached = %v, want 8081 with its rule", pairs)
+	}
+	var ports []uint16
+	gw.mu.Lock()
+	for _, body := range gw.bodies {
+		var rule api.LoadBalancerModel
+		if err := json.Unmarshal([]byte(body), &rule); err == nil {
+			ports = append(ports, rule.Service.Port)
+		}
+	}
+	gw.mu.Unlock()
+	if !slices.Contains(ports, 8081) {
+		t.Errorf("rules POSTed on ports %v, want one on 8081", ports)
 	}
 }

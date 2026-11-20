@@ -1045,6 +1045,14 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 				update = true
 			}
 		}
+		// A pair the Service has that is not cached - a port added to it -
+		// has no rule yet. Nothing else here tells: the endpoints and the
+		// addresses compared below are those of the cached pairs.
+		for _, p := range ingSvcPairs {
+			if _, cached := m.lbCache[cacheKey].LbServicePairs[GenSPKey(p.IPString, uint16(p.Port), p.Protocol)]; !cached {
+				update = true
+			}
+		}
 	}
 
 	if addrType != m.lbCache[cacheKey].Addr {
