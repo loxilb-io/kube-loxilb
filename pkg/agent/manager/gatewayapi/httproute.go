@@ -39,6 +39,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	corev1lister "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
@@ -953,6 +954,34 @@ func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteR
 	return paths
 }
 
+// programmedAnnotationPrefix - the annotations a loxilb-ingress pod notes on
+// an Ingress which generation of it it has installed under, one for each pod
+// (loxilb.io/programmed.<pod name>).
+const programmedAnnotationPrefix = "loxilb.io/programmed."
+
+// withoutProgrammedMarks - annotations without the loxilb-ingress pods'
+// reports.
+func withoutProgrammedMarks(annotations map[string]string) map[string]string {
+	out := maps.Clone(annotations)
+	maps.DeleteFunc(out, func(k, _ string) bool { return strings.HasPrefix(k, programmedAnnotationPrefix) })
+	return out
+}
+
+// keepProgrammedMarks - desired, with the loxilb-ingress pods' reports
+// existing has in place of any desired has.
+func keepProgrammedMarks(desired, existing map[string]string) map[string]string {
+	out := withoutProgrammedMarks(desired)
+	for k, v := range existing {
+		if strings.HasPrefix(k, programmedAnnotationPrefix) {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // applyIngress - create the Ingress, or bring the route's existing one of that
 // name to it.
 func (h *HTTPRouteManager) applyIngress(ctx context.Context, desired, existing *netv1.Ingress) error {
@@ -975,17 +1004,30 @@ func (h *HTTPRouteManager) applyIngress(ctx context.Context, desired, existing *
 		return nil
 	}
 
+	// The loxilb-ingress pods note on the Ingress which generation of it
+	// each has installed (ingress_programmed.go). The notes are theirs: they
+	// are neither compared nor overwritten, and a pod writing one as the
+	// Ingress is updated is not a reason to fail.
 	if equality.Semantic.DeepEqual(existing.Spec, desired.Spec) &&
 		maps.Equal(existing.Labels, desired.Labels) &&
-		maps.Equal(existing.Annotations, desired.Annotations) {
+		maps.Equal(withoutProgrammedMarks(existing.Annotations), withoutProgrammedMarks(desired.Annotations)) {
 		return nil
 	}
 
-	updated := existing.DeepCopy()
-	updated.Spec = desired.Spec
-	updated.Labels = desired.Labels
-	updated.Annotations = desired.Annotations
-	if _, err := ingresses.Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		updated := existing.DeepCopy()
+		updated.Spec = desired.Spec
+		updated.Labels = desired.Labels
+		updated.Annotations = keepProgrammedMarks(desired.Annotations, existing.Annotations)
+		_, err := ingresses.Update(ctx, updated, metav1.UpdateOptions{})
+		if errors.IsConflict(err) {
+			if fresh, getErr := ingresses.Get(ctx, existing.Name, metav1.GetOptions{}); getErr == nil {
+				existing = fresh
+			}
+		}
+		return err
+	})
+	if err != nil {
 		return fmt.Errorf("HTTPRoute %s/%s: update ingress %s: %w", desired.Namespace, route, desired.Name, err)
 	}
 	klog.Infof("ingress %s/%s is updated", desired.Namespace, desired.Name)
