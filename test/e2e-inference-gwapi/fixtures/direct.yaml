@@ -1,9 +1,5 @@
-# HTTPRoutes served directly on a Gateway's HTTP listener (--gatewayAPIDirectRoutes).
-#
-# direct-gw shares the testbed's one address with inference-gw - the pool is a
-# /32, so it names the address instead of being given one - on ports of its
-# own: HTTP 8090, which is served directly, and HTTPS 8453, which stays on the
-# ingress Service until the gateway can pick certificates safely.
+# HTTPRoutes served directly on a Gateway's HTTP listener (--gatewayAPIDirectRoutes):
+# the backends and routes. Their Gateway, direct-gw, is fixtures/direct-gateway.yaml.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -100,27 +96,6 @@ metadata:
 spec:
   ports:
     - {name: http, port: 80, targetPort: 8000}
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: direct-gw
-  namespace: web
-spec:
-  gatewayClassName: loxilb-gc
-  addresses:
-    - {type: IPAddress, value: 12.12.12.1}
-  listeners:
-    - name: http
-      protocol: HTTP
-      port: 8090
-    - name: https
-      protocol: HTTPS
-      port: 8453
-      tls:
-        mode: Terminate
-        certificateRefs:
-          - {kind: Secret, name: web-cert}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

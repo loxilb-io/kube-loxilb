@@ -1,0 +1,29 @@
+# The Gateway of fixtures/direct.yaml, applied after its routes: its first
+# reconcile then sees them, so the HTTP port starts on the ingress Service and
+# moves to the rules once they are installed - the move the checks are for.
+# Applied first, the port has no rules yet and never is on the ingress Service.
+#
+# direct-gw shares the testbed's one address with inference-gw - the pool is a
+# /32, so it names the address instead of being given one - on ports of its
+# own: HTTP 8090, which is served directly, and HTTPS 8453, which stays on the
+# ingress Service until the gateway can pick certificates safely.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: direct-gw
+  namespace: web
+spec:
+  gatewayClassName: loxilb-gc
+  addresses:
+    - {type: IPAddress, value: 12.12.12.1}
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 8090
+    - name: https
+      protocol: HTTPS
+      port: 8453
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - {kind: Secret, name: web-cert}

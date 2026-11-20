@@ -167,21 +167,25 @@ made every inference rule undeletable, and nothing here noticed.
 
 ### Direct HTTP routes (`validation-direct.sh`)
 
-`fixtures/direct.yaml`: a Gateway `direct-gw` on the testbed's one address with an HTTP listener
-on 8090 and an HTTPS one on 8453, and routes to `socat` backends that answer with their pod name.
+`fixtures/direct-gateway.yaml`: a Gateway `direct-gw` on the testbed's one address with an HTTP
+listener on 8090 and an HTTPS one on 8453. `fixtures/direct.yaml`: routes to `socat` backends that
+answer with their pod name. The Gateway is applied after its routes, and the selector-less backend's
+EndpointSlice after the Gateway, so that the HTTP port starts on the ingress Service, its L4 rule
+installed, and moves to the rules.
 It runs last because it turns on `--gatewayAPIDirectRoutes`, which the build `validation-auth.sh`
 downgrades to does not know.
 
 | # | Check | What it proves |
 |---|---|---|
 | D0 | kube-loxilb rolls out with `--gatewayAPIDirectRoutes` | the flag is accepted with the Gateway API on |
-| D1 | the fixtures, a TLS Secret, a hand-written EndpointSlice for the selector-less `web-manual`, and `shop-api-dup` - younger than `shop-api`, the same host and path once its trailing slash goes | the inputs the rest reads |
+| D1 | the fixtures, a TLS Secret, a hand-written EndpointSlice for the selector-less `web-manual`, `shop-api-dup` - younger than `shop-api`, the same host and path once its trailing slash goes - then the Gateway, and `web-manual`'s EndpointSlice only once the ingress Service's L4 rule for the HTTP port is on igw1 - until then that route's rule has no endpoints and the port cannot move | the inputs the rest reads, and a port that has to move off an installed L4 rule |
 | D2 | one Service per served host and path - three - controlled by `direct-gw` and each reporting the address as installed, in the zone's hostname form | the programmer writes a rule per pair, and the pair `shop-api-dup` lost is not written twice |
-| D3 | on both gateways, `host\|path\|prefix` fullproxy rules on VIP:8090; `/api`'s endpoints are web-a's pods on the target port, `manual.example.com`'s the hand-written ones | the rule's endpoints come from the backend's EndpointSlices, not a selector |
+| D3 | on both gateways, only the `host\|path\|prefix` fullproxy rules on VIP:8090 - no L4 rule of the ingress Service left; `/api`'s endpoints are web-a's pods on the target port, `manual.example.com`'s the hand-written ones | the ingress Service's rule goes with the port it let go, and the rule's endpoints come from the backend's EndpointSlices, not a selector |
 | D4 | the ingress Service keeps only 8453 and is controlled by `direct-gw`; no Ingress for the HTTP listener, one for the HTTPS one | a listener served directly leaves the Ingress path once its rules are installed; HTTPS still takes it |
 | D5 | `/api/items` reaches web-a, `/cart` and `/apiary` web-b, `manual.example.com` its hand-written endpoints; an unknown host and the header-match route's host get 503 | path prefixes match by segment, and what a rule cannot hold is not served broadly |
 | D6 | `shop-api-dup` is not Accepted (`UnsupportedValue`, served for `web/shop-api`), nor is `headers`; `shop-api` is; `direct-gw` is Programmed | routes say why they are not served, and the Gateway reports the listener as programmed |
 | D7 | scaling web-a to one moves the `/api` rule to it; moving the hand-written EndpointSlice moves `manual.example.com` | endpoint changes are followed without the route changing |
+| D7b | `shop-api` switched to `Exact` and back: on both gateways the `/api` rule is `exact` with no `prefix` rule left, `/api` reaches web-a and `/api/items` web-b; then `prefix` again | a rule is sent again when its route changes, and the one before is deleted: the gateway keys a rule by its match mode too |
 | D8 | a hand-made Service with the rule label and annotations but no controlling Gateway gets `GatewayRouteRefused`, and no rule | a rule's host and path are only taken from a Service its Gateway controls |
 | D9 | deleting `manual` removes its rule and answers 503; the other two stay | a rule goes with its route |
 
