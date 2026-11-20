@@ -109,6 +109,11 @@ rules:
       - get
       - watch
       - list
+      # A Gateway's ingress service has its endpoints written: the
+      # loxilb-ingress pods, wherever they run.
+      - create
+      - update
+      - delete
   - apiGroups:
       - kubevirt.io
     resources:

@@ -32,6 +32,7 @@ die() { echo "!!! $*"; exit 1; }
 [[ "$IGW_KEYSTORE" == no || -f "$PG_BOOTSTRAP" ]] ||
   die "no API-key store bootstrap script at $PG_BOOTSTRAP: run build-igw.sh, set PG_BOOTSTRAP, or IGW_KEYSTORE=no"
 docker image inspect "$IGW_IMAGE" >/dev/null 2>&1 || die "$IGW_IMAGE is not a local image"
+docker image inspect "$LOXILB_INGRESS_IMAGE" >/dev/null 2>&1 || die "$LOXILB_INGRESS_IMAGE is not a local image"
 
 # build_klb <rev> - a kube-loxilb image of one commit, built from a clone so
 # the working tree does not leak into it.
@@ -110,7 +111,7 @@ say "node $NODE"
 
 say "6. images into the cluster"
 k3d image import -c "$CLUSTER" "$(klb_image "$KLB_REV")" "$(klb_image "$KLB_OLD_REV")" \
-  "$NETTEST_IMAGE" >/dev/null 2>&1 || die "k3d image import"
+  "$NETTEST_IMAGE" "$LOXILB_INGRESS_IMAGE" >/dev/null 2>&1 || die "k3d image import"
 
 say "7. CRDs (Gateway API $GWAPI_VERSION, Inference Extension $GIE_VERSION, JWTAuthProfile)"
 kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/$GWAPI_VERSION/standard-install.yaml" >/dev/null || die "Gateway API CRDs"
@@ -122,6 +123,20 @@ git -C "$REPO" show "$KLB_REV:manifest/gateway-api/kube-loxilb.yaml" > "$WORK/ku
 KLB_TAG="$(klb_tag "$KLB_REV")" LOXIURL="http://$IGW1_ADDR:11111,http://$IGW2_ADDR:11111" \
   VIP_POOL="$VIP_POOL" python3 "$HERE/gen-kube-loxilb.py" "$WORK/kube-loxilb.src.yaml" > "$WORK/kube-loxilb.yaml" || die "manifest"
 kubectl apply -f "$WORK/kube-loxilb.yaml" >/dev/null || die "kube-loxilb"
+
+# loxilb-ingress serves the listeners a Gateway hands it through its ingress
+# Service, as the repository's manifest deploys it: in kube-system, with the
+# default certificate it mounts.
+say "8a. loxilb-ingress ($LOXILB_INGRESS_IMAGE)"
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=loxilb-ingress" \
+  -keyout "$WORK/ingress.key" -out "$WORK/ingress.crt" >/dev/null 2>&1 || die "loxilb-ingress certificate"
+kubectl -n kube-system create secret generic loxilb-ssl --from-file=server.crt="$WORK/ingress.crt" \
+  --from-file=server.key="$WORK/ingress.key" >/dev/null || die "loxilb-ssl"
+git -C "$REPO" show "$KLB_REV:manifest/gateway-api/loxilb-ingress-deploy.yml" |
+  sed -e "s|image: \"ghcr.io/loxilb-io/loxilb-ingress:latest\"|image: \"$LOXILB_INGRESS_IMAGE\"|" \
+      -e 's|imagePullPolicy: Always|imagePullPolicy: IfNotPresent|' > "$WORK/loxilb-ingress.yaml" || die "loxilb-ingress manifest"
+kubectl apply -f "$WORK/loxilb-ingress.yaml" >/dev/null || die "loxilb-ingress"
+kubectl -n kube-system rollout status ds/loxilb-ingress --timeout=180s >/dev/null || die "loxilb-ingress rollout"
 
 if [[ -n "$EPP_SRC" ]]; then
   say "8b. stand-in Endpoint Picker image from $EPP_SRC"

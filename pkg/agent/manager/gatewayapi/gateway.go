@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
 	corelister "k8s.io/client-go/listers/core/v1"
+	discoverylister "k8s.io/client-go/listers/discovery/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
@@ -78,6 +79,13 @@ type GatewayManager struct {
 	// backends they name.
 	serviceLister       corelister.ServiceLister
 	serviceListerSynced cache.InformerSynced
+	// podLister - the pods, read for loxilb-ingress's; endpointSliceLister -
+	// the EndpointSlices, read for those of the ingress services
+	// (ingress_endpoints.go).
+	podLister                 corelister.PodLister
+	podListerSynced           cache.InformerSynced
+	endpointSliceLister       discoverylister.EndpointSliceLister
+	endpointSliceListerSynced cache.InformerSynced
 
 	// directPeers - set when HTTPRoutes may be served directly on a
 	// Gateway's listeners (direct.go); nil serves them through the ingress
@@ -101,6 +109,8 @@ func NewGatewayManager(
 	gatewayClassInformer := sigsInformerFactory.Gateway().V1().GatewayClasses()
 	namespaceInformer := kubeInformerFactory.Core().V1().Namespaces()
 	serviceInformer := kubeInformerFactory.Core().V1().Services()
+	podInformer := kubeInformerFactory.Core().V1().Pods()
+	endpointSliceInformer := kubeInformerFactory.Discovery().V1().EndpointSlices()
 	manager := &GatewayManager{
 		kubeClient:          kubeClient,
 		sigsClient:          sigsClient,
@@ -121,8 +131,23 @@ func NewGatewayManager(
 		serviceLister:            serviceInformer.Lister(),
 		serviceListerSynced:      serviceInformer.Informer().HasSynced,
 
+		podLister:                 podInformer.Lister(),
+		podListerSynced:           podInformer.Informer().HasSynced,
+		endpointSliceLister:       endpointSliceInformer.Lister(),
+		endpointSliceListerSynced: endpointSliceInformer.Informer().HasSynced,
+
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "gateway"),
 	}
+
+	// Every ingress service names the loxilb-ingress pods, wherever they run.
+	podInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+		FilterFunc: isLoxilbIngressPod,
+		Handler: cache.ResourceEventHandlerFuncs{
+			AddFunc:    func(interface{}) { manager.EnqueueAll() },
+			UpdateFunc: func(old, cur interface{}) { manager.loxilbIngressPodChanged(old, cur) },
+			DeleteFunc: func(interface{}) { manager.EnqueueAll() },
+		},
+	})
 
 	// A direct route's Service reports when its rule is on the peers, which
 	// lets the ingress service leave the port.
@@ -359,7 +384,9 @@ func (gm *GatewayManager) Run(stopCh <-chan struct{}) {
 		gm.httpRouteListerSynced,
 		gm.gatewayClassListerSynced,
 		gm.namespaceListerSynced,
-		gm.serviceListerSynced) {
+		gm.serviceListerSynced,
+		gm.podListerSynced,
+		gm.endpointSliceListerSynced) {
 		return
 	}
 
@@ -510,6 +537,10 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 	if serviceErr != nil {
 		klog.Errorf("gateway %s/%s failed to create service. err: %v", updatedGw.Namespace, updatedGw.Name, serviceErr)
 	}
+	var endpointsErr error
+	if serviceErr == nil {
+		endpointsErr = gm.syncIngressEndpoints(ctx, updatedGw, svc)
+	}
 	if serviceErr == nil && directErr == nil {
 		if err := gm.pruneDirectRoutes(ctx, updatedGw, desiredDirect); err != nil {
 			directErr = err
@@ -527,6 +558,9 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 	}
 	if directErr != nil {
 		return directErr
+	}
+	if endpointsErr != nil {
+		return endpointsErr
 	}
 
 	if svc != nil {
@@ -669,7 +703,7 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	}
 
 	if getErr == nil {
-		if servicePortsEqual(existing.Spec.Ports, servicePorts) && controlledBy(existing, gateway) {
+		if servicePortsEqual(existing.Spec.Ports, servicePorts) && controlledBy(existing, gateway) && len(existing.Spec.Selector) == 0 {
 			return existing, nil
 		}
 
@@ -683,6 +717,8 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 			updated := existing.DeepCopy()
 			updated.Spec.Ports = servicePorts
 			updated.OwnerReferences = gatewayControllerRef(gateway)
+			// Its endpoints are written by this manager (ingress_endpoints.go).
+			updated.Spec.Selector = nil
 			var err error
 			svc, err = gm.kubeClient.CoreV1().Services(updated.Namespace).Update(ctx, updated, metav1.UpdateOptions{})
 			if errors.IsConflict(err) {
@@ -718,11 +754,8 @@ func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v
 	newService.Spec.LoadBalancerClass = &loadBalancerClass
 	newService.Spec.LoadBalancerIP = gateway.Spec.Addresses[0].Value
 	newService.Spec.Ports = servicePorts
-
-	if newService.Spec.Selector == nil {
-		newService.Spec.Selector = map[string]string{}
-	}
-	newService.Spec.Selector["app"] = "loxilb-ingress"
+	// No selector: loxilb-ingress runs in a namespace of its own, and this
+	// manager writes the Service's endpoints (ingress_endpoints.go).
 
 	svc, err := gm.kubeClient.CoreV1().Services(newService.Namespace).Create(ctx, &newService, metav1.CreateOptions{})
 	if err != nil {

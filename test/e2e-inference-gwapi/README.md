@@ -102,11 +102,16 @@ EPP_SRC=~/src/loxilb-inference-gateway IGW_IMAGE=<gateway with "epp"> ./config.s
 ./rmconfig.sh          # teardown; images are kept
 ```
 
+loxilb-ingress, which serves what a Gateway hands it through its ingress Service, is deployed
+from `manifest/gateway-api/loxilb-ingress-deploy.yml` at `KLB_REV`, as that manifest has it: in
+kube-system, from a local image (`LOXILB_INGRESS_IMAGE`, default
+`ghcr.io/loxilb-io/loxilb-ingress:latest`).
+
 kube-loxilb is built from a clone at `KLB_REV` (default `HEAD`), not from the working tree, and
 tagged by commit, so a rerun at the same commit reuses the image. `KLB_OLD_REV` (default
 `f4a687d`, before rule ids) is built too, for the upgrade check.
 
-Useful variables: `IGW_IMAGE`, `IGW_OLD_IMAGE`, `KLB_REV`, `KLB_OLD_REV`, `SKIP_BUILD=1` (fail
+Useful variables: `IGW_IMAGE`, `IGW_OLD_IMAGE`, `LOXILB_INGRESS_IMAGE`, `KLB_REV`, `KLB_OLD_REV`, `SKIP_BUILD=1` (fail
 rather than build), `IGW_KEYSTORE=no` (no API-key store), `GW_LBMODE` (the Gateway's lbmode),
 `K3S_IMAGE`, `GIE_VERSION`,
 `GWAPI_VERSION`, `VIP_POOL`, `EPP_SRC`, `EPP_IMAGE` - see `env.sh` for the rest.
@@ -172,6 +177,10 @@ listener on 8090 and an HTTPS one on 8453. `fixtures/direct.yaml`: routes to `so
 answer with their pod name. The Gateway is applied after its routes, and the selector-less backend's
 EndpointSlice after the Gateway, so that the HTTP port starts on the ingress Service, its L4 rule
 installed, and moves to the rules.
+`direct-gw` is in `web`, not in loxilb-ingress's namespace, and asks for the `onearm` lbmode: the
+testbed is one L2 segment, where a node answers the client directly unless the ingress Service's
+L4 rule takes the client's address. The HTTPS route's backend is `web-a-tls`, web-a on a port that
+is its target port: loxilb-ingress sends to the port the Ingress names, not to its target port.
 It runs last because it turns on `--gatewayAPIDirectRoutes`, which the build `validation-auth.sh`
 downgrades to does not know.
 
@@ -181,7 +190,7 @@ downgrades to does not know.
 | D1 | the fixtures, a TLS Secret, a hand-written EndpointSlice for the selector-less `web-manual`, `shop-api-dup` - younger than `shop-api`, the same host and path once its trailing slash goes - then the Gateway, and `web-manual`'s EndpointSlice only once the ingress Service's L4 rule for the HTTP port is on igw1 - until then that route's rule has no endpoints and the port cannot move | the inputs the rest reads, and a port that has to move off an installed L4 rule |
 | D2 | one Service per served host and path - three - controlled by `direct-gw` and each reporting the address as installed, in the zone's hostname form | the programmer writes a rule per pair, and the pair `shop-api-dup` lost is not written twice |
 | D3 | on both gateways, only the `host\|path\|prefix` fullproxy rules on VIP:8090 - no L4 rule of the ingress Service left; `/api`'s endpoints are web-a's pods on the target port, `manual.example.com`'s the hand-written ones | the ingress Service's rule goes with the port it let go, and the rule's endpoints come from the backend's EndpointSlices, not a selector |
-| D4 | the ingress Service keeps only 8453 and is controlled by `direct-gw`; no Ingress for the HTTP listener, one for the HTTPS one | a listener served directly leaves the Ingress path once its rules are installed; HTTPS still takes it |
+| D4 | the ingress Service keeps only 8453 and is controlled by `direct-gw`; no Ingress for the HTTP listener, one for the HTTPS one; the ingress Service has no selector and its EndpointSlice names the loxilb-ingress pods in kube-system; `secure.example.com` over HTTPS on 8453 reaches web-a through them | a listener served directly leaves the Ingress path once its rules are installed; HTTPS still takes it, and a Gateway outside loxilb-ingress's namespace is served there |
 | D5 | `/api/items` reaches web-a, `/cart` and `/apiary` web-b, `manual.example.com` its hand-written endpoints; an unknown host and the header-match route's host get 503 | path prefixes match by segment, and what a rule cannot hold is not served broadly |
 | D6 | `shop-api-dup` is not Accepted (`UnsupportedValue`, served for `web/shop-api`), nor is `headers`; `shop-api` is; `direct-gw` is Programmed | routes say why they are not served, and the Gateway reports the listener as programmed |
 | D7 | scaling web-a to one moves the `/api` rule to it; moving the hand-written EndpointSlice moves `manual.example.com` | endpoint changes are followed without the route changing |
