@@ -37,6 +37,9 @@ IGW_IMAGE="${IGW_IMAGE:-$(cat "$WORK/igw-image" 2>/dev/null)}"
 IGW_OLD_IMAGE="${IGW_OLD_IMAGE:-ghcr.io/loxilb-io/loxilb-inference-gateway:hc-9092b99e}"
 NETTEST_IMAGE="${NETTEST_IMAGE:-ghcr.io/loxilb-io/nettest:latest}"
 LOXILB_INGRESS_IMAGE="${LOXILB_INGRESS_IMAGE:-ghcr.io/loxilb-io/loxilb-ingress:latest}"
+# loxilb-ingress's manifest, when not this repository's at KLB_REV: one from a
+# loxilb-ingress checkout, to go with an image built from it.
+LOXILB_INGRESS_MANIFEST="${LOXILB_INGRESS_MANIFEST:-}"
 PG_IMAGE="${PG_IMAGE:-postgres:18.6}"
 
 # The gateways' API-key store. A gateway without one answers every request a

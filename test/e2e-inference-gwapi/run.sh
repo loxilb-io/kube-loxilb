@@ -63,6 +63,7 @@ fi
 export IGW_IMAGE
 say "gateway    ${IGW_IMAGE:-<none>}"
 say "old build  $IGW_OLD_IMAGE"
+say "ingress    $LOXILB_INGRESS_IMAGE${LOXILB_INGRESS_MANIFEST:+ ($LOXILB_INGRESS_MANIFEST)}"
 say "k3s        $K3S_IMAGE"
 say "key store  $IGW_KEYSTORE${EPP_SRC:+; Endpoint Picker from $EPP_SRC}${GW_LBMODE:+; Gateway lbmode $GW_LBMODE}"
 

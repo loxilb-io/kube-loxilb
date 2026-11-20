@@ -105,13 +105,14 @@ EPP_SRC=~/src/loxilb-inference-gateway IGW_IMAGE=<gateway with "epp"> ./config.s
 loxilb-ingress, which serves what a Gateway hands it through its ingress Service, is deployed
 from `manifest/gateway-api/loxilb-ingress-deploy.yml` at `KLB_REV`, as that manifest has it: in
 kube-system, from a local image (`LOXILB_INGRESS_IMAGE`, default
-`ghcr.io/loxilb-io/loxilb-ingress:latest`).
+`ghcr.io/loxilb-io/loxilb-ingress:latest`). `LOXILB_INGRESS_MANIFEST` names another manifest to
+deploy it from, such as that of the loxilb-ingress checkout an image was built from.
 
 kube-loxilb is built from a clone at `KLB_REV` (default `HEAD`), not from the working tree, and
 tagged by commit, so a rerun at the same commit reuses the image. `KLB_OLD_REV` (default
 `f4a687d`, before rule ids) is built too, for the upgrade check.
 
-Useful variables: `IGW_IMAGE`, `IGW_OLD_IMAGE`, `LOXILB_INGRESS_IMAGE`, `KLB_REV`, `KLB_OLD_REV`, `SKIP_BUILD=1` (fail
+Useful variables: `IGW_IMAGE`, `IGW_OLD_IMAGE`, `LOXILB_INGRESS_IMAGE`, `LOXILB_INGRESS_MANIFEST`, `KLB_REV`, `KLB_OLD_REV`, `SKIP_BUILD=1` (fail
 rather than build), `IGW_KEYSTORE=no` (no API-key store), `GW_LBMODE` (the Gateway's lbmode),
 `K3S_IMAGE`, `GIE_VERSION`,
 `GWAPI_VERSION`, `VIP_POOL`, `EPP_SRC`, `EPP_IMAGE` - see `env.sh` for the rest.
@@ -184,8 +185,10 @@ L4 rule takes the client's address. The HTTPS route's backend is `web-a-tls`, we
 is its target port: loxilb-ingress sends to the port the Ingress names, not to its target port.
 It runs last because it turns on `--gatewayAPIDirectRoutes`, which the build `validation-auth.sh`
 downgrades to does not know.
-The testbed has no loxilb-ingress, so the ingress Service has no endpoints and the Ingress path
-answers nothing: what the checks see of it is the ingress Service, its L4 rules and the Ingresses.
+A loxilb-ingress pod that reports which Ingresses it has installed (label
+`loxilb.io/programmed-report: "v1"`) is waited for when a port goes back to the ingress Service
+(D11). With pods that do not, that wait is skipped, and D11 notes the requests it then misses
+rather than failing on them.
 
 | # | Check | What it proves |
 |---|---|---|
@@ -201,7 +204,7 @@ answers nothing: what the checks see of it is the ingress Service, its L4 rules 
 | D8 | a hand-made Service with the rule label and annotations but no controlling Gateway gets `GatewayRouteRefused`, and no rule | a rule's host and path are only taken from a Service its Gateway controls |
 | D9 | deleting `manual` removes its rule and answers 503; the other two stay; the ingress Service's ports do not change | a rule goes with its route, and the port stays with the others |
 | D10 | kube-loxilb restarted with igw2's REST port dropped: while igw2 has not said what it is, the ingress Service keeps 8453 only, the two rule Services and igw1's rules stay, `/api` is served; once igw2 answers, it has the rules | a peer that has not reported yet does not take the direct routes down |
-| D11 | an HTTPS listener added on 8090 sends the port back to the ingress Service: its L4 rule is on both gateways and the rule Services go; removed, the port comes back to the direct routes, its L4 rule released before it leaves | a port goes back when it cannot be served directly, and a port added to a Service gets its rule |
+| D11 | an HTTPS listener added on 8090 sends the port back to the ingress Service: its L4 rule is on both gateways and the rule Services go; in the log, with loxilb-ingress pods that report, the L4 rule goes to the gateways once they have the port's Ingresses, and the rule Services go once both gateways have the L4 rule; requests to `back.example.com`, sent on new connections all the while, are each answered; removed, the port comes back to the direct routes, its L4 rule released before it leaves | a port goes back when it cannot be served directly, served by its direct rules until loxilb-ingress has its Ingresses and the gateways its L4 rule; a port added to a Service gets its rule |
 
 An upper-case `Host` is reported as a `[NOTE]`: the gateway compares hosts case-sensitively, so
 it gets 503 until it lowercases them.

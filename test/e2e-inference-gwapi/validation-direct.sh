@@ -103,6 +103,13 @@ line_of() {
     END { if (!found) print n + 0 }'
 }
 count_of() { klb_log | tail -n +"$1" | grep -cF -- "$2"; } # <first log line> <text>
+# line_of_both <first log line> <text> <text> - where in the log, counted from
+# that line, the first line saying both is; 0 if none
+line_of_both() {
+  klb_log | tail -n +"$1" | awk -v a="$2" -v b="$3" 'index($0, a) && index($0, b) { print NR; found = 1; exit }
+    END { if (!found) print 0 }'
+}
+no_rule_services() { [[ "$(gen | jq '.items | length')" == 0 ]]; }
 
 echo "=== D0. direct routes on ==="
 ARGS=$(kubectl -n kube-system get deploy kube-loxilb -o json | jq -c '.spec.template.spec.containers[0].args')
@@ -377,8 +384,36 @@ echo "=== D11. the HTTP port goes back to the ingress Service, and comes again =
 # A port goes back once it cannot be served directly. Of the ways there are,
 # the one this testbed has that keeps the port HTTP is an HTTPS listener on it
 # as well; the ingress Service leaves that listener out, as it conflicts.
-# There is no loxilb-ingress here, so the Ingress path serves nothing: what is
-# checked is the rules.
+# The port's direct rules serve it until the Ingress path can: its L4 rule is
+# held back until each loxilb-ingress pod that reports has installed the
+# port's Ingresses, and the rules go once both gateways have the L4 rule. A
+# host's requests, sent all the while, each on a new connection, are each
+# answered. Its route goes to web-a-tls, whose port is its target port, as
+# loxilb-ingress needs (D4).
+kubectl apply -f - >/dev/null <<'EOF'
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: back, namespace: web}
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: [back.example.com]
+  rules:
+    - backendRefs: [{name: web-a-tls, port: 8000}]
+EOF
+if poll 60 served_by back.example.com / web-a; then
+  ok "back.example.com is served directly"
+else
+  bad "back.example.com is served directly" "$(ask back.example.com /)"
+fi
+REPORTING=$(kubectl -n kube-system get pods -l app=loxilb-ingress,loxilb.io/programmed-report=v1 -o name | wc -l)
+PROBE="$WORK/d11-requests"
+rm -f "$PROBE" "$PROBE.stop"
+(while [[ ! -e "$PROBE.stop" ]]; do
+  printf '%s %s\n' "$(date +%T.%N | cut -c1-12)" "$(curl -s --max-time 2 -H 'Host: back.example.com' "http://$VIP:$PORT/" | head -c 6)"
+  sleep 0.05
+done >"$PROBE") &
+PROBER=$!
+sleep 1
 D11_FROM=$(($(log_lines) + 1))
 kubectl -n web patch gateway direct-gw --type=json -p '[{"op":"add","path":"/spec/listeners/-","value":
   {"name":"https-on-http","protocol":"HTTPS","port":'"$PORT"',"tls":{"mode":"Terminate","certificateRefs":[{"kind":"Secret","name":"web-cert"}]}}}]' >/dev/null
@@ -389,13 +424,54 @@ else
 fi
 # A port added to a Service was not sent until something else about it changed.
 for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
-  if poll 60 only_l4_on "$gw"; then
+  if poll 90 only_l4_on "$gw"; then
     ok "on $gw, the ingress Service's L4 rule for it, and no host and path rule left"
   else
     bad "on $gw, the ingress Service's L4 rule for it, and no host and path rule left" "$(rule_keys "$gw")"
   fi
 done
+poll 30 no_rule_services
 check "the rule Services are gone" "$(gen | jq '.items | length')" 0
+sleep 3
+touch "$PROBE.stop"
+wait "$PROBER"
+
+# In the log: the L4 rule on each gateway, after loxilb-ingress has the
+# Ingresses, and the rule Services' deletes after both.
+SENT=$(line_of "$D11_FROM" first "the L4 rule of port $PORT is sent: ")
+L4_1=$(line_of_both "$D11_FROM" "loxilb-lb($IGW1_ADDR): add lb {{$VIP  $PORT tcp" "direct-gw-ingress-service")
+L4_2=$(line_of_both "$D11_FROM" "loxilb-lb($IGW2_ADDR): add lb {{$VIP  $PORT tcp" "direct-gw-ingress-service")
+GONE=$(line_of "$D11_FROM" first "gateway web/direct-gw: direct route service ")
+if [[ $REPORTING -gt 0 ]]; then
+  check "loxilb-ingress pods that report" "$REPORTING" "$(kubectl -n kube-system get pods -l app=loxilb-ingress -o name | wc -l)"
+  if [[ $SENT -gt 0 ]] && klb_log | tail -n +"$D11_FROM" | sed -n "${SENT}p" | grep -qF "loxilb-ingress has the port's Ingresses" &&
+     [[ $L4_1 -gt $SENT && $L4_2 -gt $SENT ]]; then
+    ok "the L4 rule went to the gateways once loxilb-ingress had the port's Ingresses"
+  else
+    bad "the L4 rule went to the gateways once loxilb-ingress had the port's Ingresses" \
+      "sent at log line $SENT ($(klb_log | tail -n +"$D11_FROM" | sed -n "${SENT}p" | cut -c1-200)), L4 rule at $L4_1 and $L4_2"
+  fi
+else
+  note "no loxilb-ingress pod reports which Ingresses it has installed: the L4 rule was not held back for it"
+fi
+if [[ $L4_1 -gt 0 && $L4_2 -gt 0 && $GONE -gt $L4_1 && $GONE -gt $L4_2 ]]; then
+  ok "the rule Services went once both gateways had the L4 rule"
+else
+  bad "the rule Services went once both gateways had the L4 rule" "L4 rule at log lines $L4_1 and $L4_2, rule Services deleted at $GONE"
+fi
+SENT_REQS=$(wc -l <"$PROBE")
+MISSED=$(grep -vc ' web-a-$' "$PROBE")
+if [[ $SENT_REQS -lt 20 ]]; then
+  bad "requests to back.example.com while the port went back" "only $SENT_REQS sent"
+elif [[ $MISSED -eq 0 ]]; then
+  ok "each of $SENT_REQS requests to back.example.com was answered while the port went back"
+elif [[ $REPORTING -gt 0 ]]; then
+  bad "each request to back.example.com was answered while the port went back" \
+    "$MISSED of $SENT_REQS were not: $(grep -v ' web-a-$' "$PROBE" | head -3 | tr '\n' ';')"
+else
+  note "$MISSED of $SENT_REQS requests to back.example.com went unanswered while the port went back: loxilb-ingress does not report, and its L4 rule was sent before it had the Ingress"
+fi
+kubectl -n web delete httproute back >/dev/null
 kubectl -n web patch gateway direct-gw --type=json -p '[{"op":"remove","path":"/spec/listeners/2"}]' >/dev/null
 if poll 90 ingress_ports_are "$TLS_PORT"; then
   ok "the HTTP port is with the direct routes again"
