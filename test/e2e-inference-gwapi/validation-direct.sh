@@ -388,8 +388,7 @@ echo "=== D11. the HTTP port goes back to the ingress Service, and comes again =
 # held back until each loxilb-ingress pod that reports has installed the
 # port's Ingresses, and the rules go once both gateways have the L4 rule. A
 # host's requests, sent all the while, each on a new connection, are each
-# answered. Its route goes to web-a-tls, whose port is its target port, as
-# loxilb-ingress needs (D4).
+# answered.
 kubectl apply -f - >/dev/null <<'EOF'
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -398,7 +397,7 @@ spec:
   parentRefs: [{name: direct-gw, sectionName: http}]
   hostnames: [back.example.com]
   rules:
-    - backendRefs: [{name: web-a-tls, port: 8000}]
+    - backendRefs: [{name: web-a, port: 80}]
 EOF
 if poll 60 served_by back.example.com / web-a; then
   ok "back.example.com is served directly"

@@ -181,14 +181,13 @@ EndpointSlice after the Gateway, so that the HTTP port starts on the ingress Ser
 installed, and moves to the rules.
 `direct-gw` is in `web`, not in loxilb-ingress's namespace, and asks for the `onearm` lbmode: the
 testbed is one L2 segment, where a node answers the client directly unless the ingress Service's
-L4 rule takes the client's address. The HTTPS route's backend is `web-a-tls`, web-a on a port that
-is its target port: loxilb-ingress sends to the port the Ingress names, not to its target port.
+L4 rule takes the client's address.
 It runs last because it turns on `--gatewayAPIDirectRoutes`, which the build `validation-auth.sh`
 downgrades to does not know.
 A loxilb-ingress pod that reports which Ingresses it has installed (label
 `loxilb.io/programmed-report: "v1"`) is waited for when a port goes back to the ingress Service
-(D11). With pods that do not, that wait is skipped, and D11 notes the requests it then misses
-rather than failing on them.
+(D11). With pods that do not, as a loxilb-ingress image or manifest from before its #21 has them,
+that wait is skipped, and D11 notes the requests it then misses rather than failing on them.
 
 | # | Check | What it proves |
 |---|---|---|
