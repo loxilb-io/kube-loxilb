@@ -390,20 +390,28 @@ func (m *Manager) routeEndpoints(route *gatewayRoute, addrType string) ([]string
 }
 
 // GatewayPeers - whether every loxilb peer is loxilb-inference-gateway, which
-// serving a route as a gateway route needs, and why not when one is not. A
-// peer that has not reported its flavor yet counts as not one; when it does,
-// SetPeerBackHook's hooks are called.
-func (m *Manager) GatewayPeers() (bool, string) {
+// serving a route as a gateway route needs; whether that is known; and why
+// not when one is not or it is not known. A peer that has not reported its
+// flavor yet counts as not one, and not known; when it does, SetPeerBackHook's
+// hooks are called. A plain peer is known not to be one.
+func (m *Manager) GatewayPeers() (ok, known bool, reason string) {
 	if m.LoxiClients == nil || len(m.LoxiClients.Clients) == 0 {
-		return false, "there is no loxilb peer"
+		return false, false, "there is no loxilb peer"
 	}
+	unknown := ""
 	for _, c := range m.LoxiClients.Clients {
 		if !c.FlavorDetected() {
-			return false, fmt.Sprintf("loxilb-lb(%s) has not reported what it is yet", c.Host)
+			if unknown == "" {
+				unknown = fmt.Sprintf("loxilb-lb(%s) has not reported what it is yet", c.Host)
+			}
+			continue
 		}
 		if !c.IsInferenceGateway() {
-			return false, fmt.Sprintf("loxilb-lb(%s) is plain loxilb", c.Host)
+			return false, true, fmt.Sprintf("loxilb-lb(%s) is plain loxilb", c.Host)
 		}
 	}
-	return true, ""
+	if unknown != "" {
+		return false, false, unknown
+	}
+	return true, true, ""
 }

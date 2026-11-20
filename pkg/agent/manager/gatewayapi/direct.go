@@ -66,30 +66,54 @@ const (
 	h2cAppProtocol = "kubernetes.io/h2c"
 )
 
-// DirectPeers - whether every loxilb peer can serve direct routes, and why
-// not when one cannot.
-type DirectPeers func() (bool, string)
+// DirectPeers - whether every loxilb peer can serve direct routes; whether
+// that is known, which it is not while a peer has not said what it is; and
+// why not when one cannot or it is not known.
+type DirectPeers func() (ok, known bool, reason string)
+
+// ReleasePorts - hand the TCP ports of a Gateway's ingress Service its direct
+// routes serve to them, all of them each time: the load-balancer manager takes
+// their rules off every peer. Reports which of them no peer has a rule for.
+type ReleasePorts func(namespace, name string, ports []int32) (map[int32]bool, error)
 
 // directPortsOf - the HTTP ports of gw served directly, and for each other
-// HTTP or HTTPS port why it is not.
+// HTTP or HTTPS port why it is not. held - the ports that would be served
+// directly but for a peer that has not said what it is yet.
 //
 // A port is direct when every peer is the gateway, the Gateway's address is
 // IPv4 - the gateway proxies IPv4 only, and takes an IPv6 rule only to drop
 // its traffic - every listener on it is HTTP, and no InferencePool serves a
 // listener on it. HTTPS waits for the gateway to pick wildcard certificates
 // by SNI and to keep hostnames to their certificates.
-func directPortsOf(gw *v1.Gateway, claimed map[v1.SectionName]bool, peers DirectPeers) (map[v1.PortNumber]bool, map[v1.PortNumber]string) {
-	direct := map[v1.PortNumber]bool{}
-	why := map[v1.PortNumber]string{}
+func directPortsOf(gw *v1.Gateway, claimed map[v1.SectionName]bool, peers DirectPeers) (direct map[v1.PortNumber]bool, why map[v1.PortNumber]string, held map[v1.PortNumber]bool) {
+	direct = map[v1.PortNumber]bool{}
+	why = map[v1.PortNumber]string{}
+	held = map[v1.PortNumber]bool{}
 
+	addressed := len(gw.Spec.Addresses) > 0 && net.ParseIP(gw.Spec.Addresses[0].Value).To4() != nil
 	gatewayWide := ""
-	switch ok, reason := peers(); {
+	ok, known, reason := peers()
+	switch {
 	case !ok:
 		gatewayWide = reason
 	case len(gw.Spec.Addresses) == 0:
 		gatewayWide = "the gateway has no address yet"
-	case net.ParseIP(gw.Spec.Addresses[0].Value).To4() == nil:
+	case !addressed:
 		gatewayWide = "the gateway address is not IPv4"
+	}
+	if !ok && !known && addressed {
+		ruledOut := map[v1.PortNumber]bool{}
+		for _, l := range gw.Spec.Listeners {
+			switch {
+			case l.Protocol == v1.HTTPProtocolType && !claimed[l.Name]:
+				held[l.Port] = true
+			case l.Protocol == v1.HTTPProtocolType || l.Protocol == v1.HTTPSProtocolType:
+				ruledOut[l.Port] = true
+			}
+		}
+		for port := range ruledOut {
+			delete(held, port)
+		}
 	}
 
 	for _, l := range gw.Spec.Listeners {
@@ -117,7 +141,7 @@ func directPortsOf(gw *v1.Gateway, claimed map[v1.SectionName]bool, peers Direct
 	for port := range why {
 		delete(direct, port)
 	}
-	return direct, why
+	return direct, why, held
 }
 
 // directRule - one rule of a direct port.

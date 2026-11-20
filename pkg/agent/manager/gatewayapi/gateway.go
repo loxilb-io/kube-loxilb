@@ -94,6 +94,10 @@ type GatewayManager struct {
 	// service only.
 	directPeers     DirectPeers
 	referenceGrants *ReferenceGrants
+	// releasePorts - set with directPeers: the load-balancer manager's, which
+	// takes a port's L4 rule off the peers before the port leaves the ingress
+	// service.
+	releasePorts ReleasePorts
 
 	// queue - Gateways by key (GenKey), so that one Gateway is one item
 	// however many events it has, and no two workers take it at once.
@@ -338,9 +342,10 @@ func (gm *GatewayManager) enqueueClassGateways(obj interface{}) {
 // ServeRoutesDirectly - serve HTTPRoutes on the listeners where peers allows
 // it as direct routes (direct.go), with grants for the backends in other
 // namespaces.
-func (gm *GatewayManager) ServeRoutesDirectly(peers DirectPeers, grants *ReferenceGrants) {
+func (gm *GatewayManager) ServeRoutesDirectly(peers DirectPeers, grants *ReferenceGrants, release ReleasePorts) {
 	gm.directPeers = peers
 	gm.referenceGrants = grants
+	gm.releasePorts = release
 	grants.AddHandler(func(v1.ReferenceGrantSpec) { gm.EnqueueAll() })
 }
 
@@ -489,7 +494,11 @@ func (gm *GatewayManager) processNextWorkItem() bool {
 		gm.queue.Forget(obj)
 	} else {
 		gm.queue.AddRateLimited(obj)
-		klog.Errorf("Error syncing gateway %s, requeuing. Error: %v", key, err)
+		if isHandoverPending(err) {
+			klog.V(2).Infof("gateway %s: %v, retrying", key, err)
+		} else {
+			klog.Errorf("Error syncing gateway %s, requeuing. Error: %v", key, err)
+		}
 	}
 	return true
 }
@@ -604,25 +613,39 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 		klog.Infof("gateway %s/%s is assigned IP %s", gw.Namespace, gw.Name, newIP.String())
 	}
 
-	// Direct routes first: a port leaves the ingress service only once its
-	// rules are on the peers. A port that goes back to the ingress service
-	// loses its direct routes after the ingress service has it again.
-	desiredDirect, readyDirect := map[string]bool{}, map[v1.PortNumber]bool{}
-	var directErr error
+	// Direct routes first: a port leaves the ingress service once its rules
+	// are on the peers and its L4 rule is off them. A port that goes back to
+	// the ingress service loses its direct routes after the ingress service
+	// has it again.
+	ingress, ingressErr := gm.kubeClient.CoreV1().Services(updatedGw.Namespace).Get(ctx, ingressServiceName(updatedGw), metav1.GetOptions{})
+	desiredDirect, offIngress := map[string]bool{}, map[v1.PortNumber]bool{}
+	var directErr, handoverErr error
 	if gm.directPeers != nil {
-		direct, why := directPortsOf(updatedGw, gm.listenersClaimedByInferencePools(updatedGw), gm.directPeers)
+		direct, why, held := directPortsOf(updatedGw, gm.listenersClaimedByInferencePools(updatedGw), gm.directPeers)
+		var current *corev1.Service
+		if ingressErr == nil {
+			current = ingress
+		}
+		taken := gm.handedOver(updatedGw, current, direct, held)
 		for port, reason := range why {
+			if taken[port] {
+				klog.V(2).Infof("gateway %s/%s: port %d stays with its direct routes: %s", updatedGw.Namespace, updatedGw.Name, port, reason)
+				direct[port] = true
+				continue
+			}
 			klog.V(2).Infof("gateway %s/%s: port %d is served through the ingress service: %s", updatedGw.Namespace, updatedGw.Name, port, reason)
 		}
-		desiredDirect, readyDirect, directErr = gm.applyDirectRoutes(ctx, updatedGw, direct)
+		var ready map[v1.PortNumber]bool
+		desiredDirect, ready, directErr = gm.applyDirectRoutes(ctx, updatedGw, direct)
 		if directErr != nil {
 			klog.Errorf("gateway %s/%s: direct routes: %v", updatedGw.Namespace, updatedGw.Name, directErr)
 		}
+		offIngress, handoverErr = gm.handOver(updatedGw, direct, taken, ready)
 	}
 
 	// The ingress service next: whether it could be made is part of the
 	// status.
-	svc, serviceErr := gm.createIngressLbService(ctx, updatedGw, readyDirect)
+	svc, serviceErr := gm.createIngressLbServiceFrom(ctx, updatedGw, offIngress, ingress, ingressErr)
 	if serviceErr != nil {
 		klog.Errorf("gateway %s/%s failed to create service. err: %v", updatedGw.Namespace, updatedGw.Name, serviceErr)
 	}
@@ -650,6 +673,9 @@ func (gm *GatewayManager) createGateway(gw *v1.Gateway) error {
 	}
 	if endpointsErr != nil {
 		return endpointsErr
+	}
+	if handoverErr != nil {
+		return handoverErr
 	}
 
 	if svc != nil {
@@ -764,11 +790,17 @@ func (gm *GatewayManager) deleteIngressLbService(ctx context.Context, gwNs, gwNa
 //   - *corev1.Service: The created or existing Service, or nil if no HTTP/HTTPS listeners exist
 //   - error: Any error encountered during service creation
 func (gm *GatewayManager) createIngressLbService(ctx context.Context, gateway *v1.Gateway, direct map[v1.PortNumber]bool) (*corev1.Service, error) {
-	newService := corev1.Service{}
-	newService.Name = fmt.Sprintf("%s-ingress-service", gateway.Name)
-	newService.Namespace = gateway.Namespace
+	existing, getErr := gm.kubeClient.CoreV1().Services(gateway.Namespace).Get(ctx, ingressServiceName(gateway), metav1.GetOptions{})
+	return gm.createIngressLbServiceFrom(ctx, gateway, direct, existing, getErr)
+}
 
-	existing, getErr := gm.kubeClient.CoreV1().Services(newService.Namespace).Get(ctx, newService.Name, metav1.GetOptions{})
+// createIngressLbServiceFrom - createIngressLbService from the ingress
+// service as read already, and the error reading it.
+func (gm *GatewayManager) createIngressLbServiceFrom(ctx context.Context, gateway *v1.Gateway, direct map[v1.PortNumber]bool,
+	existing *corev1.Service, getErr error) (*corev1.Service, error) {
+	newService := corev1.Service{}
+	newService.Name = ingressServiceName(gateway)
+	newService.Namespace = gateway.Namespace
 
 	if len(gateway.Spec.Addresses) == 0 {
 		return nil, fmt.Errorf("gateway has no external IP address")

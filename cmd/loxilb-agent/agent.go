@@ -389,7 +389,7 @@ func run(o *Options) error {
 		// where every peer is the gateway; the others go through the ingress
 		// service as before. A peer that comes up may have changed which.
 		if o.config.GatewayAPIDirectRoutes {
-			gatewayManager.ServeRoutesDirectly(lbManager.GatewayPeers, referenceGrants)
+			gatewayManager.ServeRoutesDirectly(lbManager.GatewayPeers, referenceGrants, lbManager.ReleasePorts)
 			httpRouteManager.ServeRoutesDirectly(lbManager.GatewayPeers)
 			lbManager.SetPeerBackHook(func(*api.LoxiClient) {
 				gatewayManager.EnqueueAll()

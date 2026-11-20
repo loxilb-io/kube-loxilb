@@ -271,8 +271,10 @@ func (h *HTTPRouteManager) ingressPortsOf(gw *v1.Gateway) map[v1.PortNumber]bool
 // directOutcome - what the direct rules of a port came to for one route:
 // whether any rule of it is served, and why parts of it are not.
 func (h *HTTPRouteManager) directOutcome(gw *v1.Gateway, port v1.PortNumber, route types.NamespacedName) (bool, []string) {
-	direct, _ := directPortsOf(gw, h.claimedListenersOf(gw), h.directPeers)
-	if !direct[port] {
+	direct, _, held := directPortsOf(gw, h.claimedListenersOf(gw), h.directPeers)
+	// A held port stays with the direct routes if they serve it already
+	// (direct_handover.go): the ingress service does not carry it.
+	if !direct[port] && !(held[port] && !h.ingressPortsOf(gw)[port]) {
 		return false, nil
 	}
 	routes, err := h.httpRouteLister.List(labels.Everything())
