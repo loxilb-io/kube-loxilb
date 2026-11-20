@@ -178,6 +178,28 @@ check "no Ingress for the HTTP listener" \
   "$(kubectl -n web get ingress -o json | jq -r '[.items[] | select(.metadata.annotations["parent-listener"]=="http")] | length')" "0"
 check "an Ingress for the HTTPS listener" \
   "$(kubectl -n web get ingress -o json | jq -r '[.items[] | select(.metadata.annotations["parent-listener"]=="https")] | length')" "1"
+# loxilb-ingress runs in kube-system, and a selector picks pods of the
+# Service's own namespace only: the ingress Service has none, and its
+# EndpointSlice names the loxilb-ingress pods.
+check "the ingress Service has no selector" "$(jq -r '.spec.selector // {} | length' <<<"$ING")" "0"
+ingress_pods() { kubectl -n kube-system get pods -l app=loxilb-ingress -o json | jq -r '[.items[].status.podIP] | sort | join(",")'; }
+ingress_slice() {
+  kubectl -n web get endpointslices -l kubernetes.io/service-name=direct-gw-ingress-service,endpointslice.kubernetes.io/managed-by=kube-loxilb -o json |
+    jq -r '[.items[].endpoints[]? | select(.conditions.ready) | .addresses[0]] | sort | join(",")'
+}
+slice_names_ingress_pods() { [[ -n "$(ingress_pods)" && "$(ingress_slice)" == "$(ingress_pods)" ]]; }
+if poll 60 slice_names_ingress_pods; then
+  ok "its EndpointSlice names the loxilb-ingress pods in kube-system"
+else
+  bad "its EndpointSlice names the loxilb-ingress pods in kube-system" "slice '$(ingress_slice)', pods '$(ingress_pods)'"
+fi
+tls_body() { curl -sk --max-time 5 --resolve "secure.example.com:$TLS_PORT:$VIP" "https://secure.example.com:$TLS_PORT/"; }
+tls_served() { tls_body | grep -q '^web-a-'; }
+if poll 90 tls_served; then
+  ok "secure.example.com over HTTPS: through the ingress Service and loxilb-ingress, to web-a"
+else
+  bad "secure.example.com over HTTPS: through the ingress Service and loxilb-ingress, to web-a" "'$(tls_body)'"
+fi
 
 echo "=== D5. requests ==="
 poll 30 served_by shop.example.com /api/x web-a

@@ -36,6 +36,7 @@ SVC_CIDR="${SVC_CIDR:-10.43.0.0/16}"
 IGW_IMAGE="${IGW_IMAGE:-$(cat "$WORK/igw-image" 2>/dev/null)}"
 IGW_OLD_IMAGE="${IGW_OLD_IMAGE:-ghcr.io/loxilb-io/loxilb-inference-gateway:hc-9092b99e}"
 NETTEST_IMAGE="${NETTEST_IMAGE:-ghcr.io/loxilb-io/nettest:latest}"
+LOXILB_INGRESS_IMAGE="${LOXILB_INGRESS_IMAGE:-ghcr.io/loxilb-io/loxilb-ingress:latest}"
 PG_IMAGE="${PG_IMAGE:-postgres:18.6}"
 
 # The gateways' API-key store. A gateway without one answers every request a

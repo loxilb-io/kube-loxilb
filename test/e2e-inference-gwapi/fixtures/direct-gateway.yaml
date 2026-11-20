@@ -12,6 +12,9 @@ kind: Gateway
 metadata:
   name: direct-gw
   namespace: web
+  # The testbed is one L2 segment: a node answers a client there directly,
+  # so the ingress Service's L4 rule has to take the client's address too.
+  annotations: {loxilb.io/lbmode: onearm}
 spec:
   gatewayClassName: loxilb-gc
   addresses:
