@@ -18,9 +18,12 @@ package gatewayapi
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
@@ -164,32 +167,49 @@ func (m *GatewayClassManager) reconcile(name string) error {
 	return m.updateGatewayClass(gc)
 }
 
+// updateGatewayClass - accept a GatewayClass of this controller.
+//
+// A GatewayClass starts with Accepted Unknown (Pending, "Waiting for
+// controller"), as its CRD defaults it. Accepting it sets the whole condition:
+// its reason and message too, which were left Pending while the status said
+// True, and the generation it was accepted at. Its transition time moves only
+// when its status does, and an accepted GatewayClass is not written again.
 func (m *GatewayClassManager) updateGatewayClass(gc *v1.GatewayClass) error {
+	if gc.Spec.ControllerName != v1.GatewayController(m.networkConfig.LoxilbGatewayClass) {
+		return nil
+	}
 	// Providers of the Gateway API may need to pass parameters to their controller as part of the class definition.
 	// This is done using the GatewayClass.spec.parametersRef field
 	if gc.Spec.ParametersRef != nil {
-		klog.Infof("gateway class has parametersRef(type: %s): ", gc.Spec.ParametersRef.Kind)
+		klog.V(4).Infof("gatewayClass %s has a parametersRef (kind %s), which is not read", gc.Name, gc.Spec.ParametersRef.Kind)
+	}
+
+	// A condition from a later generation than this copy's is left as it is,
+	// as Gateway API asks: the copy is stale, and a later event brings the
+	// newer one.
+	if c := meta.FindStatusCondition(gc.Status.Conditions, string(v1.GatewayClassConditionStatusAccepted)); c != nil && c.ObservedGeneration > gc.Generation {
+		return nil
+	}
+
+	// The lister's object is the informer's cache; the status is worked out
+	// on a copy.
+	updated := gc.DeepCopy()
+	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+		Type:               string(v1.GatewayClassConditionStatusAccepted),
+		Status:             metav1.ConditionTrue,
+		Reason:             string(v1.GatewayClassReasonAccepted),
+		Message:            "accepted by kube-loxilb",
+		ObservedGeneration: gc.Generation,
+	})
+	if reflect.DeepEqual(updated.Status, gc.Status) {
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
-
-	// A new GatewayClass will start with the Accepted condition set to False.
-	// At this point the controller has not seen the configuration.
-	// Once the controller has processed the configuration, the condition will be set to True
-	if gc.Spec.ControllerName == v1.GatewayController(m.networkConfig.LoxilbGatewayClass) {
-		for i := range gc.Status.Conditions {
-			if gc.Status.Conditions[i].Type == "Accepted" {
-				gc.Status.Conditions[i].Status = metav1.ConditionTrue
-				gc.Status.Conditions[i].LastTransitionTime = metav1.Now()
-				klog.V(4).Infof("gatewayClass %s is created and accepted.", gc.Name)
-			}
-		}
-		_, err := m.sigsClient.GatewayV1().GatewayClasses().UpdateStatus(ctx, gc, metav1.UpdateOptions{})
-		if err != nil {
-			klog.Errorf("unable to update gateway class. err: %v", err)
-		}
+	if _, err := m.sigsClient.GatewayV1().GatewayClasses().UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("gatewayClass %s: unable to update status: %w", gc.Name, err)
 	}
-
+	klog.V(4).Infof("gatewayClass %s is accepted (generation %d)", gc.Name, gc.Generation)
 	return nil
 }
