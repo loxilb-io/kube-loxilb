@@ -30,10 +30,26 @@ import (
 	infv1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
 )
 
-// inferencePoolControllerName - what this manager writes into the parent status
-// it owns. Every implementation stamps its own, which is how several of them
-// can report on the same pool without overwriting each other.
-const inferencePoolControllerName = "loxilb.io/kube-loxilb"
+// legacyInferencePoolControllerName - what this manager wrote into the parent
+// status before it wrote its GatewayClass's controllerName. An entry under it
+// is this manager's too: its transition times are carried over, and it is
+// replaced.
+const legacyInferencePoolControllerName = "loxilb.io/kube-loxilb"
+
+// controllerName - what this manager writes into the parent status it owns:
+// the controllerName of the GatewayClass it serves, which the Inference
+// Extension asks of a parent that is a Gateway. Every implementation stamps
+// its own, which is how several of them can report on the same pool without
+// overwriting each other.
+func (m *InferencePoolManager) controllerName() infv1.ControllerName {
+	return infv1.ControllerName(m.gatewayProvider)
+}
+
+// ownsParent - whether a parent entry is one this manager wrote, under
+// controller or under the name it wrote before.
+func ownsParent(controller infv1.ControllerName, parent infv1.ParentStatus) bool {
+	return parent.ControllerName == controller || parent.ControllerName == legacyInferencePoolControllerName
+}
 
 // statusReport - the two conditions the Inference Extension defines for a pool,
 // as this reconcile found them.
@@ -54,6 +70,7 @@ type statusReport struct {
 // Status is per parent: the same pool can be accepted by one Gateway and
 // refused by another, so a single top-level condition could not express it.
 func (m *InferencePoolManager) updateStatus(ctx context.Context, pool *infv1.InferencePool, targets []poolTarget, refusals []poolRefusal, report statusReport) error {
+	controller := m.controllerName()
 	parents := make([]infv1.ParentStatus, 0, len(targets)+len(refusals))
 	seen := map[string]bool{}
 
@@ -74,8 +91,8 @@ func (m *InferencePoolManager) updateStatus(ctx context.Context, pool *infv1.Inf
 		}
 		parents = append(parents, infv1.ParentStatus{
 			ParentRef:      ref,
-			ControllerName: inferencePoolControllerName,
-			Conditions:     carryTransitionTimes(ourConditions(pool, ref), report.conditions(pool.Generation)),
+			ControllerName: controller,
+			Conditions:     carryTransitionTimes(ourConditions(pool, controller, ref), report.conditions(pool.Generation)),
 		})
 	}
 	for _, target := range targets {
@@ -99,14 +116,22 @@ func (m *InferencePoolManager) updateStatus(ctx context.Context, pool *infv1.Inf
 	return m.writeParents(ctx, pool, parents)
 }
 
-// ourConditions - the conditions this controller last wrote under ref.
-func ourConditions(pool *infv1.InferencePool, ref infv1.ParentReference) []metav1.Condition {
+// ourConditions - the conditions this controller last wrote under ref: under
+// controller, or else under the name it wrote before.
+func ourConditions(pool *infv1.InferencePool, controller infv1.ControllerName, ref infv1.ParentReference) []metav1.Condition {
+	var legacy []metav1.Condition
 	for _, parent := range pool.Status.Parents {
-		if parent.ControllerName == inferencePoolControllerName && reflect.DeepEqual(parent.ParentRef, ref) {
+		if !reflect.DeepEqual(parent.ParentRef, ref) {
+			continue
+		}
+		switch parent.ControllerName {
+		case controller:
 			return parent.Conditions
+		case legacyInferencePoolControllerName:
+			legacy = parent.Conditions
 		}
 	}
-	return nil
+	return legacy
 }
 
 // carryTransitionTimes - stamp next with when each condition last changed.
@@ -145,7 +170,7 @@ func (m *InferencePoolManager) writeParents(ctx context.Context, pool *infv1.Inf
 		// and try once more; a second conflict goes back to the queue.
 		fresh, getErr := m.infClient.InferenceV1().InferencePools(pool.Namespace).Get(ctx, pool.Name, metav1.GetOptions{})
 		if getErr == nil {
-			err = m.putParents(ctx, fresh, recarry(fresh, ours))
+			err = m.putParents(ctx, fresh, recarry(fresh, m.controllerName(), ours))
 		}
 	}
 	if err != nil {
@@ -159,7 +184,7 @@ func (m *InferencePoolManager) writeParents(ctx context.Context, pool *infv1.Inf
 // putParents - one status write of ours merged into pool, skipped when it
 // would change nothing.
 func (m *InferencePoolManager) putParents(ctx context.Context, pool *infv1.InferencePool, ours []infv1.ParentStatus) error {
-	merged := mergeParents(pool.Status.Parents, ours)
+	merged := mergeParents(pool.Status.Parents, m.controllerName(), ours)
 	// No parents at all reads back as nil - the field is omitempty - while
 	// mergeParents builds an empty slice; both mean the same status.
 	if reflect.DeepEqual(pool.Status.Parents, merged) || (len(pool.Status.Parents) == 0 && len(merged) == 0) {
@@ -177,10 +202,10 @@ func (m *InferencePoolManager) putParents(ctx context.Context, pool *infv1.Infer
 // recarry - ours with the transition times worked out again against what the
 // API server holds, rather than against the stale copy they were first
 // computed from.
-func recarry(fresh *infv1.InferencePool, ours []infv1.ParentStatus) []infv1.ParentStatus {
+func recarry(fresh *infv1.InferencePool, controller infv1.ControllerName, ours []infv1.ParentStatus) []infv1.ParentStatus {
 	out := make([]infv1.ParentStatus, len(ours))
 	for i, parent := range ours {
-		parent.Conditions = carryTransitionTimes(ourConditions(fresh, parent.ParentRef),
+		parent.Conditions = carryTransitionTimes(ourConditions(fresh, controller, parent.ParentRef),
 			append([]metav1.Condition(nil), parent.Conditions...))
 		out[i] = parent
 	}
@@ -191,11 +216,12 @@ func recarry(fresh *infv1.InferencePool, ours []infv1.ParentStatus) []infv1.Pare
 //
 // A pool can be attached to gateways from different implementations, and each
 // one reports under its own controllerName. Rewriting the whole list would
-// delete their reports.
-func mergeParents(existing, ours []infv1.ParentStatus) []infv1.ParentStatus {
+// delete their reports. Entries under the name this controller wrote before
+// are its own, and go.
+func mergeParents(existing []infv1.ParentStatus, controller infv1.ControllerName, ours []infv1.ParentStatus) []infv1.ParentStatus {
 	merged := make([]infv1.ParentStatus, 0, len(existing)+len(ours))
 	for _, parent := range existing {
-		if parent.ControllerName == inferencePoolControllerName {
+		if ownsParent(controller, parent) {
 			continue
 		}
 		merged = append(merged, parent)

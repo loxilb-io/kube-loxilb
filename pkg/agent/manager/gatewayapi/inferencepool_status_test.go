@@ -89,7 +89,7 @@ func statusPool(stamp metav1.Time, resolvedStatus metav1.ConditionStatus, resolv
 			Name:      "inference-gw",
 			Namespace: "llm",
 		},
-		ControllerName: inferencePoolControllerName,
+		ControllerName: testControllerName,
 		Conditions: []metav1.Condition{
 			{
 				Type: string(infv1.InferencePoolConditionAccepted), Status: metav1.ConditionTrue,
@@ -378,4 +378,78 @@ func TestUpdateStatusRetriesAConflictOnce(t *testing.T) {
 			t.Errorf("status writes = %d, want exactly one retry", got)
 		}
 	})
+}
+
+// testControllerName - the controllerName of the GatewayClass testManager
+// serves, which its parent status entries carry.
+const testControllerName infv1.ControllerName = "loxilb.io/loxilb"
+
+// A parent entry this manager wrote under its old name is its own: the status
+// it reports is under the GatewayClass's controllerName now, as the Inference
+// Extension asks of a Gateway parent, and the old entry goes. Its transition
+// times are carried, as the conditions did not change; another controller's
+// entry stays.
+func TestUpdateStatusMovesOffTheOldControllerName(t *testing.T) {
+	past := metav1.NewTime(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	pool := statusPool(past, metav1.ConditionTrue, string(infv1.InferencePoolReasonResolvedRefs), "resolved to 10.43.12.7:9002")
+	pool.Status.Parents[0].ControllerName = legacyInferencePoolControllerName
+	foreign := pool.Status.Parents[0]
+	foreign.ControllerName = "example.com/other"
+	foreign.Conditions = append([]metav1.Condition(nil), foreign.Conditions...)
+	pool.Status.Parents = append(pool.Status.Parents, foreign)
+	m := testManager()
+	m.infClient = inffake.NewSimpleClientset(pool)
+
+	if err := m.updateStatus(context.Background(), pool, []poolTarget{testTarget(nil)}, nil, resolvedReport("resolved to 10.43.12.7:9002")); err != nil {
+		t.Fatalf("updateStatus: %v", err)
+	}
+	got, err := m.infClient.InferenceV1().InferencePools("llm").Get(context.Background(), "vllm-qwen3", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	names := map[infv1.ControllerName]int{}
+	for _, parent := range got.Status.Parents {
+		names[parent.ControllerName]++
+		if parent.ControllerName != testControllerName {
+			continue
+		}
+		for _, c := range parent.Conditions {
+			if !sameTime(c.LastTransitionTime, past) {
+				t.Errorf("%s lastTransitionTime = %v, want it carried from the old entry (%v)", c.Type, c.LastTransitionTime, past)
+			}
+		}
+	}
+	if names[testControllerName] != 1 || names[legacyInferencePoolControllerName] != 0 || names["example.com/other"] != 1 {
+		t.Errorf("parents by controllerName = %v, want one of %s, none of %s, and the other controller's",
+			names, testControllerName, legacyInferencePoolControllerName)
+	}
+
+	// Gone once, it is not written again.
+	m.infClient.(*inffake.Clientset).ClearActions()
+	if err := m.updateStatus(context.Background(), got, []poolTarget{testTarget(nil)}, nil, resolvedReport("resolved to 10.43.12.7:9002")); err != nil {
+		t.Fatalf("second updateStatus: %v", err)
+	}
+	if n := statusWrites(m); n != 0 {
+		t.Errorf("an unchanged report after the move wrote status %d times", n)
+	}
+}
+
+// Clearing the status takes off the entries under the old name too.
+func TestClearStatusTakesOffTheOldControllerName(t *testing.T) {
+	past := metav1.NewTime(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	pool := statusPool(past, metav1.ConditionTrue, string(infv1.InferencePoolReasonResolvedRefs), "resolved")
+	pool.Status.Parents[0].ControllerName = legacyInferencePoolControllerName
+	m := testManager()
+	m.infClient = inffake.NewSimpleClientset(pool)
+
+	if err := m.clearStatus(context.Background(), pool); err != nil {
+		t.Fatalf("clearStatus: %v", err)
+	}
+	got, err := m.infClient.InferenceV1().InferencePools("llm").Get(context.Background(), "vllm-qwen3", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if len(got.Status.Parents) != 0 {
+		t.Errorf("parents after clearStatus = %+v, want none", got.Status.Parents)
+	}
 }
