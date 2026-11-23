@@ -155,6 +155,11 @@ func ruleDiff(sent *api.LoadBalancerService, got *api.RuleReadBack) []string {
 	differ("kvModelProfile", sent.KvModelProfile == got.KvModelProfile)
 	differ("api_key_auth", sent.APIKeyAuth == got.APIKeyAuth)
 	differ("jwt_auth_profile", sent.JwtAuthProfile == got.JwtAuthProfile)
+	// Sent with a rule that has no endpoints only; a rule with endpoints
+	// reads back whatever the gateway defaults it to.
+	if sent.NoEndpointStatus != 0 {
+		differ("no_endpoint_status", sent.NoEndpointStatus == got.NoEndpointStatus)
+	}
 
 	return diff
 }

@@ -213,6 +213,9 @@ type LbArgs struct {
 	// backend's pods serve it on; nil for any other Service.
 	route            *gatewayRoute
 	routeTargetPorts []int
+	// noEndpointStatus - for a gateway route sent without endpoints, what
+	// its rule answers; see routeWithoutEndpoints.
+	noEndpointStatus int32
 }
 
 type LbModelEnt struct {
@@ -268,6 +271,9 @@ type LbCacheEntry struct {
 	// the backend's port it is served on; zero for any other Service.
 	Route            gatewayRoute
 	RouteTargetPorts []int
+	// NoEndpointStatus - for a gateway route sent without endpoints, what
+	// its rule answers; 0 otherwise.
+	NoEndpointStatus int32
 }
 
 type LbCacheTable map[string]*LbCacheEntry
@@ -947,8 +953,24 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	var endpointIPs []string
 	var routeTargetPorts []int
+	var noEndpointStatus int32
 	if route != nil {
-		endpointIPs, routeTargetPorts, err = m.routeEndpoints(route, epAddrType)
+		if route.invalidBackend == "" {
+			endpointIPs, routeTargetPorts, err = m.routeEndpoints(route, epAddrType)
+		}
+		// A route the spec answers 5xx is a rule without endpoints where
+		// the peers take one; elsewhere it is not sent, and its requests go
+		// to another rule.
+		noEndpointStatus, err = m.routeWithoutEndpoints(route, endpointIPs, err)
+		if noEndpointStatus != 0 {
+			endpointIPs = nil
+			// No endpoint carries a target port. The ones before are kept,
+			// so that the rule's endpoints going and coming back is not a
+			// move of its backend's port.
+			if added {
+				routeTargetPorts = m.lbCache[cacheKey].RouteTargetPorts
+			}
+		}
 	} else {
 		endpointIPs, err = m.getEndpoints(svc, usePodNet, useExternalEndpoint, needMultusEP, epAddrType, matchNodeLabel)
 	}
@@ -960,7 +982,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 	}
 
 	if !added {
-		if len(endpointIPs) <= 0 {
+		if len(endpointIPs) <= 0 && noEndpointStatus == 0 {
 			return errors.New("no active endpoints")
 		}
 
@@ -1007,10 +1029,11 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 		m.lbCache[cacheKey] = <-addNewLbCacheEntryChan
 		lbCacheEntry = m.lbCache[cacheKey]
 		lbCacheEntry.Route, lbCacheEntry.RouteTargetPorts = routeValue(route), routeTargetPorts
+		lbCacheEntry.NoEndpointStatus = noEndpointStatus
 		m.zoneInstSelHint++
 		klog.Infof("New LbCache %s Added", cacheKey)
 	} else {
-		if len(endpointIPs) <= 0 {
+		if len(endpointIPs) <= 0 && noEndpointStatus == 0 {
 			err := m.deleteLoadBalancer(svc.Namespace, svc.Name, false)
 			if err == nil {
 				m.removeAllCacheEndpoints(cacheKey)
@@ -1229,16 +1252,30 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 
 	// The gateway keys a rule by its match mode as well as its host and
 	// path, so a rule sent with another mode is another rule, and the one
-	// before would stay: the rules go and come back. The route's other
-	// fields and its backend's port are not seen in the endpoints either.
-	if routeValue(route) != m.lbCache[cacheKey].Route || !slices.Equal(routeTargetPorts, m.lbCache[cacheKey].RouteTargetPorts) {
-		m.lbCache[cacheKey].Route = routeValue(route)
-		m.lbCache[cacheKey].RouteTargetPorts = routeTargetPorts
+	// before would stay: the rules go and come back. So they do for the
+	// route's other fields the gateway does not change in place, and for its
+	// backend's port moving, which the endpoints' addresses do not show. A
+	// rule without endpoints before or after has no port to move.
+	cached := m.lbCache[cacheKey]
+	portsMoved := len(cached.RouteTargetPorts) > 0 && len(routeTargetPorts) > 0 &&
+		!slices.Equal(routeTargetPorts, cached.RouteTargetPorts)
+	if !routeValue(route).sameRule(cached.Route) || portsMoved {
 		update = true
 		if added {
 			needDelete = true
 		}
 		klog.Infof("%s: gateway route update", cacheKey)
+	} else if routeValue(route) != cached.Route || !slices.Equal(routeTargetPorts, cached.RouteTargetPorts) {
+		// Another backend for the same rule, or one with none: its
+		// endpoints change, in place.
+		update = true
+		klog.Infof("%s: gateway route backend update", cacheKey)
+	}
+	cached.Route, cached.RouteTargetPorts = routeValue(route), routeTargetPorts
+	if noEndpointStatus != cached.NoEndpointStatus {
+		cached.NoEndpointStatus = noEndpointStatus
+		update = true
+		klog.Infof("%s: gateway route without endpoints answers %d", cacheKey, noEndpointStatus)
 	}
 
 	if aiArgs != m.lbCache[cacheKey].AIArgs {
@@ -1401,6 +1438,7 @@ func (m *Manager) addLoadBalancer(svc *corev1.Service) error {
 			gatewayLists:        m.lbCache[cacheKey].GatewayTLSLists,
 			route:               route,
 			routeTargetPorts:    routeTargetPorts,
+			noEndpointStatus:    m.lbCache[cacheKey].NoEndpointStatus,
 		}
 		lbArgs.secIPs = append(lbArgs.secIPs, m.lbCache[cacheKey].SecIPs...)
 		lbArgs.endpointIPs = append(lbArgs.endpointIPs, endpointIPs...)
@@ -1837,6 +1875,14 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 			return err
 		}
 		if err = checkEndpointPicker(c, model); err != nil {
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
+		// Sent so only when every peer listed the feature; one may have
+		// been replaced by a build without it since.
+		if model.Service.GatewayRoute && len(model.Endpoints) == 0 && !c.SupportsFeature(api.FeatureNoEndpointRule) {
+			err = fmt.Errorf("loxilb-lb(%s) does not list %q in its version features: %w",
+				c.Host, api.FeatureNoEndpointRule, ErrNoEndpointRuleUnsupported)
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 			return err
 		}
@@ -2689,6 +2735,9 @@ func (m *Manager) makeLoxiLoadBalancerModel(lbArgs *LbArgs, svc *corev1.Service,
 			Security:        security,
 			BackendProtocol: backendProtocol,
 			GatewayRoute:    lbArgs.route != nil,
+			// Without endpoints only; loxiEndpointModelList is [] then,
+			// which the gateway reads as none.
+			NoEndpointStatus: lbArgs.noEndpointStatus,
 		},
 		SrcIPs:       loxiLbAllowedSrcIpList,
 		SecondaryIPs: loxiSecIPModelList,

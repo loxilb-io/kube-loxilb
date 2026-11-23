@@ -66,6 +66,10 @@ type RuleReadBack struct {
 	KvModelProfile string `json:"kvModelProfile"`
 	APIKeyAuth     string `json:"api_key_auth"`
 	JwtAuthProfile string `json:"jwt_auth_profile"`
+	// NoEndpointStatus - what the rule answers while it has no endpoints. A
+	// build listing FeatureNoEndpointRule reports 503 for a rule sent none;
+	// one without the feature reports nothing.
+	NoEndpointStatus int32 `json:"no_endpoint_status"`
 }
 
 type ruleReadBackModel struct {

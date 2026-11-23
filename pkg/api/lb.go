@@ -185,6 +185,11 @@ type LoadBalancerService struct {
 	// listener. Never sent: kube-loxilb keeps it to send such a rule to
 	// loxilb-inference-gateway peers only.
 	GatewayRoute bool `json:"-"`
+	// NoEndpointStatus - for a gateway route sent without endpoints, the
+	// status the gateway answers the requests it matches with: 503 when its
+	// backend has no ready endpoint, 500 when its backend is invalid. Sent
+	// only with no endpoints, to a peer listing FeatureNoEndpointRule.
+	NoEndpointStatus int32 `json:"no_endpoint_status,omitempty"`
 
 	// AIArgs - loxilb-inference-gateway-only fields. Embedded, not named,
 	// because they sit flat inside serviceArguments on the wire. Promoted

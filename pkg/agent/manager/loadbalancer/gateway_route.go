@@ -19,12 +19,14 @@ package loadbalancer
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/cache"
@@ -63,6 +65,10 @@ const (
 	// gatewayRouteBackendPortAnnotation - the port of the backend Service the
 	// route names, by number.
 	gatewayRouteBackendPortAnnotation = "loxilb.io/gateway-route-backend-port"
+	// gatewayRouteInvalidBackendAnnotation - why the route rule's backend is
+	// invalid, in place of the two above: the rule has no backend, and is
+	// answered 500.
+	gatewayRouteInvalidBackendAnnotation = "loxilb.io/gateway-route-invalid-backend"
 
 	// ReasonGatewayRouteRefused - the event reason for a gateway route that
 	// is not trusted or does not read as one.
@@ -82,6 +88,22 @@ var (
 	// errGatewaysNotSynced - the Gateways are watched but not in the cache
 	// yet. Not the Service's fault: it is retried, and not reported.
 	errGatewaysNotSynced = errors.New("gateways are not in the cache yet")
+	// ErrNoEndpointRuleUnsupported - a gateway route without endpoints would
+	// reach a peer that does not take one.
+	ErrNoEndpointRuleUnsupported = errors.New("the peer does not take a rule without endpoints")
+	// errBackendNotFound - a gateway route's backend Service does not exist.
+	errBackendNotFound = errors.New("backend Service does not exist")
+)
+
+// The statuses a gateway route without endpoints is answered with
+// (api.LoadBalancerService.NoEndpointStatus).
+const (
+	// noEndpointsReady - its backend has no ready endpoint: the spec's
+	// SHOULD for such a backend.
+	noEndpointsReady int32 = http.StatusServiceUnavailable
+	// noEndpointsInvalid - its backend is invalid: it is not a Service, it
+	// does not exist, or no ReferenceGrant lets the route reach it.
+	noEndpointsInvalid int32 = http.StatusInternalServerError
 )
 
 // gatewayWatch - the Gateways a gateway route is checked against.
@@ -102,6 +124,18 @@ type gatewayRoute struct {
 	backendNamespace string
 	backendName      string
 	backendPort      int32
+	// invalidBackend - why the rule's backend is invalid; the rule has none
+	// then.
+	invalidBackend string
+}
+
+// sameRule - whether two routes are the same rule on the gateway, which
+// keys a rule by its host, path and match mode, and does not change its TLS
+// or backend protocol in place. Their backends may differ: that is a change
+// of endpoints, which the gateway makes in place.
+func (r gatewayRoute) sameRule(o gatewayRoute) bool {
+	return r.gateway == o.gateway && r.host == o.host && r.path == o.path && r.match == o.match &&
+		r.tls == o.tls && r.backendProtocol == o.backendProtocol
 }
 
 // routeValue - the route a Service carries, or the zero route for one that
@@ -225,6 +259,11 @@ func parseGatewayRoute(svc *corev1.Service, gateway string) (*gatewayRoute, erro
 		return nil, invalid("%s %q is not http1 or http2", gatewayRouteBackendProtocolAnnotation, a[gatewayRouteBackendProtocolAnnotation])
 	}
 
+	if why := a[gatewayRouteInvalidBackendAnnotation]; why != "" {
+		route.invalidBackend = why
+		return route, nil
+	}
+
 	namespace, name, ok := strings.Cut(a[gatewayRouteBackendAnnotation], "/")
 	if !ok || namespace == "" || name == "" || strings.Contains(name, "/") {
 		return nil, invalid("%s %q is not namespace/name", gatewayRouteBackendAnnotation, a[gatewayRouteBackendAnnotation])
@@ -276,6 +315,17 @@ func (m *Manager) watchGatewayRouteBackends(services, endpointSlices cache.Share
 	if err != nil {
 		klog.Errorf("gateway routes: unable to watch EndpointSlices; their endpoints follow the resync only: %v", err)
 	}
+
+	// A route whose backend does not exist is answered 500, and one whose
+	// backend has just come or gone is not told by an EndpointSlice when the
+	// backend has none, or writes its own.
+	_, err = services.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    m.enqueueGatewayRoutesOfBackend,
+		DeleteFunc: m.enqueueGatewayRoutesOfBackend,
+	})
+	if err != nil {
+		klog.Errorf("gateway routes: unable to watch their backends come and go; that follows the resync only: %v", err)
+	}
 }
 
 // enqueueGatewayRoutesOfSlice - queue the gateway routes whose backend an
@@ -285,16 +335,34 @@ func (m *Manager) enqueueGatewayRoutesOfSlice(obj interface{}) {
 		obj = deletedState.Obj
 	}
 	eps, ok := obj.(*discoveryv1.EndpointSlice)
-	if !ok || m.serviceIndexer == nil {
+	if !ok {
 		return
 	}
-	service := eps.Labels[discoveryv1.LabelServiceName]
-	if service == "" {
+	if service := eps.Labels[discoveryv1.LabelServiceName]; service != "" {
+		m.enqueueGatewayRoutesOf(eps.Namespace, service)
+	}
+}
+
+// enqueueGatewayRoutesOfBackend - queue the gateway routes whose backend a
+// Service is.
+func (m *Manager) enqueueGatewayRoutesOfBackend(obj interface{}) {
+	if deletedState, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = deletedState.Obj
+	}
+	if svc, ok := obj.(*corev1.Service); ok {
+		m.enqueueGatewayRoutesOf(svc.Namespace, svc.Name)
+	}
+}
+
+// enqueueGatewayRoutesOf - queue the gateway routes whose backend is the
+// Service namespace/name.
+func (m *Manager) enqueueGatewayRoutesOf(namespace, name string) {
+	if m.serviceIndexer == nil {
 		return
 	}
-	routes, err := m.serviceIndexer.ByIndex(gatewayRouteBackendIndex, eps.Namespace+"/"+service)
+	routes, err := m.serviceIndexer.ByIndex(gatewayRouteBackendIndex, namespace+"/"+name)
 	if err != nil {
-		klog.Errorf("gateway routes of %s/%s: %v", eps.Namespace, service, err)
+		klog.Errorf("gateway routes of %s/%s: %v", namespace, name, err)
 		return
 	}
 	for _, route := range routes {
@@ -313,6 +381,9 @@ func (m *Manager) routeEndpoints(route *gatewayRoute, addrType string) ([]string
 		return nil, nil, fmt.Errorf("backend %s/%s: Services and EndpointSlices are not watched", route.backendNamespace, route.backendName)
 	}
 	backend, err := m.serviceLister.Services(route.backendNamespace).Get(route.backendName)
+	if k8sErrors.IsNotFound(err) {
+		return nil, nil, fmt.Errorf("backend %s/%s: %w", route.backendNamespace, route.backendName, errBackendNotFound)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("backend %s/%s: %w", route.backendNamespace, route.backendName, err)
 	}
@@ -414,4 +485,51 @@ func (m *Manager) GatewayPeers() (ok, known bool, reason string) {
 		return false, false, unknown
 	}
 	return true, true, ""
+}
+
+// ServesRulesWithoutEndpoints - whether every loxilb peer takes a gateway
+// route without endpoints (api.FeatureNoEndpointRule). A route the spec
+// answers 5xx - its backend has no ready endpoint, or is invalid - is sent
+// as such a rule only then. Otherwise it is not sent, as before the feature:
+// its requests go to the longest other prefix of its host. Every peer, so
+// that the peers answer such a request alike; a peer that has not reported
+// what it is counts as one that does not take them.
+func (m *Manager) ServesRulesWithoutEndpoints() bool {
+	if m.LoxiClients == nil || len(m.LoxiClients.Clients) == 0 {
+		return false
+	}
+	for _, c := range m.LoxiClients.Clients {
+		if !c.IsInferenceGateway() || !c.SupportsFeature(api.FeatureNoEndpointRule) {
+			return false
+		}
+	}
+	return true
+}
+
+// routeWithoutEndpoints - for a gateway route, the status its rule is sent
+// to answer with no endpoints (0 when it has endpoints or is not sent so),
+// and the error left of reading its endpoints.
+//
+// A backend that is invalid - the Gateway API manager says so, or the
+// Service does not exist - is answered 500, as the spec requires; one with no
+// ready endpoint, 503, as it advises. Neither is when the peers do not take
+// a rule without endpoints: an invalid backend is then the error, and a
+// backend without endpoints is left to the caller, which does not send the
+// rule.
+func (m *Manager) routeWithoutEndpoints(route *gatewayRoute, endpointIPs []string, err error) (int32, error) {
+	var status int32
+	switch {
+	case route.invalidBackend != "":
+		status, err = noEndpointsInvalid, fmt.Errorf("backend is invalid: %s", route.invalidBackend)
+	case errors.Is(err, errBackendNotFound):
+		status = noEndpointsInvalid
+	case err == nil && len(endpointIPs) == 0:
+		status = noEndpointsReady
+	default:
+		return 0, err
+	}
+	if !m.ServesRulesWithoutEndpoints() {
+		return 0, err
+	}
+	return status, nil
 }

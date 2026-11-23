@@ -28,6 +28,13 @@ const FeatureAPIKeyAuth = "api_key_auth"
 // "apikey-or-jwt".
 const FeatureJWTAuthProfile = "jwt_auth_profile"
 
+// FeatureNoEndpointRule - the `features` entry of a gateway build that takes a
+// host and path rule without endpoints, answers the requests it matches with
+// its no_endpoint_status instead of passing them to another rule, and moves a
+// rule between no endpoints and some in place. Builds without it refuse such
+// a rule (400 endpoints-range error).
+const FeatureNoEndpointRule = "no_endpoint_rule"
+
 // VersionModel - response of GET /netlox/v1/version.
 type VersionModel struct {
 	Version   string `json:"version,omitempty"`
