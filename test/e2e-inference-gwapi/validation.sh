@@ -19,15 +19,23 @@ poll() { local t=$1; shift; for ((i=0;i<t;i++)); do "$@" >/dev/null 2>&1 && retu
 
 rules() { curl -s --max-time 5 "http://$IGW_ADDR:11111/netlox/v1/config/loadbalancer/all"; }
 svc_json() { kubectl -n llm get svc "$1" -o json 2>/dev/null; }
+# The GatewayClass's controllerName, which a pool's parent status carries.
+CONTROLLER="loxilb.io/loxilb"
+# What kube-loxilb wrote there before.
+OLD_CONTROLLER="loxilb.io/kube-loxilb"
 pool_cond() { # <pool> <conditionType> -> status
   kubectl -n llm get inferencepool "$1" -o json 2>/dev/null |
-    jq -r --arg t "$2" '.status.parents[]? | select(.controllerName=="loxilb.io/kube-loxilb")
+    jq -r --arg t "$2" --arg c "$CONTROLLER" '.status.parents[]? | select(.controllerName==$c)
                         | .conditions[]? | select(.type==$t) | .status' | head -1
 }
 pool_reason() { # <pool> [conditionType] -> reason
   kubectl -n llm get inferencepool "$1" -o json 2>/dev/null |
-    jq -r --arg t "${2:-Accepted}" '.status.parents[]? | select(.controllerName=="loxilb.io/kube-loxilb")
+    jq -r --arg t "${2:-Accepted}" --arg c "$CONTROLLER" '.status.parents[]? | select(.controllerName==$c)
            | .conditions[]? | select(.type==$t) | .reason' | head -1
+}
+pool_parents_under() { # <pool> <controllerName> -> how many parent entries carry it
+  kubectl -n llm get inferencepool "$1" -o json 2>/dev/null |
+    jq --arg c "$2" '[.status.parents[]? | select(.controllerName==$c)] | length'
 }
 rule_of() { # <service> -> the loxilb rule kube-loxilb programmed for it
   rules | jq -c --arg n "llm_$1" '.lbAttr[]? | select(.serviceArguments.name|startswith($n))' | head -1
@@ -126,6 +134,8 @@ if poll 60 bash -c "[[ \"\$(kubectl -n llm get inferencepool vllm-qwen3 -o json 
   check "ResolvedRefs" "$(pool_cond vllm-qwen3 ResolvedRefs)" "True"
   check "parent is the gateway" \
     "$(kubectl -n llm get inferencepool vllm-qwen3 -o json | jq -r '.status.parents[0].parentRef.name')" "inference-gw"
+  check "under the GatewayClass's controllerName, $CONTROLLER" "$(pool_parents_under vllm-qwen3 "$CONTROLLER")" 1
+  check "none under $OLD_CONTROLLER" "$(pool_parents_under vllm-qwen3 "$OLD_CONTROLLER")" 0
 else
   bad "status written" "no parents after 60s"
 fi
@@ -164,6 +174,48 @@ else
   check "not on the rule" "$(jq -r '.serviceArguments.eppEndpoint // ""' <<<"$R")" ""
 fi
 kubectl -n llm annotate inferencepool vllm-qwen3 loxilb.io/epp-endpoint- >/dev/null
+
+echo "=== 4c. the status a build before this one wrote is taken off ==="
+# Builds before this one wrote the pool's parent status under "loxilb.io/
+# kube-loxilb", not the GatewayClass's controllerName. Such an entry is
+# kube-loxilb's own: the next reconcile of the pool takes it off. A status
+# write alone queues no reconcile, so an annotation brings one.
+OLD_ENTRY=$(kubectl -n llm get inferencepool vllm-qwen3 -o json |
+  jq -c --arg c "$CONTROLLER" --arg o "$OLD_CONTROLLER" '.status.parents[] | select(.controllerName==$c) | .controllerName=$o')
+kubectl -n llm patch inferencepool vllm-qwen3 --subresource=status --type=json \
+  -p "[{\"op\":\"add\",\"path\":\"/status/parents/-\",\"value\":$OLD_ENTRY}]" >/dev/null
+check "an entry under $OLD_CONTROLLER, as a build before this one left it" "$(pool_parents_under vllm-qwen3 "$OLD_CONTROLLER")" 1
+kubectl -n llm annotate inferencepool vllm-qwen3 e2e.loxilb.io/reconcile=4c --overwrite >/dev/null
+old_entry_gone() { [[ "$(pool_parents_under vllm-qwen3 "$OLD_CONTROLLER")" == 0 ]]; }
+if poll 30 old_entry_gone; then
+  ok "taken off at the next reconcile"
+else
+  bad "taken off at the next reconcile" "$(pool_parents_under vllm-qwen3 "$OLD_CONTROLLER") left"
+fi
+check "the entry under $CONTROLLER stays" "$(pool_parents_under vllm-qwen3 "$CONTROLLER")" 1
+check "Accepted" "$(pool_cond vllm-qwen3 Accepted)" "True"
+kubectl -n llm annotate inferencepool vllm-qwen3 e2e.loxilb.io/reconcile- >/dev/null
+
+echo "=== 4d. the GatewayClass is accepted at its generation ==="
+# Accepted True with the reason Accepted, where the Pending its CRD defaults
+# it to was left; its observedGeneration follows a change of its spec, and
+# its transition time stays while it stays accepted.
+gc_accepted() { kubectl get gatewayclass loxilb-gc -o json | jq -r '(.status.conditions[]? | select(.type=="Accepted")) as $c
+  | "\($c.status)/\($c.reason) gen \($c.observedGeneration) of \(.metadata.generation)"'; }
+gc_accepted_at() { [[ "$(gc_accepted)" == "True/Accepted gen $1 of $1" ]]; }
+GC_GEN=$(kubectl get gatewayclass loxilb-gc -o jsonpath='{.metadata.generation}')
+poll 30 gc_accepted_at "$GC_GEN"
+check "Accepted" "$(gc_accepted)" "True/Accepted gen $GC_GEN of $GC_GEN"
+GC_LTT=$(kubectl get gatewayclass loxilb-gc -o json | jq -r '.status.conditions[] | select(.type=="Accepted") | .lastTransitionTime')
+kubectl patch gatewayclass loxilb-gc --type=merge -p "{\"spec\":{\"description\":\"e2e $(date +%s)\"}}" >/dev/null
+GC_GEN2=$(kubectl get gatewayclass loxilb-gc -o jsonpath='{.metadata.generation}')
+if [[ "$GC_GEN2" != "$GC_GEN" ]] && poll 30 gc_accepted_at "$GC_GEN2"; then
+  ok "a spec change moves observedGeneration to $GC_GEN2"
+else
+  bad "a spec change moves observedGeneration to $GC_GEN2" "$(gc_accepted)"
+fi
+check "lastTransitionTime unchanged" \
+  "$(kubectl get gatewayclass loxilb-gc -o json | jq -r '.status.conditions[] | select(.type=="Accepted") | .lastTransitionTime')" "$GC_LTT"
 
 if ! epp_ready; then
   echo "=== 5-6. Endpoint Picker checks [SKIPPED] ==="
