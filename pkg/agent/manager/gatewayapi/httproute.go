@@ -89,6 +89,9 @@ type HTTPRouteManager struct {
 	// listeners (direct.go). A listener the ingress service does not carry
 	// then gets no Ingress.
 	directPeers DirectPeers
+	// rulesWithoutEndpoints - as the Gateway manager's, so that the route's
+	// status says what its direct rules come to.
+	rulesWithoutEndpoints RulesWithoutEndpoints
 
 	queue workqueue.RateLimitingInterface
 }
@@ -213,6 +216,13 @@ func (h *HTTPRouteManager) ServeRoutesDirectly(peers DirectPeers) {
 	h.directPeers = peers
 }
 
+// ServeRulesWithoutEndpoints - as the Gateway manager's: a direct rule
+// whose backend is invalid is served, answered 500, while peers takes such
+// rules.
+func (h *HTTPRouteManager) ServeRulesWithoutEndpoints(peers RulesWithoutEndpoints) {
+	h.rulesWithoutEndpoints = peers
+}
+
 // EnqueueAll - queue every HTTPRoute; for a change that may move any of
 // them, such as a peer reporting what it is.
 func (h *HTTPRouteManager) EnqueueAll() {
@@ -284,6 +294,7 @@ func (h *HTTPRouteManager) directOutcome(gw *v1.Gateway, port v1.PortNumber, rou
 	}
 	rules, refusals := directRules(gw, port, directInputs{
 		routes: routes, nsLabels: h.namespaceLabels(), grants: h.referenceGrants, services: h.serviceLister,
+		withoutEndpoints: h.rulesWithoutEndpoints != nil && h.rulesWithoutEndpoints(),
 	})
 	served := false
 	for _, r := range rules {

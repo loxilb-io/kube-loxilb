@@ -391,6 +391,11 @@ func run(o *Options) error {
 		if o.config.GatewayAPIDirectRoutes {
 			gatewayManager.ServeRoutesDirectly(lbManager.GatewayPeers, referenceGrants, lbManager.ReleasePorts)
 			httpRouteManager.ServeRoutesDirectly(lbManager.GatewayPeers)
+			// A rule the spec answers 5xx is served so where every peer
+			// takes a rule without endpoints; a peer that comes up may
+			// have changed whether one does.
+			gatewayManager.ServeRulesWithoutEndpoints(lbManager.ServesRulesWithoutEndpoints)
+			httpRouteManager.ServeRulesWithoutEndpoints(lbManager.ServesRulesWithoutEndpoints)
 			// A port going back to the ingress service keeps its direct
 			// rules until loxilb-ingress and its L4 rule serve it.
 			gatewayManager.BringPortsBack(informerFactory, httpRouteManager.IngressesOn, lbManager.InstalledPorts)

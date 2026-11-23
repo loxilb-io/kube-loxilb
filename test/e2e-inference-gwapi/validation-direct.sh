@@ -152,10 +152,28 @@ spec:
 EOF
 echo "  web-a pods $WEB_A; web-b pods $WEB_B"
 # The Gateway last, its routes in the cache by then, and web-manual's
-# EndpointSlice after it: until that is written, the manual.example.com rule
-# has no endpoints and is not installed, so the HTTP port stays on the
-# ingress Service and its L4 rule reaches the gateways. The checks below see
-# the port move to the rules once it is written, and that L4 rule go.
+# EndpointSlices before it, serving its port on two target ports: one rule
+# cannot hold those, so the manual.example.com rule is not installed, the
+# HTTP port stays on the ingress Service, and its L4 rule reaches the
+# gateways. (A rule without endpoints would not hold it: where the gateways
+# list no_endpoint_rule, that is installed, answering 503.) The checks below
+# see the port move to the rules once one target port is left, and that L4
+# rule go.
+manual_slice "${WEB_B%%,*}"
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: web-manual-2
+  namespace: web
+  labels:
+    kubernetes.io/service-name: web-manual
+    endpointslice.kubernetes.io/managed-by: e2e-direct
+addressType: IPv4
+ports: [{name: http, port: 8001, protocol: TCP}]
+endpoints:
+  - {addresses: ["${WEB_B%%,*}"], conditions: {ready: true}}
+EOF
 sleep 2
 kubectl apply -f "$HERE/fixtures/direct-gateway.yaml" >/dev/null
 if poll 90 l4_rules_are 1; then
@@ -164,6 +182,7 @@ else
   bad "the HTTP port is on the ingress Service's L4 rule first" "$(rule_keys "$IGW1_ADDR")"
 fi
 manual_slice "$WEB_B"
+kubectl -n web delete endpointslice web-manual-2 >/dev/null
 
 echo "=== D2. one Service per rule, controlled by the Gateway, installed ==="
 if poll 180 installed_is 3; then
@@ -258,8 +277,9 @@ echo "=== D4b. a rule whose backend has no endpoints ==="
 # rule to web-a still answers beside one to web-down, which has no endpoints.
 # A request for that rule should get a 5xx - Gateway API asks for 503 - but
 # with no rule of its own, the shorter path takes it. So it does for a
-# direct route on the HTTP listener: kube-loxilb does not send a rule with
-# no endpoints, which the gateway refuses (400, endpoints-range error).
+# direct route on the HTTP listener, unless both gateways list
+# no_endpoint_rule (D13): elsewhere kube-loxilb does not send a rule with no
+# endpoints, which the gateway refuses (400, endpoints-range error).
 gen_count_is() { [[ "$(gen | jq '.items | length')" == "$1" ]]; }
 GEN_BEFORE=$(gen | jq '.items | length')
 kubectl apply -f - >/dev/null <<'EOF'
@@ -300,9 +320,11 @@ down_answer() { # <what answered> <code> <body> <why the shorter path took it>
 }
 down_answer "through loxilb-ingress" "$(tls_code /down)" "$(tls_at /down | cut -d- -f1,2)" \
   "loxilb-ingress leaves its path out, and the shorter path takes it"
-# Its rule Service comes, and is not installed.
+# Its rule Service comes: installed without endpoints where both gateways
+# take that, and answered 503; not installed elsewhere.
 poll 30 gen_count_is $((GEN_BEFORE + 1))
-sleep 3
+down_is_5xx() { [[ "$(code shop.example.com /down)" == 5?? ]]; }
+poll 10 down_is_5xx
 down_answer "directly" "$(code shop.example.com /down)" "$(body shop.example.com /down | cut -d- -f1,2)" \
   "the gateway takes no rule without endpoints, and the shorter path takes it"
 kubectl -n web delete httproute down >/dev/null
@@ -600,6 +622,107 @@ else
   note "loxilb-ingress has no readinessProbe: $LATE requests sent after its new pod was ready went unanswered"
 fi
 note "$MISSED of $(wc -l <"$PROBE") requests went unanswered while the one loxilb-ingress pod restarted; it was ready $((READY - RESTART))s after the restart"
+
+echo "=== D13. rules the spec answers with a 5xx ==="
+# A rule whose backend has no ready endpoint should be answered 503, as
+# Gateway API advises, and one whose backend is invalid 500, as it requires
+# (HTTPRouteRule.BackendRefs). kube-loxilb sends both as rules without
+# endpoints where every gateway lists no_endpoint_rule in its version
+# features. Elsewhere it sends neither - the gateway refuses a rule without
+# endpoints - and the longest other prefix of the host, web-b's "/", takes
+# their requests.
+features_of() { curl -s --max-time 5 "$(rest "$1")/version" | jq -r '(.features // []) | join(",")'; }
+TAKES=yes
+for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
+  [[ ",$(features_of "$gw")," == *",no_endpoint_rule,"* ]] || TAKES=no
+done
+gen_count_is() { [[ "$(gen | jq '.items | length')" == "$1" ]]; }
+GEN_BEFORE=$(gen | jq '.items | length')
+INSTALLED_BEFORE=$(installed_count)
+kubectl apply -f - >/dev/null <<'YAML'
+apiVersion: v1
+kind: Service
+metadata: {name: web-down, namespace: web}
+spec:
+  selector: {app: nobody}
+  ports: [{name: http, port: 80, targetPort: 8000}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: fivexx, namespace: web}
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: [shop.example.com]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /down}}]
+      backendRefs: [{name: web-down, port: 80}]
+    - matches: [{path: {type: PathPrefix, value: /missing}}]
+      backendRefs: [{name: web-missing, port: 80}]
+    - matches: [{path: {type: PathPrefix, value: /foreign}}]
+      backendRefs: [{name: kubernetes, namespace: default, port: 443}]
+YAML
+answer_of() { echo "$(code shop.example.com "$1") $(body shop.example.com "$1" | head -c 40)"; }
+if [[ $TAKES == yes ]]; then
+  ok "both gateways take rules without endpoints"
+  if poll 60 installed_is $((INSTALLED_BEFORE + 3)); then
+    ok "the three rules are installed"
+  else
+    bad "the three rules are installed" "$(installed_count) installed, want $((INSTALLED_BEFORE + 3))"
+  fi
+  without_endpoints() { # <gateway addr> -> path:status of the rules on shop.example.com with none
+    direct_rules "$1" | jq -r '[.[] | select(.serviceArguments.host=="shop.example.com" and ((.endpoints // []) | length) == 0)
+                               | "\(.serviceArguments.path_prefix):\(.serviceArguments.no_endpoint_status)"] | sort | join(" ")'
+  }
+  for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
+    check "on $gw, the rules without endpoints" "$(without_endpoints "$gw")" "/down:503 /foreign:500 /missing:500"
+  done
+  check "a request for the rule with no ready endpoint" "$(code shop.example.com /down/x)" 503
+  check "a request for the rule whose Service does not exist" "$(code shop.example.com /missing)" 500
+  check "a request for the rule whose Service it may not reach" "$(code shop.example.com /foreign)" 500
+  ACC=$(route_cond fivexx Accepted)
+  [[ "$ACC" == True/* ]] && ok "the route is accepted" || bad "the route is accepted" "$ACC"
+  RES=$(route_cond fivexx ResolvedRefs)
+  [[ "$RES" == False/*"web-missing"* && "$RES" == *"default"* ]] &&
+    ok "its status names the invalid backends" || bad "its status names the invalid backends" "$RES"
+  # Endpoints come: the rule is served by them; they go: 503 again.
+  kubectl -n web patch svc web-down --type=merge -p '{"spec":{"selector":{"app":"web-a"}}}' >/dev/null
+  if poll 30 served_by shop.example.com /down web-a; then
+    ok "the rule's backend gets endpoints, and serves it"
+  else
+    bad "the rule's backend gets endpoints, and serves it" "$(answer_of /down)"
+  fi
+  kubectl -n web patch svc web-down --type=merge -p '{"spec":{"selector":{"app":"nobody"}}}' >/dev/null
+  down_is_503() { [[ "$(code shop.example.com /down)" == 503 ]]; }
+  if poll 30 down_is_503; then
+    ok "its endpoints go, and it is answered 503 again"
+  else
+    bad "its endpoints go, and it is answered 503 again" "$(answer_of /down)"
+  fi
+else
+  # The rule Services of /down and /missing come, not installed; /foreign,
+  # whose backend is invalid, gets none.
+  poll 30 gen_count_is $((GEN_BEFORE + 2))
+  check "the rule Services of /down and /missing, and none for /foreign" "$(gen | jq '.items | length')" $((GEN_BEFORE + 2))
+  sleep 3
+  check "none of them is installed" "$(installed_count)" "$INSTALLED_BEFORE"
+  for path in /down /missing /foreign; do
+    ANSWER=$(answer_of "$path")
+    case "$ANSWER" in
+      5*) ok "a request for $path gets ${ANSWER%% *}";;
+      *) note "a request for $path gets $ANSWER: the gateways do not list no_endpoint_rule, so its rule is not sent and the shorter prefix takes it";;
+    esac
+  done
+fi
+check "the HTTP port stays with the direct routes" \
+  "$(kubectl -n web get svc direct-gw-ingress-service -o json | jq -r '[.spec.ports[]?.port] | join(",")')" "$TLS_PORT"
+case "$(body shop.example.com /api/x)" in
+  web-a-*) ok "shop.example.com/api is served beside them";;
+  *) bad "shop.example.com/api is served beside them" "$(ask shop.example.com /api/x)";;
+esac
+kubectl -n web delete httproute fivexx >/dev/null
+kubectl -n web delete svc web-down >/dev/null
+poll 60 gen_count_is "$GEN_BEFORE"
+check "the rule Services are as they were" "$(gen | jq '.items | length')" "$GEN_BEFORE"
 
 echo
 if [[ $fails -eq 0 ]]; then

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +41,10 @@ type fakeLoxiLB struct {
 
 	// features is reported on /version; set it before client() detects it.
 	features []string
+	// countsEndpoints - refuse a rule without endpoints, as the gateway's
+	// AddLbRule does, unless features lists api.FeatureNoEndpointRule. Off,
+	// any rule is taken, so that a test can send one with what it checks.
+	countsEndpoints bool
 
 	// createStatus, when set, answers the load-balancer POST with this status
 	// and createResult instead of success. The body is recorded either way.
@@ -225,6 +230,9 @@ func newFakeLoxiLB(t *testing.T, product string) *fakeLoxiLB {
 			answer := fakeAnswer{status: f.createStatus, result: f.createResult}
 			if len(f.createAnswers) > 0 {
 				answer, f.createAnswers = f.createAnswers[0], f.createAnswers[1:]
+			}
+			if answer.status == 0 && f.countsEndpoints && withoutEndpoints(body) && !slices.Contains(f.features, api.FeatureNoEndpointRule) {
+				answer = fakeAnswer{status: http.StatusBadRequest, result: "endpoints-range error"}
 			}
 			if answer.status == 0 && f.onePolicyPerListener && f.listenerPolicyConflict(body) {
 				answer = fakeAnswer{status: http.StatusBadRequest, result: "rules that share a listener share its " +
@@ -867,4 +875,12 @@ func TestInstallLBDoesNotSwallowNotFound(t *testing.T) {
 	if !api.IsClientError(err) {
 		t.Error("a 404 must be reported as something the user has to fix")
 	}
+}
+
+// withoutEndpoints - whether a load-balancer POST carries no endpoint.
+func withoutEndpoints(body []byte) bool {
+	var model struct {
+		Endpoints []json.RawMessage `json:"endpoints"`
+	}
+	return json.Unmarshal(body, &model) == nil && len(model.Endpoints) == 0
 }

@@ -17,10 +17,11 @@ IGW_REPO="${IGW_REPO:?set IGW_REPO to a loxilb-inference-gateway checkout}"
 IGW_REF="${IGW_REF:-origin/main}"
 
 mkdir -p "$WORK"
-sha="$(git -C "$IGW_REPO" rev-parse --short=8 "$IGW_REF")"
+commit="$(git -C "$IGW_REPO" rev-parse --verify "$IGW_REF^{commit}")"
+sha="${commit:0:8}"
 IMAGE="${IGW_BUILD_IMAGE:-ghcr.io/loxilb-io/loxilb-inference-gateway:e2e-$sha}"
 
-git -C "$IGW_REPO" show "$IGW_REF:scripts/aigw-db-bootstrap.sql" > "$WORK/igw-db-bootstrap.sql"
+git -C "$IGW_REPO" show "$commit:scripts/aigw-db-bootstrap.sql" > "$WORK/igw-db-bootstrap.sql"
 
 if docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "$IMAGE" > "$WORK/igw-image"
@@ -32,9 +33,11 @@ fi
 SRC="$WORK/igw-src"
 rm -rf "$SRC"
 git clone -q --no-checkout "$IGW_REPO" "$SRC"
-ref="$(git -C "$IGW_REPO" rev-parse --symbolic-full-name "$IGW_REF")"
-git -C "$SRC" fetch -q "$IGW_REPO" "+$ref:refs/heads/e2e-build"
+# The commit, not the ref's name: a commit id has none, and fetching an empty
+# name fetches the checkout's HEAD, which would be built under this tag.
+git -C "$SRC" fetch -q "$IGW_REPO" "+$commit:refs/heads/e2e-build"
 git -C "$SRC" checkout -q e2e-build
+[[ "$(git -C "$SRC" rev-parse HEAD)" == "$commit" ]] || { echo "checked out $(git -C "$SRC" rev-parse HEAD), not $commit" >&2; exit 1; }
 
 # Submodules from the checkout's own copies: the pinned commits are there.
 # Git refuses local-path submodule clones unless told to, for this call only.
