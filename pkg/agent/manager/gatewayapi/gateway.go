@@ -100,6 +100,9 @@ type GatewayManager struct {
 	// takes a port's L4 rule off the peers before the port leaves the ingress
 	// service.
 	releasePorts ReleasePorts
+	// rulesWithoutEndpoints - set by ServeRulesWithoutEndpoints; nil leaves
+	// a rule with an invalid backend out.
+	rulesWithoutEndpoints RulesWithoutEndpoints
 	// ingressLister, ingressesOn, installedPorts, eventRecorder - set by
 	// BringPortsBack: a port on its way back to the ingress service keeps
 	// its direct rules until the Ingress path serves it
@@ -362,6 +365,12 @@ func (gm *GatewayManager) ServeRoutesDirectly(peers DirectPeers, grants *Referen
 	gm.referenceGrants = grants
 	gm.releasePorts = release
 	grants.AddHandler(func(v1.ReferenceGrantSpec) { gm.EnqueueAll() })
+}
+
+// ServeRulesWithoutEndpoints - serve a direct rule whose backend is invalid
+// as one without endpoints, answered 500, while peers takes such rules.
+func (gm *GatewayManager) ServeRulesWithoutEndpoints(peers RulesWithoutEndpoints) {
+	gm.rulesWithoutEndpoints = peers
 }
 
 // EnqueueAll - queue every Gateway; for a change that may move any of them,

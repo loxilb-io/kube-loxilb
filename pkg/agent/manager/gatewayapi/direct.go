@@ -60,6 +60,9 @@ const (
 	gatewayRouteBackendProtocolAnnotation = "loxilb.io/gateway-route-backend-protocol"
 	gatewayRouteBackendAnnotation         = "loxilb.io/gateway-route-backend"
 	gatewayRouteBackendPortAnnotation     = "loxilb.io/gateway-route-backend-port"
+	// gatewayRouteInvalidBackendAnnotation - why a rule's backend is
+	// invalid, in place of the two above: the rule is answered 500.
+	gatewayRouteInvalidBackendAnnotation = "loxilb.io/gateway-route-invalid-backend"
 
 	// h2cAppProtocol - a backend Service port's appProtocol for cleartext
 	// HTTP/2.
@@ -70,6 +73,12 @@ const (
 // that is known, which it is not while a peer has not said what it is; and
 // why not when one cannot or it is not known.
 type DirectPeers func() (ok, known bool, reason string)
+
+// RulesWithoutEndpoints - whether every loxilb peer takes a direct rule
+// without endpoints, and answers the requests it matches itself. A rule whose
+// backend is invalid is served so only then, answered 500 as the spec
+// requires; otherwise it is left out, and its requests go to another rule.
+type RulesWithoutEndpoints func() bool
 
 // ReleasePorts - hand the TCP ports of a Gateway's ingress Service its direct
 // routes serve to them, all of them each time: the load-balancer manager takes
@@ -154,6 +163,9 @@ type directRule struct {
 	backendPort     int32
 	backendProtocol string
 	route           types.NamespacedName
+	// invalidBackend - why the rule's backend is invalid; it has none then,
+	// and is answered 500.
+	invalidBackend string
 }
 
 func (r directRule) key() string {
@@ -168,6 +180,9 @@ type directInputs struct {
 	// services - for the appProtocol of a backend's port; nil reads every
 	// backend as HTTP/1.
 	services corev1lister.ServiceLister
+	// withoutEndpoints - the peers take a rule without endpoints
+	// (RulesWithoutEndpoints).
+	withoutEndpoints bool
 }
 
 // directRefusals - why parts of routes are not served on a direct port, by
@@ -263,10 +278,16 @@ func directRules(gw *v1.Gateway, port v1.PortNumber, in directInputs) ([]directR
 		}
 
 		for ri, rule := range route.Spec.Rules {
-			backend, backendPort, protocol, why := directBackend(route, rule, in)
+			backend, backendPort, protocol, why, invalid := directBackend(route, rule, in)
+			invalidBackend := ""
 			if why != "" {
-				refusals.add(name, "rule %d: %s", ri, why)
-				continue
+				if !invalid || !in.withoutEndpoints {
+					refusals.add(name, "rule %d: %s", ri, why)
+					continue
+				}
+				// Its requests are answered 500, as the spec requires, by a
+				// rule without endpoints.
+				invalidBackend = why
 			}
 			if len(rule.Filters) > 0 {
 				refusals.add(name, "rule %d has filters, which are not applied directly yet", ri)
@@ -304,6 +325,7 @@ func directRules(gw *v1.Gateway, port v1.PortNumber, in directInputs) ([]directR
 						rule: directRule{
 							port: port, host: host, path: path, exact: exact,
 							backend: backend, backendPort: backendPort, backendProtocol: protocol, route: name,
+							invalidBackend: invalidBackend,
 						},
 						created: route.CreationTimestamp, ruleIndex: ri, match: mi,
 					})
@@ -338,7 +360,8 @@ func directRules(gw *v1.Gateway, port v1.PortNumber, in directInputs) ([]directR
 	for _, c := range candidates {
 		if len(winners) > 0 && winners[len(winners)-1].rule.key() == c.rule.key() {
 			w := winners[len(winners)-1].rule
-			if w.route != c.rule.route || w.backend != c.rule.backend || w.backendPort != c.rule.backendPort || w.exact != c.rule.exact {
+			if w.route != c.rule.route || w.backend != c.rule.backend || w.backendPort != c.rule.backendPort ||
+				w.exact != c.rule.exact || w.invalidBackend != c.rule.invalidBackend {
 				refusals.add(c.rule.route, "host %q and path %q are served for route %s", c.rule.host, c.rule.path, w.route)
 			}
 			continue
@@ -357,13 +380,23 @@ func directRules(gw *v1.Gateway, port v1.PortNumber, in directInputs) ([]directR
 		}
 		return a.rule.key() < b.rule.key()
 	})
-	var rules []directRule
+	// A rule with an invalid backend has nothing to speak to, and takes the
+	// listener's protocol.
 	protocol := ""
 	for _, c := range winners {
-		if protocol == "" {
+		if c.rule.invalidBackend == "" {
 			protocol = c.rule.backendProtocol
+			break
 		}
-		if c.rule.backendProtocol != protocol {
+	}
+	if protocol == "" {
+		protocol = "http1"
+	}
+	var rules []directRule
+	for _, c := range winners {
+		if c.rule.invalidBackend != "" {
+			c.rule.backendProtocol = protocol
+		} else if c.rule.backendProtocol != protocol {
 			refusals.add(c.rule.route, "backend %s speaks %s on a listener whose rules speak %s", c.rule.backend, c.rule.backendProtocol, protocol)
 			continue
 		}
@@ -373,8 +406,10 @@ func directRules(gw *v1.Gateway, port v1.PortNumber, in directInputs) ([]directR
 }
 
 // directBackend - the one backend of a rule a direct rule can carry, or why
-// there is none.
-func directBackend(route *v1.HTTPRoute, rule v1.HTTPRouteRule, in directInputs) (types.NamespacedName, int32, string, string) {
+// there is none, and whether that is because the backend is invalid: not a
+// kind this controller serves, or not one the route may reach. The spec
+// answers such a rule 500; the others cannot be carried yet.
+func directBackend(route *v1.HTTPRoute, rule v1.HTTPRouteRule, in directInputs) (types.NamespacedName, int32, string, string, bool) {
 	var effective []v1.HTTPBackendRef
 	for _, ref := range rule.BackendRefs {
 		if ref.Weight == nil || *ref.Weight > 0 {
@@ -383,18 +418,24 @@ func directBackend(route *v1.HTTPRoute, rule v1.HTTPRouteRule, in directInputs) 
 	}
 	switch len(effective) {
 	case 0:
-		return types.NamespacedName{}, 0, "", "it has no backend with a weight"
+		return types.NamespacedName{}, 0, "", "it has no backend with a weight", false
 	case 1:
 	default:
-		return types.NamespacedName{}, 0, "", "it splits traffic between backends, which is not done directly yet"
+		return types.NamespacedName{}, 0, "", "it splits traffic between backends, which is not done directly yet", false
 	}
 
 	ref := effective[0].BackendObjectReference
-	if classifyBackendRef(ref) != backendService {
-		return types.NamespacedName{}, 0, "", fmt.Sprintf("backend %s is not a Service", backendRefDescription(ref))
+	switch classifyBackendRef(ref) {
+	case backendService:
+	case backendInferencePool:
+		// Not invalid: the InferencePool manager serves it, and takes the
+		// listener off the direct ports once it has claimed it.
+		return types.NamespacedName{}, 0, "", fmt.Sprintf("backend %s is not a Service", backendRefDescription(ref)), false
+	default:
+		return types.NamespacedName{}, 0, "", fmt.Sprintf("backend %s is not a Service", backendRefDescription(ref)), true
 	}
 	if ref.Port == nil {
-		return types.NamespacedName{}, 0, "", fmt.Sprintf("backend %s has no port", ref.Name)
+		return types.NamespacedName{}, 0, "", fmt.Sprintf("backend %s has no port", ref.Name), true
 	}
 	backend := types.NamespacedName{Namespace: route.Namespace, Name: string(ref.Name)}
 	if ref.Namespace != nil {
@@ -404,7 +445,7 @@ func directBackend(route *v1.HTTPRoute, rule v1.HTTPRouteRule, in directInputs) 
 		grantReference{Group: v1.GroupName, Kind: kindHTTPRoute, Namespace: route.Namespace},
 		grantReference{Group: "", Kind: "Service", Namespace: backend.Namespace, Name: backend.Name},
 	) {
-		return types.NamespacedName{}, 0, "", fmt.Sprintf("no ReferenceGrant in namespace %s permits Service %s", backend.Namespace, backend.Name)
+		return types.NamespacedName{}, 0, "", fmt.Sprintf("no ReferenceGrant in namespace %s permits Service %s", backend.Namespace, backend.Name), true
 	}
 
 	protocol := "http1"
@@ -417,7 +458,7 @@ func directBackend(route *v1.HTTPRoute, rule v1.HTTPRouteRule, in directInputs) 
 			}
 		}
 	}
-	return backend, int32(*ref.Port), protocol, ""
+	return backend, int32(*ref.Port), protocol, "", false
 }
 
 // directServiceName - the generated Service of a rule: the Gateway's name and
@@ -446,6 +487,22 @@ func directService(gw *v1.Gateway, rule directRule, lbClass, provider string) *c
 	if rule.exact {
 		match = "exact"
 	}
+	annotations := map[string]string{
+		lbModeAnnotation:                      lbModeFullProxy,
+		gatewayRouteHostAnnotation:            rule.host,
+		gatewayRoutePathAnnotation:            rule.path,
+		gatewayRoutePathMatchAnnotation:       match,
+		gatewayRouteBackendProtocolAnnotation: rule.backendProtocol,
+		"gateway-api-controller":              provider,
+		"parent-gateway":                      gw.Name,
+		"parent-http-route":                   rule.route.String(),
+	}
+	if rule.invalidBackend != "" {
+		annotations[gatewayRouteInvalidBackendAnnotation] = rule.invalidBackend
+	} else {
+		annotations[gatewayRouteBackendAnnotation] = rule.backend.String()
+		annotations[gatewayRouteBackendPortAnnotation] = strconv.Itoa(int(rule.backendPort))
+	}
 	allocateNodePorts := false
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -455,18 +512,7 @@ func directService(gw *v1.Gateway, rule directRule, lbClass, provider string) *c
 				gatewayRouteLabel: "true",
 				"implementation":  implementation,
 			},
-			Annotations: map[string]string{
-				lbModeAnnotation:                      lbModeFullProxy,
-				gatewayRouteHostAnnotation:            rule.host,
-				gatewayRoutePathAnnotation:            rule.path,
-				gatewayRoutePathMatchAnnotation:       match,
-				gatewayRouteBackendProtocolAnnotation: rule.backendProtocol,
-				gatewayRouteBackendAnnotation:         rule.backend.String(),
-				gatewayRouteBackendPortAnnotation:     strconv.Itoa(int(rule.backendPort)),
-				"gateway-api-controller":              provider,
-				"parent-gateway":                      gw.Name,
-				"parent-http-route":                   rule.route.String(),
-			},
+			Annotations: annotations,
 			// The load-balancer manager trusts the rule because the Gateway
 			// controls the Service.
 			OwnerReferences: gatewayControllerRef(gw),
@@ -551,7 +597,10 @@ func (gm *GatewayManager) applyDirectRoutes(ctx context.Context, gw *v1.Gateway,
 	if err != nil {
 		return nil, nil, err
 	}
-	in := directInputs{routes: routes, nsLabels: gm.namespaceLabels(), grants: gm.referenceGrants, services: gm.serviceLister}
+	in := directInputs{
+		routes: routes, nsLabels: gm.namespaceLabels(), grants: gm.referenceGrants, services: gm.serviceLister,
+		withoutEndpoints: gm.rulesWithoutEndpoints != nil && gm.rulesWithoutEndpoints(),
+	}
 
 	var errs []error
 	services := gm.kubeClient.CoreV1().Services(gw.Namespace)
