@@ -86,18 +86,6 @@ spec:
   ports:
     - {name: http, port: 80, targetPort: 8000}
 ---
-# web-a again, on a port that is its target port: loxilb-ingress sends to the
-# port the Ingress names, not to its target port.
-apiVersion: v1
-kind: Service
-metadata:
-  name: web-a-tls
-  namespace: web
-spec:
-  selector: {app: web-a}
-  ports:
-    - {name: http, port: 8000, targetPort: 8000}
----
 # No selector: its EndpointSlice is written by hand (validation-direct.sh), as
 # Knative writes those of its public Services.
 apiVersion: v1
@@ -168,4 +156,4 @@ spec:
   parentRefs: [{name: direct-gw, sectionName: https}]
   hostnames: [secure.example.com]
   rules:
-    - backendRefs: [{name: web-a-tls, port: 8000}]
+    - backendRefs: [{name: web-a, port: 80}]

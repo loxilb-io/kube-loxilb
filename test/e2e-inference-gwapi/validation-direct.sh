@@ -232,11 +232,84 @@ else
 fi
 tls_body() { curl -sk --max-time 5 --resolve "secure.example.com:$TLS_PORT:$VIP" "https://secure.example.com:$TLS_PORT/"; }
 tls_served() { tls_body | grep -q '^web-a-'; }
+tls_at() { curl -sk --max-time 5 --resolve "secure.example.com:$TLS_PORT:$VIP" "https://secure.example.com:$TLS_PORT$1"; }
+tls_code() { curl -sk -o /dev/null --max-time 5 -w '%{http_code}' --resolve "secure.example.com:$TLS_PORT:$VIP" "https://secure.example.com:$TLS_PORT$1"; }
+# The loxilb-ingress pods that report which Ingresses they have installed.
+reporting_pods() {
+  kubectl -n kube-system get pods -l app=loxilb-ingress,loxilb.io/programmed-report=v1 -o json |
+    jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name] | join(" ")'
+}
+ingress_marked() { # <route> - each pod that reports has its Ingress's generation
+  local ing p
+  ing=$(kubectl -n web get ingress -o json | jq -c --arg r "$1" '[.items[] | select(.metadata.annotations["parent-http-route"]==$r)][0]')
+  for p in $(reporting_pods); do
+    jq -e --arg k "loxilb.io/programmed.$p" '.metadata.annotations[$k] == (.metadata.generation | tostring)' <<<"$ing" >/dev/null || return 1
+  done
+}
 if poll 90 tls_served; then
   ok "secure.example.com over HTTPS: through the ingress Service and loxilb-ingress, to web-a"
 else
   bad "secure.example.com over HTTPS: through the ingress Service and loxilb-ingress, to web-a" "'$(tls_body)'"
 fi
+
+echo "=== D4b. a rule whose backend has no endpoints ==="
+# loxilb-ingress installs the paths of an Ingress whose backends it can
+# resolve, and leaves out the rest (loxilb-ingress #22): the HTTPS route's
+# rule to web-a still answers beside one to web-down, which has no endpoints.
+# A request for that rule should get a 5xx - Gateway API asks for 503 - but
+# with no rule of its own, the shorter path takes it. So it does for a
+# direct route on the HTTP listener: kube-loxilb does not send a rule with
+# no endpoints, which the gateway refuses (400, endpoints-range error).
+gen_count_is() { [[ "$(gen | jq '.items | length')" == "$1" ]]; }
+GEN_BEFORE=$(gen | jq '.items | length')
+kubectl apply -f - >/dev/null <<'EOF'
+apiVersion: v1
+kind: Service
+metadata: {name: web-down, namespace: web}
+spec:
+  selector: {app: nobody}
+  ports: [{name: http, port: 80, targetPort: 8000}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: down, namespace: web}
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: [shop.example.com]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /down}}]
+      backendRefs: [{name: web-down, port: 80}]
+EOF
+kubectl -n web patch httproute secure --type=json -p '[{"op":"add","path":"/spec/rules/0","value":
+  {"matches":[{"path":{"type":"PathPrefix","value":"/down"}}],"backendRefs":[{"name":"web-down","port":80}]}}]' >/dev/null
+secure_has_down() {
+  kubectl -n web get ingress -o json |
+    jq -e '.items[] | select(.metadata.annotations["parent-http-route"]=="secure") | select(any(.spec.rules[].http.paths[]; .path=="/down"))'
+}
+poll 30 secure_has_down
+if [[ -n "$(reporting_pods)" ]]; then poll 30 ingress_marked secure; else sleep 10; fi
+case "$(tls_at /)" in
+  web-a-*) ok "secure.example.com/ is answered beside a rule whose backend has no endpoints";;
+  *) bad "secure.example.com/ is answered beside a rule whose backend has no endpoints" "'$(tls_at /)'";;
+esac
+down_answer() { # <what answered> <code> <body> <why the shorter path took it>
+  case "$2" in
+    5??) ok "$1: a request for the rule with no endpoints gets $2";;
+    *) note "$1: a request for the rule with no endpoints gets $2 from ${3:-nothing}: $4";;
+  esac
+}
+down_answer "through loxilb-ingress" "$(tls_code /down)" "$(tls_at /down | cut -d- -f1,2)" \
+  "loxilb-ingress leaves its path out, and the shorter path takes it"
+# Its rule Service comes, and is not installed.
+poll 30 gen_count_is $((GEN_BEFORE + 1))
+sleep 3
+down_answer "directly" "$(code shop.example.com /down)" "$(body shop.example.com /down | cut -d- -f1,2)" \
+  "the gateway takes no rule without endpoints, and the shorter path takes it"
+kubectl -n web delete httproute down >/dev/null
+kubectl -n web patch httproute secure --type=json -p '[{"op":"remove","path":"/spec/rules/0"}]' >/dev/null
+kubectl -n web delete svc web-down >/dev/null
+poll 60 gen_count_is "$GEN_BEFORE"
+check "the rule Services are as they were" "$(gen | jq '.items | length')" "$GEN_BEFORE"
 
 echo "=== D5. requests ==="
 poll 30 served_by shop.example.com /api/x web-a
@@ -388,8 +461,7 @@ echo "=== D11. the HTTP port goes back to the ingress Service, and comes again =
 # held back until each loxilb-ingress pod that reports has installed the
 # port's Ingresses, and the rules go once both gateways have the L4 rule. A
 # host's requests, sent all the while, each on a new connection, are each
-# answered. Its route goes to web-a-tls, whose port is its target port, as
-# loxilb-ingress needs (D4).
+# answered.
 kubectl apply -f - >/dev/null <<'EOF'
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -398,7 +470,7 @@ spec:
   parentRefs: [{name: direct-gw, sectionName: http}]
   hostnames: [back.example.com]
   rules:
-    - backendRefs: [{name: web-a-tls, port: 8000}]
+    - backendRefs: [{name: web-a, port: 80}]
 EOF
 if poll 60 served_by back.example.com / web-a; then
   ok "back.example.com is served directly"
@@ -492,6 +564,42 @@ else
 fi
 check "the port did not leave with its L4 rule still on" "$(count_of "$D11_FROM" "$DROPPED")" 0
 case "$(body shop.example.com /api/x)" in web-a-*) ok "shop.example.com/api is served directly again";; *) bad "shop.example.com/api is served directly again" "$(ask shop.example.com /api/x)";; esac
+
+echo "=== D12. loxilb-ingress restarts ==="
+# A loxilb-ingress pod is ready once loxilb answers and the Ingresses there
+# were when it started have been handled once (its readinessProbe,
+# loxilb-ingress #22), and the ingress Service's endpoints name it from then.
+# With one pod, as here, nothing answers while it restarts; from when the
+# new pod is ready, each request on a new connection is answered.
+PROBE="$WORK/d12-requests"
+rm -f "$PROBE" "$PROBE.stop"
+(while [[ ! -e "$PROBE.stop" ]]; do
+  printf '%s %s\n' "$(date +%s.%N | cut -c1-14)" "$(curl -sk --max-time 2 --resolve "secure.example.com:$TLS_PORT:$VIP" "https://secure.example.com:$TLS_PORT/" | head -c 6)"
+  sleep 0.05
+done >"$PROBE") &
+PROBER=$!
+sleep 2
+RESTART=$(date +%s)
+kubectl -n kube-system rollout restart ds/loxilb-ingress >/dev/null
+kubectl -n kube-system rollout status ds/loxilb-ingress --timeout=180s >/dev/null ||
+  bad "loxilb-ingress restarted" "rollout did not finish"
+poll 60 slice_names_ingress_pods
+poll 30 tls_served
+sleep 3
+touch "$PROBE.stop"
+wait "$PROBER"
+NEW_POD=$(kubectl -n kube-system get pods -l app=loxilb-ingress -o json |
+  jq -c '[.items[] | select(.metadata.deletionTimestamp == null)][0]')
+READY=$(date -d "$(jq -r '.status.conditions[] | select(.type=="Ready") | .lastTransitionTime' <<<"$NEW_POD")" +%s)
+MISSED=$(awk '$2 != "web-a-"' "$PROBE" | wc -l)
+# Ready is to the second, and the endpoints follow it within one.
+LATE=$(awk -v r="$READY" '$2 != "web-a-" && $1 > r + 2' "$PROBE" | wc -l)
+if [[ "$(kubectl -n kube-system get ds loxilb-ingress -o json | jq '.spec.template.spec.containers[0].readinessProbe != null')" == true ]]; then
+  check "no request sent after the new loxilb-ingress pod was ready went unanswered" "$LATE" 0
+else
+  note "loxilb-ingress has no readinessProbe: $LATE requests sent after its new pod was ready went unanswered"
+fi
+note "$MISSED of $(wc -l <"$PROBE") requests went unanswered while the one loxilb-ingress pod restarted; it was ready $((READY - RESTART))s after the restart"
 
 echo
 if [[ $fails -eq 0 ]]; then
