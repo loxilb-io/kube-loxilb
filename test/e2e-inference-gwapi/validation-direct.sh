@@ -848,6 +848,76 @@ poll 30 no_other_ingress
 no_other_ingress && ok "and the route's Ingress in web goes" || bad "and the route's Ingress in web goes" "$(other_ingress | jq -r .metadata.name)"
 kubectl delete namespace web-other --wait=false >/dev/null
 
+echo "=== D15. a wildcard hostname on a direct route ==="
+# Gateway API matches *.wild.example.com by suffix, one label or more, after
+# an exact host and before a rule without one. kube-loxilb sends a wildcard
+# host as a direct rule where every gateway lists wildcard_host; elsewhere
+# it leaves it out and says so in the route's status.
+WILD_TAKES=yes
+for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
+  [[ ",$(features_of "$gw")," == *",wildcard_host,"* ]] || WILD_TAKES=no
+done
+GEN_BEFORE=$(gen | jq '.items | length')
+kubectl apply -f - >/dev/null <<'YAML'
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: wild, namespace: web}
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: ["*.wild.example.com"]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /}}]
+      backendRefs: [{name: web-a, port: 80}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: wild-exact, namespace: web}
+spec:
+  parentRefs: [{name: direct-gw, sectionName: http}]
+  hostnames: [x.wild.example.com]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /api}}]
+      backendRefs: [{name: web-b, port: 80}]
+YAML
+if [[ $WILD_TAKES == yes ]]; then
+  ok "both gateways route by a wildcard host"
+  wild_rules_on() { direct_rules "$1" | jq -r '[.[] | .serviceArguments.host | select(. == "*.wild.example.com")] | length'; }
+  wild_on_both() { [[ "$(wild_rules_on "$IGW1_ADDR")" == 1 && "$(wild_rules_on "$IGW2_ADDR")" == 1 ]]; }
+  poll 60 wild_on_both
+  for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
+    check "on $gw, the rule for *.wild.example.com" "$(wild_rules_on "$gw")" 1
+  done
+  wild_served() { served_by a.wild.example.com / web-a; }
+  poll 30 wild_served
+  served_by a.wild.example.com / web-a && ok "a.wild.example.com: the wildcard's rule" ||
+    bad "a.wild.example.com: the wildcard's rule" "$(ask a.wild.example.com /)"
+  served_by a.b.wild.example.com / web-a && ok "a.b.wild.example.com, two labels: the wildcard's rule" ||
+    bad "a.b.wild.example.com, two labels: the wildcard's rule" "$(ask a.b.wild.example.com /)"
+  served_by x.wild.example.com /api/1 web-b && ok "x.wild.example.com/api: the exact host's rule first" ||
+    bad "x.wild.example.com/api: the exact host's rule first" "$(ask x.wild.example.com /api/1)"
+  served_by x.wild.example.com /other web-a && ok "x.wild.example.com/other: no exact rule for the path, the wildcard's" ||
+    bad "x.wild.example.com/other: no exact rule for the path, the wildcard's" "$(ask x.wild.example.com /other)"
+  check "wild.example.com itself is not the wildcard's" "$(code wild.example.com /)" 503
+  wild_accepted() { local a; a=$(route_cond wild Accepted); [[ "$a" == True/Accepted/* && "$a" != *"is a wildcard"* ]]; }
+  poll 30 wild_accepted
+  wild_accepted && ok "the route is accepted, the wildcard served" ||
+    bad "the route is accepted, the wildcard served" "$(route_cond wild Accepted)"
+else
+  poll 30 gen_count_is $((GEN_BEFORE + 1))
+  check "a rule Service for the exact route only" "$(gen | jq '.items | length')" $((GEN_BEFORE + 1))
+  # Its only listener on the port serves nothing of it: not accepted there.
+  wild_left_out() { [[ "$(route_cond wild Accepted)" == False/*"is a wildcard, which is not served directly yet"* ]]; }
+  poll 30 wild_left_out
+  wild_left_out && ok "the route says its wildcard is not served directly" ||
+    bad "the route says its wildcard is not served directly" "$(route_cond wild Accepted)"
+  note "a.wild.example.com gets $(code a.wild.example.com /): the gateways do not list wildcard_host, so the wildcard's rule is not sent"
+fi
+check "the HTTP port stays with the direct routes" \
+  "$(kubectl -n web get svc direct-gw-ingress-service -o json | jq -r '[.spec.ports[]?.port] | join(",")')" "$TLS_PORT"
+kubectl -n web delete httproute wild wild-exact >/dev/null
+poll 60 gen_count_is "$GEN_BEFORE"
+check "the rule Services are as they were" "$(gen | jq '.items | length')" "$GEN_BEFORE"
+
 echo
 if [[ $fails -eq 0 ]]; then
   echo "SCENARIO-e2e-direct [OK]"
