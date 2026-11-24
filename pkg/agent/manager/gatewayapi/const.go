@@ -27,3 +27,9 @@ const (
 	implementation = "kube-loxilb"
 	finalizer      = "loxilb.io"
 )
+
+// routeNamespaceAnnotation - the namespace of the HTTPRoute an Ingress was
+// made for. An HTTPS listener's Ingress is in its Gateway's namespace when the
+// route is not (ingressPlacement); one without the annotation is the route's
+// when it is in the route's namespace.
+const routeNamespaceAnnotation = "parent-http-route-namespace"

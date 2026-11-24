@@ -92,8 +92,9 @@ func listenerConflicts(gw *v1.Gateway) map[v1.SectionName]listenerConflict {
 // names that it cannot take, and the certificates of an HTTPS listener.
 //
 // The certificate is read by loxilb-ingress from the Ingress's namespace,
-// which is the route's, so a certificateRef into another namespace cannot
-// be served. That a Secret exists is not checked here.
+// which is the Gateway's for an HTTPS listener (ingressPlacement), so a
+// certificateRef into another namespace cannot be served. That a Secret
+// exists is not checked here.
 func listenerRefsResolved(gw *v1.Gateway, l *v1.Listener) (bool, v1.ListenerConditionReason, string) {
 	if _, invalid := listenerRouteKinds(l); len(invalid) > 0 {
 		kinds := make([]string, 0, len(invalid))

@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -555,13 +556,41 @@ func (h *HTTPRouteManager) syncHTTPRoute(httpRoute *v1.HTTPRoute) error {
 }
 
 // applyIngresses - create and update the desired Ingresses, then delete the
-// route's others.
+// route's others. existing and the keys below are namespace/name.
+//
+// An Ingress that moves to another namespace - an HTTPS listener's, when the
+// route and its Gateway come to be in different namespaces or in the same -
+// is deleted before its replacement is made. loxilb-ingress takes a deleted
+// Ingress's hosts' certificates with it, even those another Ingress still
+// has: a replacement installed first would be left without its certificate
+// until loxilb-ingress handled it again, up to 30 seconds later. Deleted
+// first, the replacement registers it again as it is installed.
 func (h *HTTPRouteManager) applyIngresses(ctx context.Context, httpRoute *v1.HTTPRoute, desired []*netv1.Ingress, existing map[string]*netv1.Ingress) []error {
 	var errs []error
 	keep := map[string]bool{}
 	for _, ing := range desired {
-		keep[ing.Name] = true
-		if err := h.applyIngress(ctx, ing, existing[ing.Name]); err != nil {
+		keep[GenKey(ing.Namespace, ing.Name)] = true
+	}
+
+	deleteIngress := func(ing *netv1.Ingress, why string) bool {
+		err := h.kubeClient.NetworkingV1().Ingresses(ing.Namespace).Delete(ctx, ing.Name, metav1.DeleteOptions{})
+		if err != nil && !errors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("HTTPRoute %s/%s: delete ingress %s/%s: %w", httpRoute.Namespace, httpRoute.Name, ing.Namespace, ing.Name, err))
+			return false
+		}
+		klog.Infof("ingress %s/%s is deleted by HTTPRoute %s/%s - %s", ing.Namespace, ing.Name, httpRoute.Namespace, httpRoute.Name, why)
+		return true
+	}
+
+	gone := map[string]bool{}
+	for key, ing := range existing {
+		if !keep[key] && movedElsewhere(ing, desired) && deleteIngress(ing, "its listener's Ingress is in another namespace now") {
+			gone[key] = true
+		}
+	}
+
+	for _, ing := range desired {
+		if err := h.applyIngress(ctx, httpRoute, ing, existing[GenKey(ing.Namespace, ing.Name)]); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -571,17 +600,29 @@ func (h *HTTPRouteManager) applyIngresses(ctx context.Context, httpRoute *v1.HTT
 		return errs
 	}
 
-	for name := range existing {
-		if keep[name] {
+	for key, ing := range existing {
+		if keep[key] || gone[key] {
 			continue
 		}
-		if err := h.kubeClient.NetworkingV1().Ingresses(httpRoute.Namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
-			errs = append(errs, fmt.Errorf("HTTPRoute %s/%s: delete ingress %s: %w", httpRoute.Namespace, httpRoute.Name, name, err))
-			continue
-		}
-		klog.Infof("ingress %s/%s is deleted by HTTPRoute %s - no listener it attaches to needs it", httpRoute.Namespace, name, httpRoute.Name)
+		deleteIngress(ing, "no listener it attaches to needs it")
 	}
 	return errs
+}
+
+// movedElsewhere - whether a desired Ingress is for the same Gateway listener
+// as ing, in another namespace.
+func movedElsewhere(ing *netv1.Ingress, desired []*netv1.Ingress) bool {
+	listener, gw, gwNamespace := ing.Annotations["parent-listener"], ing.Annotations["parent-gateway"], ing.Annotations["parent-gateway-namespace"]
+	if listener == "" || gw == "" || gwNamespace == "" {
+		return false
+	}
+	for _, d := range desired {
+		if d.Namespace != ing.Namespace && d.Annotations["parent-listener"] == listener &&
+			d.Annotations["parent-gateway"] == gw && d.Annotations["parent-gateway-namespace"] == gwNamespace {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *HTTPRouteManager) deleteHTTPRoute(namespace, name string) error {
@@ -603,34 +644,61 @@ func (h *HTTPRouteManager) deleteRouteIngresses(ctx context.Context, namespace, 
 		return err
 	}
 
-	for ingName := range owned {
-		err = h.kubeClient.NetworkingV1().Ingresses(namespace).Delete(ctx, ingName, metav1.DeleteOptions{})
+	for _, ing := range owned {
+		err = h.kubeClient.NetworkingV1().Ingresses(ing.Namespace).Delete(ctx, ing.Name, metav1.DeleteOptions{})
 		if err != nil && !errors.IsNotFound(err) {
-			klog.Errorf("HTTPRoute: delete ingress %s/%s failure. err: %v", namespace, ingName, err)
+			klog.Errorf("HTTPRoute: delete ingress %s/%s failure. err: %v", ing.Namespace, ing.Name, err)
 			return err
 		}
-		klog.Infof("ingress %s/%s is deleted by HTTPRoute %s", namespace, ingName, name)
+		klog.Infof("ingress %s/%s is deleted by HTTPRoute %s/%s", ing.Namespace, ing.Name, namespace, name)
 	}
 
 	return nil
 }
 
-// ownedIngresses - the Ingresses this manager made for the route, by name.
+// ownedIngresses - the Ingresses this manager made for the route, by
+// namespace/name.
+//
+// They are in the route's namespace, and in a Gateway's for an HTTPS listener
+// when the route is elsewhere (ingressPlacement). The route's namespace is in
+// an annotation; an Ingress without it is the route's when it is in the
+// route's namespace, as every Ingress was before. The route's namespace is
+// read whole, for an Ingress made before this manager labeled them; the
+// others are found by the label.
 func (h *HTTPRouteManager) ownedIngresses(ctx context.Context, namespace, name string) (map[string]*netv1.Ingress, error) {
+	owned := map[string]*netv1.Ingress{}
+	add := func(items []netv1.Ingress) {
+		for i := range items {
+			ingress := &items[i]
+			if ingress.Annotations["gateway-api-controller"] != h.gatewayProvider ||
+				ingress.Annotations["parent-http-route"] != name {
+				continue
+			}
+			routeNamespace, ok := ingress.Annotations[routeNamespaceAnnotation]
+			if !ok {
+				routeNamespace = ingress.Namespace
+			}
+			if routeNamespace == namespace {
+				owned[GenKey(ingress.Namespace, ingress.Name)] = ingress
+			}
+		}
+	}
+
 	ingList, err := h.kubeClient.NetworkingV1().Ingresses(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		klog.Errorf("HTTPRoute: get ingresses list (ns: %s) failure. err: %v", namespace, err)
 		return nil, err
 	}
+	add(ingList.Items)
 
-	owned := map[string]*netv1.Ingress{}
-	for i := range ingList.Items {
-		ingress := &ingList.Items[i]
-		if ingress.Annotations["gateway-api-controller"] == h.gatewayProvider &&
-			ingress.Annotations["parent-http-route"] == name {
-			owned[ingress.Name] = ingress
-		}
+	labeled, err := h.kubeClient.NetworkingV1().Ingresses(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		LabelSelector: labels.SelectorFromSet(labels.Set{"implementation": implementation}).String(),
+	})
+	if err != nil {
+		klog.Errorf("HTTPRoute: get ingresses list (labeled implementation=%s) failure. err: %v", implementation, err)
+		return nil, err
 	}
+	add(labeled.Items)
 	return owned, nil
 }
 
@@ -736,17 +804,20 @@ func (h *HTTPRouteManager) routeIngresses(httpRoute *v1.HTTPRoute) ([]*netv1.Ing
 				}
 				continue
 			}
-			ing, unserved := h.listenerIngress(httpRoute, gateway, la)
+			ing, unserved, notes := h.listenerIngress(httpRoute, gateway, la)
 			if unserved != "" {
 				klog.Warningf("HTTPRoute %s/%s: gateway %s/%s %s",
 					httpRoute.Namespace, httpRoute.Name, gateway.Namespace, gateway.Name, unserved)
 				parent.Unserved = append(parent.Unserved, unserved)
 			}
+			if len(notes) > 0 {
+				parent.Notes = append(parent.Notes, fmt.Sprintf("listener %s: %s", la.Listener.Name, strings.Join(notes, "; ")))
+			}
 			// Two parentRefs can select the same listener.
-			if ing == nil || seen[ing.Name] {
+			if ing == nil || seen[GenKey(ing.Namespace, ing.Name)] {
 				continue
 			}
-			seen[ing.Name] = true
+			seen[GenKey(ing.Namespace, ing.Name)] = true
 			ingresses = append(ingresses, ing)
 		}
 		parents = append(parents, parent)
@@ -777,7 +848,7 @@ func (h *HTTPRouteManager) IngressesOn(gw *v1.Gateway, port v1.PortNumber) ([]*n
 				if la.Listener.Port != port {
 					continue
 				}
-				ing, _ := h.listenerIngress(httpRoute, gw, la)
+				ing, _, _ := h.listenerIngress(httpRoute, gw, la)
 				if ing == nil || seen[GenKey(ing.Namespace, ing.Name)] {
 					continue
 				}
@@ -803,6 +874,69 @@ func listenerIngressName(route, gwNamespace, gwName string, listener v1.SectionN
 	return base + "-" + suffix
 }
 
+// crossNamespaceIngressName - the name of the Ingress a route has for an
+// HTTPS listener of a Gateway in another namespace, where the Ingress is.
+// Routes of the same name from several namespaces meet there, so the route's
+// namespace goes into the name and the hash too.
+func crossNamespaceIngressName(routeNamespace, route, gwNamespace, gwName string, listener v1.SectionName) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{routeNamespace, route, gwNamespace, gwName, string(listener)}, "/")))
+	suffix := hex.EncodeToString(sum[:4])
+
+	base := routeNamespace + "-" + route
+	if max := validation.DNS1123SubdomainMaxLength - len(suffix) - 1; len(base) > max {
+		base = strings.TrimRight(base[:max], "-.")
+	}
+	return base + "-" + suffix
+}
+
+// ingressPlacement - the namespace and name of the Ingress a route has for a
+// listener.
+//
+// loxilb-ingress reads an Ingress's TLS Secrets from the Ingress's own
+// namespace, and a listener's certificates are in its Gateway's. So the
+// Ingress for an HTTPS listener is in the Gateway's namespace when the route
+// is not. Any other is in the route's, under the name it always had: an
+// Ingress whose name or namespace changes is deleted and made again, which
+// loxilb-ingress does not take without a gap.
+func ingressPlacement(httpRoute *v1.HTTPRoute, gateway *v1.Gateway, listener *v1.Listener) (namespace, name string) {
+	if listener.Protocol == v1.HTTPSProtocolType && httpRoute.Namespace != gateway.Namespace {
+		return gateway.Namespace, crossNamespaceIngressName(httpRoute.Namespace, httpRoute.Name, gateway.Namespace, gateway.Name, listener.Name)
+	}
+	return httpRoute.Namespace, listenerIngressName(httpRoute.Name, gateway.Namespace, gateway.Name, listener.Name)
+}
+
+// routeIngressAnnotations - the route's annotations its Ingress in namespace
+// carries, and the keys of those it does not.
+//
+// external-backend-service and service-<name>-namespace tell loxilb-ingress
+// which namespace a backend is in. They are this manager's to write, from the
+// backendRefs a ReferenceGrant permits; a route's own would reach past the
+// grants, and are never carried.
+//
+// loxilb-ingress looks up what an annotation names in the Ingress's
+// namespace: the Secrets of loxilb.io/mtls-*, the Service of
+// loxilb.io/direct-loadbalance-*. On an Ingress in another namespace than the
+// route's - its Gateway's - they would name what is there, the Gateway's
+// Secrets among them, so they are not carried.
+func routeIngressAnnotations(route map[string]string, routeNamespace, namespace string) (map[string]string, []string) {
+	carried := make(map[string]string, len(route))
+	var left []string
+	for key, value := range route {
+		switch {
+		case key == "external-backend-service",
+			strings.HasPrefix(key, "service-") && strings.HasSuffix(key, "-namespace"):
+			left = append(left, key)
+		case namespace != routeNamespace &&
+			(strings.HasPrefix(key, "loxilb.io/mtls-") || strings.HasPrefix(key, "loxilb.io/direct-loadbalance-")):
+			left = append(left, key)
+		default:
+			carried[key] = value
+		}
+	}
+	slices.Sort(left)
+	return carried, left
+}
+
 // listenerCertificateSecrets - the names of the Secrets a listener terminates
 // TLS with. A certificateRef of another kind is skipped.
 func listenerCertificateSecrets(l *v1.Listener) []string {
@@ -825,20 +959,21 @@ func listenerCertificateSecrets(l *v1.Listener) []string {
 
 // listenerIngress - the Ingress that serves a route on one listener it
 // attaches to, or nil when there is none to make. unserved says why, when
-// the listener cannot serve the route at all.
+// the listener cannot serve the route at all, and notes what the Ingress
+// leaves out of it.
 //
 // loxilb-ingress serves every loxilb Ingress on its HTTP port, or on its HTTPS
 // port for a host the Ingress has TLS for, whichever listener it came from.
 // So an HTTPS listener is served only for hosts with a certificate: one that
 // has no hostname, or no Secret, gets no Ingress rather than one that would
 // answer in plain HTTP.
-func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.Gateway, la listenerAttachment) (ing *netv1.Ingress, unserved string) {
+func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.Gateway, la listenerAttachment) (ing *netv1.Ingress, unserved string, notes []string) {
 	listener := la.Listener
 	hosts, ok := servedHostnames(gateway, listener, la.Hostnames)
 	if !ok {
 		klog.V(2).Infof("HTTPRoute %s/%s: every hostname it has on listener %s of gateway %s/%s goes to a more specific listener",
 			httpRoute.Namespace, httpRoute.Name, listener.Name, gateway.Namespace, gateway.Name)
-		return nil, ""
+		return nil, "", nil
 	}
 
 	// An IngressRule without a host serves any.
@@ -854,11 +989,11 @@ func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.
 	if listener.Protocol == v1.HTTPSProtocolType {
 		if hosts == nil {
 			return nil, fmt.Sprintf("listener %s does not serve the route: neither it nor the route names a hostname, "+
-				"and loxilb-ingress terminates TLS only for a named host", listener.Name)
+				"and loxilb-ingress terminates TLS only for a named host", listener.Name), nil
 		}
 		secrets := listenerCertificateSecrets(listener)
 		if len(secrets) == 0 {
-			return nil, fmt.Sprintf("listener %s does not serve the route: it has no Secret to terminate TLS with", listener.Name)
+			return nil, fmt.Sprintf("listener %s does not serve the route: it has no Secret to terminate TLS with", listener.Name), nil
 		}
 		for _, secret := range secrets {
 			tls = append(tls, netv1.IngressTLS{SecretName: secret, Hosts: hostnames})
@@ -866,20 +1001,21 @@ func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.
 	}
 
 	newIngress := &netv1.Ingress{}
-	newIngress.Name = listenerIngressName(httpRoute.Name, gateway.Namespace, gateway.Name, listener.Name)
-	newIngress.Namespace = httpRoute.Namespace
+	newIngress.Namespace, newIngress.Name = ingressPlacement(httpRoute, gateway, listener)
 
 	// A copy: the route is the informer's, and the annotations below are not
 	// its to carry.
-	newIngress.Annotations = maps.Clone(httpRoute.Annotations)
-	if newIngress.Annotations == nil {
-		newIngress.Annotations = map[string]string{}
+	carried, left := routeIngressAnnotations(httpRoute.Annotations, httpRoute.Namespace, newIngress.Namespace)
+	if len(left) > 0 {
+		notes = append(notes, fmt.Sprintf("annotations %s are not carried to its Ingress %s/%s", strings.Join(left, ", "), newIngress.Namespace, newIngress.Name))
 	}
+	newIngress.Annotations = carried
 	newIngress.Annotations["gateway-api-controller"] = h.gatewayProvider
 	newIngress.Annotations["parent-gateway"] = gateway.Name
 	newIngress.Annotations["parent-gateway-namespace"] = gateway.Namespace
 	newIngress.Annotations["parent-listener"] = string(listener.Name)
 	newIngress.Annotations["parent-http-route"] = httpRoute.Name
+	newIngress.Annotations[routeNamespaceAnnotation] = httpRoute.Namespace
 
 	newIngress.SetLabels(map[string]string{
 		"implementation": implementation,
@@ -889,8 +1025,14 @@ func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.
 	newIngress.Spec.TLS = tls
 
 	anyPath := false
+	backendNamespaces := map[string]string{}
 	for _, rule := range httpRoute.Spec.Rules {
-		paths := h.rulePaths(httpRoute, rule, newIngress)
+		paths, left := h.rulePaths(httpRoute, rule, newIngress, backendNamespaces)
+		for _, note := range left {
+			if !slices.Contains(notes, note) {
+				notes = append(notes, note)
+			}
+		}
 
 		// A rule whose backends are all served elsewhere adds nothing; an
 		// IngressRule without paths would make the whole Ingress invalid.
@@ -917,18 +1059,24 @@ func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.
 		// Service of its own manager's - and an Ingress with no rules is
 		// refused by the API server anyway.
 		klog.V(4).Infof("HTTPRoute %s/%s: no backendRef needs an Ingress", httpRoute.Namespace, httpRoute.Name)
-		return nil, ""
+		return nil, "", notes
 	}
 
-	return newIngress, ""
+	return newIngress, "", notes
 }
 
 // rulePaths - the Ingress paths of one route rule, one for each match and
-// backend an Ingress can carry. A backend in another namespace is left out
-// unless a ReferenceGrant there permits it, and noted on ing, where
-// loxilb-ingress looks for it, when one does.
-func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteRule, ing *netv1.Ingress) []netv1.HTTPIngressPath {
+// backend an Ingress can carry, and what it leaves out.
+//
+// A backend in another namespace than the route's is left out unless a
+// ReferenceGrant there permits it. One in another namespace than ing's is
+// noted on ing, where loxilb-ingress looks for it: by the Service's name. So
+// an Ingress cannot have two backends of one name in different namespaces;
+// backendNamespaces holds the namespace each name has on ing so far, and a
+// later one in another namespace is left out.
+func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteRule, ing *netv1.Ingress, backendNamespaces map[string]string) ([]netv1.HTTPIngressPath, []string) {
 	var paths []netv1.HTTPIngressPath
+	var left []string
 	for _, match := range rule.Matches {
 		for _, backref := range rule.BackendRefs {
 			// An Ingress backend is always a Service. A backendRef that
@@ -950,17 +1098,31 @@ func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteR
 				continue
 			}
 
-			if backref.Namespace != nil && string(*backref.Namespace) != httpRoute.Namespace {
-				if !h.referenceGrants.Permits(
-					grantReference{Group: v1.GroupName, Kind: kindHTTPRoute, Namespace: httpRoute.Namespace},
-					grantReference{Group: "", Kind: "Service", Namespace: string(*backref.Namespace), Name: string(backref.Name)},
-				) {
-					klog.Warningf("HTTPRoute %s/%s: no ReferenceGrant in namespace %s permits backendRef %s - skipping",
-						httpRoute.Namespace, httpRoute.Name, *backref.Namespace, backendRefDescription(backref.BackendObjectReference))
-					continue
+			namespace := httpRoute.Namespace
+			if backref.Namespace != nil {
+				namespace = string(*backref.Namespace)
+			}
+			if namespace != httpRoute.Namespace && !h.referenceGrants.Permits(
+				grantReference{Group: v1.GroupName, Kind: kindHTTPRoute, Namespace: httpRoute.Namespace},
+				grantReference{Group: "", Kind: "Service", Namespace: namespace, Name: string(backref.Name)},
+			) {
+				klog.Warningf("HTTPRoute %s/%s: no ReferenceGrant in namespace %s permits backendRef %s - skipping",
+					httpRoute.Namespace, httpRoute.Name, namespace, backendRefDescription(backref.BackendObjectReference))
+				continue
+			}
+			name := string(backref.Name)
+			if had, ok := backendNamespaces[name]; ok && had != namespace {
+				note := fmt.Sprintf("backendRef %s/%s is left out: its Ingress names a backend's namespace by the Service's name, and has %s/%s",
+					namespace, name, had, name)
+				if !slices.Contains(left, note) {
+					left = append(left, note)
 				}
+				continue
+			}
+			backendNamespaces[name] = namespace
+			if namespace != ing.Namespace {
 				ing.Annotations["external-backend-service"] = "true"
-				ing.Annotations["service-"+string(backref.Name)+"-namespace"] = string(*backref.Namespace)
+				ing.Annotations["service-"+name+"-namespace"] = namespace
 			}
 
 			newIngressPath := netv1.HTTPIngressPath{
@@ -997,7 +1159,7 @@ func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteR
 			paths = append(paths, newIngressPath)
 		}
 	}
-	return paths
+	return paths, left
 }
 
 // programmedAnnotationPrefix - the annotations a loxilb-ingress pod notes on
@@ -1030,20 +1192,19 @@ func keepProgrammedMarks(desired, existing map[string]string) map[string]string 
 
 // applyIngress - create the Ingress, or bring the route's existing one of that
 // name to it.
-func (h *HTTPRouteManager) applyIngress(ctx context.Context, desired, existing *netv1.Ingress) error {
+func (h *HTTPRouteManager) applyIngress(ctx context.Context, httpRoute *v1.HTTPRoute, desired, existing *netv1.Ingress) error {
 	ingresses := h.kubeClient.NetworkingV1().Ingresses(desired.Namespace)
-	route := desired.Annotations["parent-http-route"]
 
 	if existing == nil {
 		_, err := ingresses.Create(ctx, desired, metav1.CreateOptions{})
 		if errors.IsAlreadyExists(err) {
-			// Not in the route's own, so made by someone else; it is not
-			// this manager's to overwrite.
-			return fmt.Errorf("HTTPRoute %s/%s: ingress %s exists and was not made for the route: %w",
-				desired.Namespace, route, desired.Name, err)
+			// Not among the route's own, so made by someone else; it is
+			// not this manager's to overwrite.
+			return fmt.Errorf("HTTPRoute %s/%s: ingress %s/%s exists and was not made for the route: %w",
+				httpRoute.Namespace, httpRoute.Name, desired.Namespace, desired.Name, err)
 		}
 		if err != nil {
-			return fmt.Errorf("HTTPRoute %s/%s: create ingress %s: %w", desired.Namespace, route, desired.Name, err)
+			return fmt.Errorf("HTTPRoute %s/%s: create ingress %s/%s: %w", httpRoute.Namespace, httpRoute.Name, desired.Namespace, desired.Name, err)
 		}
 		klog.Infof("ingress %s/%s is created for listener %s of gateway %s/%s", desired.Namespace, desired.Name,
 			desired.Annotations["parent-listener"], desired.Annotations["parent-gateway-namespace"], desired.Annotations["parent-gateway"])
@@ -1074,7 +1235,7 @@ func (h *HTTPRouteManager) applyIngress(ctx context.Context, desired, existing *
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("HTTPRoute %s/%s: update ingress %s: %w", desired.Namespace, route, desired.Name, err)
+		return fmt.Errorf("HTTPRoute %s/%s: update ingress %s/%s: %w", httpRoute.Namespace, httpRoute.Name, desired.Namespace, desired.Name, err)
 	}
 	klog.Infof("ingress %s/%s is updated", desired.Namespace, desired.Name)
 	return nil
