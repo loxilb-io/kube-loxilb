@@ -80,6 +80,11 @@ type DirectPeers func() (ok, known bool, reason string)
 // requires; otherwise it is left out, and its requests go to another rule.
 type RulesWithoutEndpoints func() bool
 
+// WildcardHosts - whether every loxilb peer routes by a direct rule whose host
+// is a wildcard (the load-balancer manager's ServesWildcardHosts). A route
+// hostname such as "*.example.com" is served directly only then.
+type WildcardHosts func() bool
+
 // ReleasePorts - hand the TCP ports of a Gateway's ingress Service its direct
 // routes serve to them, all of them each time: the load-balancer manager takes
 // their rules off every peer. Reports which of them no peer has a rule for.
@@ -183,6 +188,8 @@ type directInputs struct {
 	// withoutEndpoints - the peers take a rule without endpoints
 	// (RulesWithoutEndpoints).
 	withoutEndpoints bool
+	// wildcardHosts - the peers route by a wildcard host (WildcardHosts).
+	wildcardHosts bool
 }
 
 // directRefusals - why parts of routes are not served on a direct port, by
@@ -228,7 +235,8 @@ func normalizePath(p string) string {
 //
 // What a rule cannot hold yet is left out, not served more broadly: a match
 // on headers, query or method, a filter, more than one backend with weight,
-// a regular expression path, a wildcard hostname. Two routes asking for the
+// a regular expression path, and a wildcard hostname unless the peers route
+// by one (in.wildcardHosts). Two routes asking for the
 // same host and path - Exact and Prefix alike, since the gateway keeps one
 // endpoint pool for a pair - go by the spec's precedence: an Exact match,
 // then the oldest route, then namespace and name, then the rule's order.
@@ -262,7 +270,12 @@ func directRules(gw *v1.Gateway, port v1.PortNumber, in directInputs) ([]directR
 				}
 				for _, h := range served {
 					host := strings.ToLower(string(h))
-					if strings.HasPrefix(host, "*.") {
+					// The gateway finds a wildcard host's rule after the exact
+					// host's and before one without a host, the longer suffix
+					// first, as Gateway API matches hostnames. Like a rule
+					// without a host, it takes a request a more specific
+					// listener on the port has no rule for (servedHostnames).
+					if strings.HasPrefix(host, "*.") && !in.wildcardHosts {
 						refusals.add(name, "hostname %s is a wildcard, which is not served directly yet", host)
 						continue
 					}
@@ -600,6 +613,7 @@ func (gm *GatewayManager) applyDirectRoutes(ctx context.Context, gw *v1.Gateway,
 	in := directInputs{
 		routes: routes, nsLabels: gm.namespaceLabels(), grants: gm.referenceGrants, services: gm.serviceLister,
 		withoutEndpoints: gm.rulesWithoutEndpoints != nil && gm.rulesWithoutEndpoints(),
+		wildcardHosts:    gm.wildcardHosts != nil && gm.wildcardHosts(),
 	}
 
 	var errs []error

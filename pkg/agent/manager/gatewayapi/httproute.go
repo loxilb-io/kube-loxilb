@@ -93,6 +93,9 @@ type HTTPRouteManager struct {
 	// rulesWithoutEndpoints - as the Gateway manager's, so that the route's
 	// status says what its direct rules come to.
 	rulesWithoutEndpoints RulesWithoutEndpoints
+	// wildcardHosts - as the Gateway manager's, so that the route's status
+	// says what its direct rules are.
+	wildcardHosts WildcardHosts
 
 	queue workqueue.RateLimitingInterface
 }
@@ -224,6 +227,12 @@ func (h *HTTPRouteManager) ServeRulesWithoutEndpoints(peers RulesWithoutEndpoint
 	h.rulesWithoutEndpoints = peers
 }
 
+// ServeWildcardHosts - as the Gateway manager's: a route's wildcard hostname
+// is served directly where the peers route by one.
+func (h *HTTPRouteManager) ServeWildcardHosts(peers WildcardHosts) {
+	h.wildcardHosts = peers
+}
+
 // EnqueueAll - queue every HTTPRoute; for a change that may move any of
 // them, such as a peer reporting what it is.
 func (h *HTTPRouteManager) EnqueueAll() {
@@ -296,6 +305,7 @@ func (h *HTTPRouteManager) directOutcome(gw *v1.Gateway, port v1.PortNumber, rou
 	rules, refusals := directRules(gw, port, directInputs{
 		routes: routes, nsLabels: h.namespaceLabels(), grants: h.referenceGrants, services: h.serviceLister,
 		withoutEndpoints: h.rulesWithoutEndpoints != nil && h.rulesWithoutEndpoints(),
+		wildcardHosts:    h.wildcardHosts != nil && h.wildcardHosts(),
 	})
 	served := false
 	for _, r := range rules {

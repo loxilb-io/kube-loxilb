@@ -103,6 +103,9 @@ type GatewayManager struct {
 	// rulesWithoutEndpoints - set by ServeRulesWithoutEndpoints; nil leaves
 	// a rule with an invalid backend out.
 	rulesWithoutEndpoints RulesWithoutEndpoints
+	// wildcardHosts - set by ServeWildcardHosts; nil leaves a wildcard
+	// hostname out of the direct rules.
+	wildcardHosts WildcardHosts
 	// ingressLister, ingressesOn, installedPorts, eventRecorder - set by
 	// BringPortsBack: a port on its way back to the ingress service keeps
 	// its direct rules until the Ingress path serves it
@@ -371,6 +374,12 @@ func (gm *GatewayManager) ServeRoutesDirectly(peers DirectPeers, grants *Referen
 // as one without endpoints, answered 500, while peers takes such rules.
 func (gm *GatewayManager) ServeRulesWithoutEndpoints(peers RulesWithoutEndpoints) {
 	gm.rulesWithoutEndpoints = peers
+}
+
+// ServeWildcardHosts - serve a route's wildcard hostname directly where the
+// peers route by one (WildcardHosts).
+func (gm *GatewayManager) ServeWildcardHosts(peers WildcardHosts) {
+	gm.wildcardHosts = peers
 }
 
 // EnqueueAll - queue every Gateway; for a change that may move any of them,
