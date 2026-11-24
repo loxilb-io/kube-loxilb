@@ -481,8 +481,12 @@ func TestHTTPRouteLeavesDirectListenersToTheGateway(t *testing.T) {
 	if err := h.syncHTTPRoute(route); err != nil {
 		t.Fatalf("syncHTTPRoute: %v", err)
 	}
-	// HTTPS stays on the ingress service, and keeps its Ingress.
-	got := ingressesIn(t, h, "apps")
+	// HTTPS stays on the ingress service, and keeps its Ingress: in the
+	// Gateway's namespace, as the route is in another.
+	if got := ingressesIn(t, h, "apps"); len(got) != 0 {
+		t.Errorf("Ingresses in the route's namespace: %v, want none", got)
+	}
+	got := ingressesIn(t, h, "infra")
 	if len(got) != 1 {
 		t.Fatalf("got %d Ingresses, want the HTTPS listener's only", len(got))
 	}

@@ -359,7 +359,7 @@ func TestListenerIngressOnHTTPS(t *testing.T) {
 		gw := webGateway()
 		gw.Spec.Listeners[1].Hostname = nil
 		la := listenerAttachment{Listener: &gw.Spec.Listeners[1]}
-		ing, unserved := servingManager(nil).listenerIngress(route, gw, la)
+		ing, unserved, _ := servingManager(nil).listenerIngress(route, gw, la)
 		if ing != nil {
 			t.Errorf("got an Ingress with rules for hosts %v", ruleHosts(*ing))
 		}
@@ -373,7 +373,7 @@ func TestListenerIngressOnHTTPS(t *testing.T) {
 		configMap := v1.Kind("ConfigMap")
 		gw.Spec.Listeners[1].TLS.CertificateRefs[0].Kind = &configMap
 		la := listenerAttachment{Listener: &gw.Spec.Listeners[1], Hostnames: hostnames("shop.example.com")}
-		ing, unserved := servingManager(nil).listenerIngress(route, gw, la)
+		ing, unserved, _ := servingManager(nil).listenerIngress(route, gw, la)
 		if ing != nil {
 			t.Errorf("got an Ingress with TLS %v", ing.Spec.TLS)
 		}
@@ -385,7 +385,7 @@ func TestListenerIngressOnHTTPS(t *testing.T) {
 	t.Run("HTTP for any host", func(t *testing.T) {
 		gw := webGateway()
 		la := listenerAttachment{Listener: &gw.Spec.Listeners[0]}
-		ing, unserved := servingManager(nil).listenerIngress(route, gw, la)
+		ing, unserved, _ := servingManager(nil).listenerIngress(route, gw, la)
 		if ing == nil || unserved != "" {
 			t.Fatalf("no Ingress for an HTTP listener serving any host (%q)", unserved)
 		}
@@ -398,7 +398,9 @@ func TestListenerIngressOnHTTPS(t *testing.T) {
 // On the Run:ai Gateway, three HTTPS listeners share port 443. An inference
 // route attaches to both wildcard listeners, but its requests reach only the
 // more specific one, so that is the only one with an Ingress - and with it
-// the only certificate loxilb-ingress has for those hosts.
+// the only certificate loxilb-ingress has for those hosts. The route is in
+// another namespace than the Gateway, so the Ingress is in the Gateway's,
+// where its certificate is.
 func TestSyncHTTPRouteFollowsListenerPrecedence(t *testing.T) {
 	gw := runaiGateway()
 	gw.Spec.GatewayClassName = testClass
@@ -416,11 +418,14 @@ func TestSyncHTTPRouteFollowsListenerPrecedence(t *testing.T) {
 	if err := h.syncHTTPRoute(route); err != nil {
 		t.Fatalf("syncHTTPRoute: %v", err)
 	}
-	got := ingressesIn(t, h, "team-a")
+	if got := ingressesIn(t, h, "team-a"); len(got) != 0 {
+		t.Errorf("Ingresses in the route's namespace: %v, want none", got)
+	}
+	got := ingressesIn(t, h, "runai")
 	if len(got) != 1 {
 		t.Fatalf("got %d Ingresses, want only the inference listener's", len(got))
 	}
-	ing, ok := got[listenerIngressName("web", "runai", "gw", "https-inference")]
+	ing, ok := got[crossNamespaceIngressName("team-a", "web", "runai", "gw", "https-inference")]
 	if !ok {
 		t.Fatalf("the Ingress is not the inference listener's: %v", got)
 	}
@@ -464,7 +469,7 @@ func TestListenerIngressLeavesOutInferencePoolRules(t *testing.T) {
 	route.Spec.Hostnames = hostnames("llm.example.com")
 	gw := webGateway()
 
-	ing, _ := servingManager(nil).listenerIngress(route, gw,
+	ing, _, _ := servingManager(nil).listenerIngress(route, gw,
 		listenerAttachment{Listener: &gw.Spec.Listeners[0], Hostnames: route.Spec.Hostnames})
 	if ing == nil {
 		t.Fatal("no Ingress for the Service rule")
@@ -618,8 +623,9 @@ func TestAnIngressUpdateKeepsWhatLoxilbIngressWrote(t *testing.T) {
 	existing := desired.DeepCopy()
 	existing.Annotations[programmedAnnotationPrefix+"lx-a"] = "1"
 	h := httpRouteTestManager(existing)
+	route := &v1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "shop"}}
 
-	if err := h.applyIngress(context.Background(), desired, existing); err != nil {
+	if err := h.applyIngress(context.Background(), route, desired, existing); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(h.kubeClient.(*fake.Clientset).Actions()); n != 0 {
@@ -628,7 +634,7 @@ func TestAnIngressUpdateKeepsWhatLoxilbIngressWrote(t *testing.T) {
 
 	changed := desired.DeepCopy()
 	changed.Spec.DefaultBackend.Service.Port.Number = 8080
-	if err := h.applyIngress(context.Background(), changed, existing); err != nil {
+	if err := h.applyIngress(context.Background(), route, changed, existing); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := h.kubeClient.NetworkingV1().Ingresses("apps").Get(context.Background(), "shop-1", metav1.GetOptions{})
