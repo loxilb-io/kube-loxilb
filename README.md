@@ -318,12 +318,15 @@ documented above can be set on a Gateway, HTTPRoute, TCPRoute or UDPRoute.
 
 An HTTPRoute is served through loxilb-ingress, which terminates HTTPS. With `--gatewayAPIDirectRoutes`,
 an HTTP listener whose peers are all loxilb-inference-gateway is served instead by host and path rules on
-the gateways themselves. Both run on loxilb-inference-gateway, which has these limits as of its v0.9.9.1
-and main (2026-11-24):
+the gateways themselves; these rules take none of the route's or the Gateway's annotations. Both run on
+loxilb-inference-gateway: loxilb-ingress on its v0.9.9.1 release, the direct rules on the build the peers
+run. These are its limits as of v0.9.9.1 and main (2026-11-24):
 
-- **WebSocket over HTTPS.** An upgrade request with exactly `Connection: Upgrade` is not passed to the
-  backend on an HTTPS listener; one with `Connection: keep-alive, Upgrade` is. A request whose body has
-  the text `Connection: Upgrade` is dropped on HTTP and HTTPS alike.
+- **Upgrade requests (WebSocket).** A request that asks to upgrade its connection is not routed by its
+  host and path: it reaches the backend of one rule of its port, whichever route that rule is from, also
+  when no rule has its host. Only on a port with a single rule does it reach the right backend. The first
+  request on a connection whose body has the text `Connection: Upgrade` may not reach its backend at all.
+  Both are fixed on the gateway's main at 6f8ab04f, which is not released yet.
 - **Wildcard hostnames.** A route hostname such as `*.example.com` is served by a direct rule only when
   every peer lists `wildcard_host` in its version features; until then the route's status says it is left
   out. Through loxilb-ingress, such a rule is installed but matches no request until loxilb-ingress runs
@@ -332,8 +335,12 @@ and main (2026-11-24):
   1 MiB buffer, and the connection is reset once it reaches about 972 KB. Bodies with `Content-Length`
   stream.
 - **Idle connections.** A connection with no bytes either way, a quiet WebSocket included, is closed
-  after its rule's inactive timeout: 30 minutes on direct rules, 240 seconds through loxilb-ingress, which
-  sets none.
+  after an inactive timeout, which the gateway takes from the oldest rule of the connection's port, not
+  from the rule its requests reach. kube-loxilb gives every direct rule 30 minutes. loxilb-ingress gives
+  its rules 30 minutes, or an Ingress's `loxilb.io/timeout` in seconds (at most 86400); before its build
+  of 2026-11-24 it gave none, and the gateway took 240 seconds. kube-loxilb carries an HTTPRoute's
+  `loxilb.io/timeout` to the route's Ingress, but the value times the connections of the whole port, and
+  only while the route's rules are the oldest there: changing it makes them the newest.
 - **Host case.** Hosts compare case-sensitively on the gateway: a request whose `Host` has upper-case
   letters gets 503 on direct rules. kube-loxilb writes rule hosts in lower case.
 
