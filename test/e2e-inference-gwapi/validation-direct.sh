@@ -724,6 +724,130 @@ kubectl -n web delete svc web-down >/dev/null
 poll 60 gen_count_is "$GEN_BEFORE"
 check "the rule Services are as they were" "$(gen | jq '.items | length')" "$GEN_BEFORE"
 
+echo "=== D14. a route in another namespace on the HTTPS listener ==="
+# The HTTPS listener's certificate, web-cert, is in the Gateway's namespace,
+# and loxilb-ingress reads an Ingress's TLS Secrets from the Ingress's own.
+# So a route in another namespace gets its HTTPS listener's Ingress in web,
+# naming the namespace of its backend there, and is served. Builds before
+# this one put that Ingress in the route's namespace, where the Secret is
+# not, and loxilb-ingress installed none of it.
+# The backend is web-b's pods, through a Service without a selector in
+# web-other: a Service selects pods in its own namespace only.
+WEB_B=$(pods_of web-b)
+kubectl create namespace web-other >/dev/null 2>&1
+kubectl apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: Service
+metadata: {name: other, namespace: web-other}
+spec:
+  ports: [{name: http, port: 80, targetPort: 8000}]
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: other-1
+  namespace: web-other
+  labels: {kubernetes.io/service-name: other, endpointslice.kubernetes.io/managed-by: e2e-direct}
+addressType: IPv4
+ports: [{name: http, port: 8000, protocol: TCP}]
+endpoints:
+$(for ip in ${WEB_B//,/ }; do echo "  - {addresses: [\"$ip\"], conditions: {ready: true}}"; done)
+YAML
+# The route's HTTPS Ingress as a build before this one made it: in the
+# route's namespace, without the route's namespace on it.
+OLD_ING=other-legacy
+kubectl apply -f - >/dev/null <<YAML
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: $OLD_ING
+  namespace: web-other
+  labels: {implementation: kube-loxilb}
+  annotations:
+    gateway-api-controller: loxilb.io/loxilb
+    parent-gateway: direct-gw
+    parent-gateway-namespace: web
+    parent-listener: https
+    parent-http-route: other
+spec:
+  ingressClassName: loxilb
+  tls: [{secretName: web-cert, hosts: [secure.example.com]}]
+  rules:
+    - host: secure.example.com
+      http:
+        paths: [{path: /other, pathType: Prefix, backend: {service: {name: other, port: {number: 80}}}}]
+YAML
+HTTPS_IDX=$(kubectl -n web get gateway direct-gw -o json | jq '.spec.listeners | map(.name) | index("https")')
+kubectl -n web patch gateway direct-gw --type=json \
+  -p "[{\"op\":\"add\",\"path\":\"/spec/listeners/$HTTPS_IDX/allowedRoutes\",\"value\":{\"namespaces\":{\"from\":\"All\"}}}]" >/dev/null
+kubectl apply -f - >/dev/null <<'YAML'
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: other
+  namespace: web-other
+  # Names nothing, but is of a family whose Secrets loxilb-ingress would look
+  # up in the Ingress's namespace: not carried to an Ingress in web.
+  annotations: {loxilb.io/mtls-frontend-mode: disabled}
+spec:
+  parentRefs: [{name: direct-gw, namespace: web, sectionName: https}]
+  hostnames: [secure.example.com]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /other}}]
+      backendRefs: [{name: other, port: 80}]
+YAML
+other_ingress() { # the route's Ingress in web
+  kubectl -n web get ingress -o json |
+    jq -c '[.items[] | select(.metadata.annotations["parent-http-route"]=="other"
+                             and .metadata.annotations["parent-http-route-namespace"]=="web-other")][0] // empty'
+}
+other_route_cond() {
+  kubectl -n web-other get httproute other -o json |
+    jq -r --arg t "$1" '.status.parents[]? | select(.controllerName=="loxilb.io/loxilb")
+                        | .conditions[]? | select(.type==$t) | "\(.status)/\(.reason)/\(.message)"' | head -1
+}
+has_other_ingress() { [[ -n "$(other_ingress)" ]]; }
+legacy_gone() { ! kubectl -n web-other get ingress "$OLD_ING" >/dev/null 2>&1; }
+if poll 60 has_other_ingress; then
+  ok "the route's HTTPS Ingress is in the Gateway's namespace"
+else
+  bad "the route's HTTPS Ingress is in the Gateway's namespace" "none in web after 60s"
+fi
+ING=$(other_ingress)
+check "it names the backend's namespace" \
+  "$(jq -r '[.metadata.annotations["external-backend-service"], .metadata.annotations["service-other-namespace"]] | join(",")' <<<"$ING")" "true,web-other"
+check "with the listener's certificate" "$(jq -r '[.spec.tls[]?.secretName] | join(",")' <<<"$ING")" "web-cert"
+check "without the route's mtls annotation" "$(jq -r '.metadata.annotations["loxilb.io/mtls-frontend-mode"] // "none"' <<<"$ING")" "none"
+poll 30 legacy_gone
+legacy_gone && ok "the Ingress a build before this one made in the route's namespace is gone" ||
+  bad "the Ingress a build before this one made in the route's namespace is gone" "web-other/$OLD_ING is still there"
+check "no Ingress in the route's namespace" "$(kubectl -n web-other get ingress -o json | jq '.items | length')" 0
+ACC=$(other_route_cond Accepted)
+[[ "$ACC" == True/Accepted/*"loxilb.io/mtls-frontend-mode are not carried"* ]] &&
+  ok "the route is accepted, and says what its Ingress leaves out" || bad "the route is accepted, and says what its Ingress leaves out" "$ACC"
+other_served() { tls_at /other/x | grep -q '^web-b-'; }
+if poll 60 other_served; then
+  ok "secure.example.com/other over HTTPS reaches the backend in web-other"
+else
+  bad "secure.example.com/other over HTTPS reaches the backend in web-other" "'$(tls_at /other/x | head -c 60)' $(tls_code /other/x)"
+fi
+case "$(tls_at /)" in
+  web-a-*) ok "secure.example.com/ is still answered by web's own route";;
+  *) bad "secure.example.com/ is still answered by web's own route" "'$(tls_at / | head -c 60)'";;
+esac
+# Taken back to routes from the Gateway's namespace only, the listener drops
+# the route, and its Ingress in web goes.
+kubectl -n web patch gateway direct-gw --type=json \
+  -p "[{\"op\":\"remove\",\"path\":\"/spec/listeners/$HTTPS_IDX/allowedRoutes\"}]" >/dev/null
+not_allowed() { [[ "$(other_route_cond Accepted)" == False/NotAllowedByListeners/* ]]; }
+poll 30 not_allowed
+not_allowed && ok "from its own namespace only, the listener does not take the route" ||
+  bad "from its own namespace only, the listener does not take the route" "$(other_route_cond Accepted)"
+no_other_ingress() { [[ -z "$(other_ingress)" ]]; }
+poll 30 no_other_ingress
+no_other_ingress && ok "and the route's Ingress in web goes" || bad "and the route's Ingress in web goes" "$(other_ingress | jq -r .metadata.name)"
+kubectl delete namespace web-other --wait=false >/dev/null
+
 echo
 if [[ $fails -eq 0 ]]; then
   echo "SCENARIO-e2e-direct [OK]"
