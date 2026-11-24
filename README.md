@@ -314,6 +314,29 @@ that channel if you use them.
 Annotations on a route are copied onto the object it generates, so every `loxilb.io/*` annotation
 documented above can be set on a Gateway, HTTPRoute, TCPRoute or UDPRoute.
 
+### Known data-plane limits
+
+An HTTPRoute is served through loxilb-ingress, which terminates HTTPS. With `--gatewayAPIDirectRoutes`,
+an HTTP listener whose peers are all loxilb-inference-gateway is served instead by host and path rules on
+the gateways themselves. Both run on loxilb-inference-gateway, which has these limits as of its v0.9.9.1
+and main (2026-11-24):
+
+- **WebSocket over HTTPS.** An upgrade request with exactly `Connection: Upgrade` is not passed to the
+  backend on an HTTPS listener; one with `Connection: keep-alive, Upgrade` is. A request whose body has
+  the text `Connection: Upgrade` is dropped on HTTP and HTTPS alike.
+- **Wildcard hostnames.** A route hostname such as `*.example.com` is served by a direct rule only when
+  every peer lists `wildcard_host` in its version features; until then the route's status says it is left
+  out. Through loxilb-ingress, such a rule is installed but matches no request until loxilb-ingress runs
+  on a gateway build with that feature.
+- **Chunked uploads.** On HTTP/1.1, a request body without `Content-Length` that is not JSON is held in a
+  1 MiB buffer, and the connection is reset once it reaches about 972 KB. Bodies with `Content-Length`
+  stream.
+- **Idle connections.** A connection with no bytes either way, a quiet WebSocket included, is closed
+  after its rule's inactive timeout: 30 minutes on direct rules, 240 seconds through loxilb-ingress, which
+  sets none.
+- **Host case.** Hosts compare case-sensitively on the gateway: a request whose `Host` has upper-case
+  letters gets 503 on direct rules. kube-loxilb writes rule hosts in lower case.
+
 ### Inference Extension (InferencePool)
 
 Start with `--inferenceExtension` (which needs `--gatewayAPI`) to serve
