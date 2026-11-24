@@ -1886,6 +1886,12 @@ func (m *Manager) installLB(c *api.LoxiClient, lb api.LoadBalancerModel, prefLoc
 			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
 			return err
 		}
+		if model.Service.GatewayRoute && strings.HasPrefix(model.Service.Host, "*.") && !c.SupportsFeature(api.FeatureWildcardHost) {
+			err = fmt.Errorf("loxilb-lb(%s) does not list %q in its version features: %w",
+				c.Host, api.FeatureWildcardHost, ErrWildcardHostUnsupported)
+			klog.Errorf("failed to create load-balancer(%s) :%v", c.Url, err)
+			return err
+		}
 		// Known by a stable id, so it can be read back below. Set on this
 		// peer's copy only: plain peers never see it.
 		model.Service.ID = api.RuleID(&model.Service)

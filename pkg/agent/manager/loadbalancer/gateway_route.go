@@ -91,6 +91,9 @@ var (
 	// ErrNoEndpointRuleUnsupported - a gateway route without endpoints would
 	// reach a peer that does not take one.
 	ErrNoEndpointRuleUnsupported = errors.New("the peer does not take a rule without endpoints")
+	// ErrWildcardHostUnsupported - a gateway route with a wildcard host would
+	// reach a peer that matches no request against it.
+	ErrWildcardHostUnsupported = errors.New("the peer does not route by a wildcard host")
 	// errBackendNotFound - a gateway route's backend Service does not exist.
 	errBackendNotFound = errors.New("backend Service does not exist")
 )
@@ -485,6 +488,24 @@ func (m *Manager) GatewayPeers() (ok, known bool, reason string) {
 		return false, false, unknown
 	}
 	return true, true, ""
+}
+
+// ServesWildcardHosts - whether every loxilb peer routes by a gateway route
+// whose host is a wildcard (api.FeatureWildcardHost). Such a route is served
+// directly only then; otherwise it is left out and said in the route's
+// status, as before the feature. Every peer, so that they answer its
+// requests alike; a peer that has not reported what it is counts as one that
+// does not.
+func (m *Manager) ServesWildcardHosts() bool {
+	if m.LoxiClients == nil || len(m.LoxiClients.Clients) == 0 {
+		return false
+	}
+	for _, c := range m.LoxiClients.Clients {
+		if !c.IsInferenceGateway() || !c.SupportsFeature(api.FeatureWildcardHost) {
+			return false
+		}
+	}
+	return true
 }
 
 // ServesRulesWithoutEndpoints - whether every loxilb peer takes a gateway

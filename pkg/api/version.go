@@ -35,6 +35,14 @@ const FeatureJWTAuthProfile = "jwt_auth_profile"
 // a rule (400 endpoints-range error).
 const FeatureNoEndpointRule = "no_endpoint_rule"
 
+// FeatureWildcardHost - the `features` entry of a gateway build that takes a
+// host|path rule whose host is a wildcard, "*." and one or more labels, and
+// finds it as Gateway API matches one: by suffix, after the exact host and
+// before a rule without a host, the longer suffix first, going on to the
+// next when a host has no rule for the path. Builds without it store such a
+// host as it is and match it against no request.
+const FeatureWildcardHost = "wildcard_host"
+
 // VersionModel - response of GET /netlox/v1/version.
 type VersionModel struct {
 	Version   string `json:"version,omitempty"`

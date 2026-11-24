@@ -396,6 +396,8 @@ func run(o *Options) error {
 			// have changed whether one does.
 			gatewayManager.ServeRulesWithoutEndpoints(lbManager.ServesRulesWithoutEndpoints)
 			httpRouteManager.ServeRulesWithoutEndpoints(lbManager.ServesRulesWithoutEndpoints)
+			gatewayManager.ServeWildcardHosts(lbManager.ServesWildcardHosts)
+			httpRouteManager.ServeWildcardHosts(lbManager.ServesWildcardHosts)
 			// A port going back to the ingress service keeps its direct
 			// rules until loxilb-ingress and its L4 rule serve it.
 			gatewayManager.BringPortsBack(informerFactory, httpRouteManager.IngressesOn, lbManager.InstalledPorts)
