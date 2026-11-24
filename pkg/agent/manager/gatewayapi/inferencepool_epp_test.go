@@ -547,7 +547,7 @@ func poolCondition(t *testing.T, m *InferencePoolManager, conditionType string) 
 		t.Fatalf("get pool: %v", err)
 	}
 	for _, parent := range pool.Status.Parents {
-		if parent.ControllerName != inferencePoolControllerName {
+		if parent.ControllerName != testControllerName {
 			continue
 		}
 		for _, c := range parent.Conditions {
@@ -556,7 +556,7 @@ func poolCondition(t *testing.T, m *InferencePoolManager, conditionType string) 
 			}
 		}
 	}
-	t.Fatalf("pool has no %s condition from %s: %+v", conditionType, inferencePoolControllerName, pool.Status.Parents)
+	t.Fatalf("pool has no %s condition from %s: %+v", conditionType, testControllerName, pool.Status.Parents)
 	return metav1.Condition{}
 }
 
