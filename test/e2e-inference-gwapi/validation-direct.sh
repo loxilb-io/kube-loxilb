@@ -918,6 +918,72 @@ kubectl -n web delete httproute wild wild-exact >/dev/null
 poll 60 gen_count_is "$GEN_BEFORE"
 check "the rule Services are as they were" "$(gen | jq '.items | length')" "$GEN_BEFORE"
 
+echo "=== D16. two routes ask for one host and path on the HTTPS listener ==="
+# Gateway API gives a host and path that two routes ask for to the older one.
+# loxilb-ingress keeps one rule for a pair, whichever Ingress it came from, so
+# the younger route's Ingress leaves the pair out and its status says so; once
+# the older route goes, the younger one's Ingress takes it. Builds before this
+# one gave both Ingresses the pair: loxilb-ingress handed it from one to the
+# other, requests went to both backends, and when the one holding it went the
+# other was without a rule until loxilb-ingress handled it again.
+dup_route() { # <name> <backend>
+  kubectl apply -f - >/dev/null <<YAML
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: $1, namespace: web}
+spec:
+  parentRefs: [{name: direct-gw, sectionName: https}]
+  hostnames: [dup.example.com]
+  rules: [{backendRefs: [{name: $2, port: 80}]}]
+YAML
+}
+dup_body() { curl -sk --max-time 3 --resolve "dup.example.com:$TLS_PORT:$VIP" "https://dup.example.com:$TLS_PORT/" | head -c 5; }
+dup_ingresses() {
+  kubectl -n web get ingress -o json |
+    jq -r '[.items[] | select(any(.spec.rules[]?; .host == "dup.example.com")) | .metadata.annotations["parent-http-route"]] | sort | join(",")'
+}
+dup_route dup-old web-a
+dup_old_served() { [[ "$(dup_body)" == web-a ]]; }
+poll 60 dup_old_served || bad "dup.example.com served for the older route" "'$(dup_body)'"
+# A creationTimestamp has whole seconds: the younger route is younger by one.
+sleep 2
+dup_route dup-new web-b
+dup_new_left_out() { [[ "$(route_cond dup-new Accepted)" == False/UnsupportedValue/*'served for route web/dup-old'* ]]; }
+poll 30 dup_new_left_out
+dup_new_left_out && ok "the younger route says the pair is the older one's" ||
+  bad "the younger route says the pair is the older one's" "$(route_cond dup-new Accepted)"
+check "the older route" "$(route_cond dup-old Accepted | cut -d/ -f1-2)" "True/Accepted"
+check "Ingresses for dup.example.com" "$(dup_ingresses)" "dup-old"
+# Longer than loxilb-ingress's 30 seconds between handling an Ingress again.
+DUP_A=0; DUP_B=0; DUP_O=0; DUP_END=$((SECONDS + 40))
+while ((SECONDS < DUP_END)); do
+  case "$(dup_body)" in web-a) DUP_A=$((DUP_A + 1)) ;; web-b) DUP_B=$((DUP_B + 1)) ;; *) DUP_O=$((DUP_O + 1)) ;; esac
+  sleep 0.2
+done
+check "requests for the pair over 40 s: web-a, web-b, other" "$DUP_A,$DUP_B,$DUP_O" "$DUP_A,0,0"
+kubectl -n web delete httproute dup-old >/dev/null
+DUP_T0=$(date +%s.%N); DUP_MISS=0
+until [[ "$(dup_body)" == web-b ]]; do
+  DUP_MISS=$((DUP_MISS + 1))
+  (($(echo "$(date +%s.%N) - $DUP_T0 > 45" | bc))) && break
+  sleep 0.2
+done
+DUP_GAP=$(echo "$(date +%s.%N) - $DUP_T0" | bc | cut -c1-4)
+if (($(echo "$DUP_GAP <= 10" | bc))); then
+  ok "the older route gone, the younger one has the pair after ${DUP_GAP}s"
+else
+  bad "the older route gone, the younger one has the pair" "after ${DUP_GAP}s"
+fi
+note "$DUP_MISS requests went unanswered while the pair moved"
+dup_new_accepted() { [[ "$(route_cond dup-new Accepted | cut -d/ -f1-2)" == True/Accepted ]]; }
+poll 30 dup_new_accepted
+check "the younger route" "$(route_cond dup-new Accepted | cut -d/ -f1-2)" "True/Accepted"
+check "Ingresses for dup.example.com" "$(dup_ingresses)" "dup-new"
+kubectl -n web delete httproute dup-new >/dev/null
+dup_gone() { [[ -z "$(dup_ingresses)" ]]; }
+poll 30 dup_gone
+check "Ingresses for dup.example.com, the routes gone" "$(dup_ingresses)" ""
+
 echo
 if [[ $fails -eq 0 ]]; then
   echo "SCENARIO-e2e-direct [OK]"

@@ -140,16 +140,24 @@ func NewHTTPRouteManager(
 		queue: workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "httpRoute"),
 	}
 
+	// A route that comes, changes or goes can move a host and path between
+	// routes (httproute_precedence.go); a status write changes nothing the
+	// others read.
 	manager.httpRouteInformer.Informer().AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(cur interface{}) {
 				manager.enqueueObject(cur)
+				manager.enqueueCompetitors(routeOf(cur))
 			},
 			UpdateFunc: func(old, cur interface{}) {
 				manager.enqueueObject(cur)
+				if o, c := routeOf(old), routeOf(cur); o != nil && c != nil && o.Generation != c.Generation {
+					manager.enqueueCompetitors(o, c)
+				}
 			},
 			DeleteFunc: func(old interface{}) {
 				manager.enqueueObject(old)
+				manager.enqueueCompetitors(routeOf(old))
 			},
 		},
 	)
@@ -333,23 +341,29 @@ func (h *HTTPRouteManager) SetServesInferencePools(served bool) {
 }
 
 func (h *HTTPRouteManager) enqueueObject(obj interface{}) {
+	if httpRoute := routeOf(obj); httpRoute != nil {
+		h.queue.Add(HTTPRouteQueueEntry{httpRoute.Namespace, httpRoute.Name})
+	}
+}
+
+// routeOf - the HTTPRoute an event carries, or nil.
+func routeOf(obj interface{}) *v1.HTTPRoute {
 	httpRoute, ok := obj.(*v1.HTTPRoute)
 	if !ok {
 		deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			klog.Errorf("Received unexpected object: %v", obj)
-			return
+			return nil
 		}
 		// A delete the watch missed arrives as a tombstone. The HTTPRoute
 		// is the object it wraps, not the tombstone itself.
 		httpRoute, ok = deletedState.Obj.(*v1.HTTPRoute)
 		if !ok {
 			klog.Errorf("DeletedFinalStateUnknown contains non-HTTPRoute object: %v", deletedState.Obj)
-			return
+			return nil
 		}
 	}
-
-	h.queue.Add(HTTPRouteQueueEntry{httpRoute.Namespace, httpRoute.Name})
+	return httpRoute
 }
 
 // gatewayUpdated - queue the routes of a Gateway whose spec changed. A status
@@ -778,6 +792,7 @@ type parentAttachment struct {
 func (h *HTTPRouteManager) routeIngresses(httpRoute *v1.HTTPRoute) ([]*netv1.Ingress, []parentAttachment, error) {
 	route := attachingRoute{Kind: kindHTTPRoute, Namespace: httpRoute.Namespace, Hostnames: httpRoute.Spec.Hostnames}
 	nsLabels := h.namespaceLabels()
+	owners := h.ingressPairOwners(nil)
 
 	var ingresses []*netv1.Ingress
 	var parents []parentAttachment
@@ -814,7 +829,7 @@ func (h *HTTPRouteManager) routeIngresses(httpRoute *v1.HTTPRoute) ([]*netv1.Ing
 				}
 				continue
 			}
-			ing, unserved, notes := h.listenerIngress(httpRoute, gateway, la)
+			ing, unserved, notes := h.listenerIngress(httpRoute, gateway, la, owners)
 			if unserved != "" {
 				klog.Warningf("HTTPRoute %s/%s: gateway %s/%s %s",
 					httpRoute.Namespace, httpRoute.Name, gateway.Namespace, gateway.Name, unserved)
@@ -844,6 +859,7 @@ func (h *HTTPRouteManager) IngressesOn(gw *v1.Gateway, port v1.PortNumber) ([]*n
 		return nil, err
 	}
 	nsLabels := h.namespaceLabels()
+	owners := h.ingressPairOwners(&gatewayPort{gateway: types.NamespacedName{Namespace: gw.Namespace, Name: gw.Name}, port: port})
 
 	var ingresses []*netv1.Ingress
 	seen := map[string]bool{}
@@ -858,7 +874,7 @@ func (h *HTTPRouteManager) IngressesOn(gw *v1.Gateway, port v1.PortNumber) ([]*n
 				if la.Listener.Port != port {
 					continue
 				}
-				ing, _, _ := h.listenerIngress(httpRoute, gw, la)
+				ing, _, _ := h.listenerIngress(httpRoute, gw, la, owners)
 				if ing == nil || seen[GenKey(ing.Namespace, ing.Name)] {
 					continue
 				}
@@ -977,7 +993,18 @@ func listenerCertificateSecrets(l *v1.Listener) []string {
 // So an HTTPS listener is served only for hosts with a certificate: one that
 // has no hostname, or no Secret, gets no Ingress rather than one that would
 // answer in plain HTTP.
-func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.Gateway, la listenerAttachment) (ing *netv1.Ingress, unserved string, notes []string) {
+//
+// A host and path another route has in owners (httproute_precedence.go) is
+// left out; nil owners leaves out none. A listener left with nothing but such
+// pairs does not serve the route.
+func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.Gateway, la listenerAttachment, owners pairOwners) (ing *netv1.Ingress, unserved string, notes []string) {
+	return h.ingressFor(httpRoute, gateway, la, owners, true)
+}
+
+// ingressFor - listenerIngress, warning of the backendRefs it skips when warn
+// is set. Routes are weighed against each other from what each one's Ingresses
+// would be (ingressClaims), which is not where to warn about another route.
+func (h *HTTPRouteManager) ingressFor(httpRoute *v1.HTTPRoute, gateway *v1.Gateway, la listenerAttachment, owners pairOwners, warn bool) (ing *netv1.Ingress, unserved string, notes []string) {
 	listener := la.Listener
 	hosts, ok := servedHostnames(gateway, listener, la.Hostnames)
 	if !ok {
@@ -1035,9 +1062,12 @@ func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.
 	newIngress.Spec.TLS = tls
 
 	anyPath := false
+	routeName := types.NamespacedName{Namespace: httpRoute.Namespace, Name: httpRoute.Name}
+	https := listener.Protocol == v1.HTTPSProtocolType
+	var taken []string
 	backendNamespaces := map[string]string{}
 	for _, rule := range httpRoute.Spec.Rules {
-		paths, left := h.rulePaths(httpRoute, rule, newIngress, backendNamespaces)
+		paths, left := h.rulePaths(httpRoute, rule, newIngress, backendNamespaces, warn)
 		for _, note := range left {
 			if !slices.Contains(notes, note) {
 				notes = append(notes, note)
@@ -1049,20 +1079,38 @@ func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.
 		if len(paths) == 0 {
 			continue
 		}
-		anyPath = true
 
 		for _, hostname := range hostnames {
+			var own []netv1.HTTPIngressPath
+			for _, p := range paths {
+				if owner, ok := owners.takenBy(ingressPair{https: https, host: hostname, path: normalizePath(p.Path)}, routeName); ok {
+					if note := takenNote(hostname, p.Path, owner, gateway); !slices.Contains(taken, note) {
+						taken = append(taken, note)
+					}
+					continue
+				}
+				own = append(own, p)
+			}
+			if len(own) == 0 {
+				continue
+			}
+			anyPath = true
 			newRule := netv1.IngressRule{
 				Host: hostname,
 				IngressRuleValue: netv1.IngressRuleValue{
 					HTTP: &netv1.HTTPIngressRuleValue{
-						Paths: paths,
+						Paths: own,
 					},
 				},
 			}
 			newIngress.Spec.Rules = append(newIngress.Spec.Rules, newRule)
 		}
 	}
+
+	if !anyPath && len(taken) > 0 {
+		return nil, fmt.Sprintf("listener %s does not serve the route: %s", listener.Name, strings.Join(taken, "; ")), notes
+	}
+	notes = append(notes, taken...)
 
 	if !anyPath {
 		// Every backend is served some other way - an InferencePool becomes a
@@ -1084,7 +1132,7 @@ func (h *HTTPRouteManager) listenerIngress(httpRoute *v1.HTTPRoute, gateway *v1.
 // an Ingress cannot have two backends of one name in different namespaces;
 // backendNamespaces holds the namespace each name has on ing so far, and a
 // later one in another namespace is left out.
-func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteRule, ing *netv1.Ingress, backendNamespaces map[string]string) ([]netv1.HTTPIngressPath, []string) {
+func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteRule, ing *netv1.Ingress, backendNamespaces map[string]string, warn bool) ([]netv1.HTTPIngressPath, []string) {
 	var paths []netv1.HTTPIngressPath
 	var left []string
 	for _, match := range rule.Matches {
@@ -1103,8 +1151,10 @@ func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteR
 					httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
 				continue
 			default:
-				klog.Warningf("HTTPRoute %s/%s: backendRef %s is not supported - skipping",
-					httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
+				if warn {
+					klog.Warningf("HTTPRoute %s/%s: backendRef %s is not supported - skipping",
+						httpRoute.Namespace, httpRoute.Name, backendRefDescription(backref.BackendObjectReference))
+				}
 				continue
 			}
 
@@ -1116,8 +1166,10 @@ func (h *HTTPRouteManager) rulePaths(httpRoute *v1.HTTPRoute, rule v1.HTTPRouteR
 				grantReference{Group: v1.GroupName, Kind: kindHTTPRoute, Namespace: httpRoute.Namespace},
 				grantReference{Group: "", Kind: "Service", Namespace: namespace, Name: string(backref.Name)},
 			) {
-				klog.Warningf("HTTPRoute %s/%s: no ReferenceGrant in namespace %s permits backendRef %s - skipping",
-					httpRoute.Namespace, httpRoute.Name, namespace, backendRefDescription(backref.BackendObjectReference))
+				if warn {
+					klog.Warningf("HTTPRoute %s/%s: no ReferenceGrant in namespace %s permits backendRef %s - skipping",
+						httpRoute.Namespace, httpRoute.Name, namespace, backendRefDescription(backref.BackendObjectReference))
+				}
 				continue
 			}
 			name := string(backref.Name)

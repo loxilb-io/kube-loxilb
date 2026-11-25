@@ -359,7 +359,7 @@ func TestListenerIngressOnHTTPS(t *testing.T) {
 		gw := webGateway()
 		gw.Spec.Listeners[1].Hostname = nil
 		la := listenerAttachment{Listener: &gw.Spec.Listeners[1]}
-		ing, unserved, _ := servingManager(nil).listenerIngress(route, gw, la)
+		ing, unserved, _ := servingManager(nil).listenerIngress(route, gw, la, nil)
 		if ing != nil {
 			t.Errorf("got an Ingress with rules for hosts %v", ruleHosts(*ing))
 		}
@@ -373,7 +373,7 @@ func TestListenerIngressOnHTTPS(t *testing.T) {
 		configMap := v1.Kind("ConfigMap")
 		gw.Spec.Listeners[1].TLS.CertificateRefs[0].Kind = &configMap
 		la := listenerAttachment{Listener: &gw.Spec.Listeners[1], Hostnames: hostnames("shop.example.com")}
-		ing, unserved, _ := servingManager(nil).listenerIngress(route, gw, la)
+		ing, unserved, _ := servingManager(nil).listenerIngress(route, gw, la, nil)
 		if ing != nil {
 			t.Errorf("got an Ingress with TLS %v", ing.Spec.TLS)
 		}
@@ -385,7 +385,7 @@ func TestListenerIngressOnHTTPS(t *testing.T) {
 	t.Run("HTTP for any host", func(t *testing.T) {
 		gw := webGateway()
 		la := listenerAttachment{Listener: &gw.Spec.Listeners[0]}
-		ing, unserved, _ := servingManager(nil).listenerIngress(route, gw, la)
+		ing, unserved, _ := servingManager(nil).listenerIngress(route, gw, la, nil)
 		if ing == nil || unserved != "" {
 			t.Fatalf("no Ingress for an HTTP listener serving any host (%q)", unserved)
 		}
@@ -470,7 +470,7 @@ func TestListenerIngressLeavesOutInferencePoolRules(t *testing.T) {
 	gw := webGateway()
 
 	ing, _, _ := servingManager(nil).listenerIngress(route, gw,
-		listenerAttachment{Listener: &gw.Spec.Listeners[0], Hostnames: route.Spec.Hostnames})
+		listenerAttachment{Listener: &gw.Spec.Listeners[0], Hostnames: route.Spec.Hostnames}, nil)
 	if ing == nil {
 		t.Fatal("no Ingress for the Service rule")
 	}
