@@ -344,6 +344,13 @@ run. These are its limits as of v0.9.9.1 and main (2026-11-24):
 - **Host case.** Hosts compare case-sensitively on the gateway: a request whose `Host` has upper-case
   letters gets 503 on direct rules. kube-loxilb writes rule hosts in lower case.
 
+Two routes that ask for one host and path get it in Gateway API's order: an Exact match first, then the
+oldest route, then namespace and name. The other route leaves the pair out, and its status names the
+route the pair is served for. Through loxilb-ingress, the routes of every Gateway are weighed together:
+loxilb-ingress serves the Ingresses of all Gateways on one HTTP port and one HTTPS port, whatever the
+Gateway's address. So a route of one Gateway can take a host and path from a route of another, and
+requests for it to either Gateway reach the first route's backend.
+
 ### Inference Extension (InferencePool)
 
 Start with `--inferenceExtension` (which needs `--gatewayAPI`) to serve
