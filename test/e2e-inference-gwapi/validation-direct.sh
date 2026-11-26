@@ -884,6 +884,12 @@ if [[ $WILD_TAKES == yes ]]; then
   wild_rules_on() { direct_rules "$1" | jq -r '[.[] | .serviceArguments.host | select(. == "*.wild.example.com")] | length'; }
   wild_on_both() { [[ "$(wild_rules_on "$IGW1_ADDR")" == 1 && "$(wild_rules_on "$IGW2_ADDR")" == 1 ]]; }
   poll 60 wild_on_both
+  # The exact host's route is a rule Service of its own and can be sent a
+  # moment after the wildcard's: until then x.wild.example.com/api is the
+  # wildcard's.
+  exact_rules_on() { direct_rules "$1" | jq -r '[.[] | .serviceArguments.host | select(. == "x.wild.example.com")] | length'; }
+  exact_on_both() { [[ "$(exact_rules_on "$IGW1_ADDR")" == 1 && "$(exact_rules_on "$IGW2_ADDR")" == 1 ]]; }
+  poll 60 exact_on_both
   for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
     check "on $gw, the rule for *.wild.example.com" "$(wild_rules_on "$gw")" 1
   done
