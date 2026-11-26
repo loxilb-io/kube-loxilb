@@ -343,7 +343,7 @@ check "a host no route names" "$(code nobody.example.com /)" "503"
 check "a header match is not served broadly" "$(code hdr.example.com /)" "503"
 UPPER=$(code SHOP.EXAMPLE.COM /cart)
 [[ "$UPPER" == 200 ]] && ok "an upper-case Host is served" ||
-  note "an upper-case Host gets $UPPER: the gateway compares hosts case-sensitively until its fix (request 1-4)"
+  note "an upper-case Host gets $UPPER: gateways before v0.9.9.2 compare hosts case-sensitively"
 
 echo "=== D6. route status ==="
 # Its one rule lost, so nothing of it is served: not accepted, and why.
@@ -884,6 +884,12 @@ if [[ $WILD_TAKES == yes ]]; then
   wild_rules_on() { direct_rules "$1" | jq -r '[.[] | .serviceArguments.host | select(. == "*.wild.example.com")] | length'; }
   wild_on_both() { [[ "$(wild_rules_on "$IGW1_ADDR")" == 1 && "$(wild_rules_on "$IGW2_ADDR")" == 1 ]]; }
   poll 60 wild_on_both
+  # The exact host's route is a rule Service of its own and can be sent a
+  # moment after the wildcard's: until then x.wild.example.com/api is the
+  # wildcard's.
+  exact_rules_on() { direct_rules "$1" | jq -r '[.[] | .serviceArguments.host | select(. == "x.wild.example.com")] | length'; }
+  exact_on_both() { [[ "$(exact_rules_on "$IGW1_ADDR")" == 1 && "$(exact_rules_on "$IGW2_ADDR")" == 1 ]]; }
+  poll 60 exact_on_both
   for gw in "$IGW1_ADDR" "$IGW2_ADDR"; do
     check "on $gw, the rule for *.wild.example.com" "$(wild_rules_on "$gw")" 1
   done

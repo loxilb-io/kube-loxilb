@@ -216,8 +216,8 @@ answers their requests instead.
 | D15 | a route for `*.wild.example.com` and one for `x.wild.example.com/api` on the HTTP listener: with gateways that list `wildcard_host`, both have the wildcard's rule, `a.wild.example.com` and `a.b.wild.example.com` reach its backend, `x.wild.example.com/api` the exact route's and `x.wild.example.com/other` the wildcard's, `wild.example.com` none; with gateways that do not, only the exact route has a rule Service, and the wildcard route, with nothing else for the listener to serve, is not accepted there: its status says its wildcard is not served directly. Either way the HTTP port stays direct | a wildcard hostname is a direct rule only where every gateway matches it as Gateway API does: by suffix, after the exact host, going on to it when the exact host has no rule for the path |
 | D16 | two routes for `dup.example.com/` on the HTTPS listener, the older to web-a and the younger to web-b: the younger is not accepted, its status naming the older as the one the pair is served for; only the older has an Ingress for the host, and for 40 s every request reaches web-a. Once the older route goes, the younger one has the pair within 10 s, is accepted, and its Ingress is the host's only one | a host and path two routes ask for goes to the older one, as Gateway API orders them, also through loxilb-ingress, which keeps one rule for a pair whichever Ingress it came from |
 
-An upper-case `Host` is reported as a `[NOTE]`: the gateway compares hosts case-sensitively, so
-it gets 503 until it lowercases them.
+An upper-case `Host` is served from gateway v0.9.9.2, which compares hosts without case. On an
+earlier gateway it gets 503, which is reported as a `[NOTE]`.
 
 ## Notes
 
