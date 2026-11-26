@@ -343,7 +343,7 @@ check "a host no route names" "$(code nobody.example.com /)" "503"
 check "a header match is not served broadly" "$(code hdr.example.com /)" "503"
 UPPER=$(code SHOP.EXAMPLE.COM /cart)
 [[ "$UPPER" == 200 ]] && ok "an upper-case Host is served" ||
-  note "an upper-case Host gets $UPPER: the gateway compares hosts case-sensitively until its fix (request 1-4)"
+  note "an upper-case Host gets $UPPER: gateways before v0.9.9.2 compare hosts case-sensitively"
 
 echo "=== D6. route status ==="
 # Its one rule lost, so nothing of it is served: not accepted, and why.

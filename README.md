@@ -319,18 +319,19 @@ documented above can be set on a Gateway, HTTPRoute, TCPRoute or UDPRoute.
 An HTTPRoute is served through loxilb-ingress, which terminates HTTPS. With `--gatewayAPIDirectRoutes`,
 an HTTP listener whose peers are all loxilb-inference-gateway is served instead by host and path rules on
 the gateways themselves; these rules take none of the route's or the Gateway's annotations. Both run on
-loxilb-inference-gateway: loxilb-ingress on its v0.9.9.1 release, the direct rules on the build the peers
-run. These are its limits as of v0.9.9.1 and main (2026-11-24):
+loxilb-inference-gateway: loxilb-ingress on its v0.9.9.1 release, the direct rules on the release the peers
+run. These are its limits up to v0.9.9.2 (2026-11-26). v0.9.9.2 fixes three of them: direct rules on it
+no longer have them, and loxilb-ingress has them until it moves to that release.
 
-- **Upgrade requests (WebSocket).** A request that asks to upgrade its connection is not routed by its
-  host and path: it reaches the backend of one rule of its port, whichever route that rule is from, also
-  when no rule has its host. Only on a port with a single rule does it reach the right backend. The first
-  request on a connection whose body has the text `Connection: Upgrade` may not reach its backend at all.
-  Both are fixed on the gateway's main at 6f8ab04f, which is not released yet.
-- **Wildcard hostnames.** A route hostname such as `*.example.com` is served by a direct rule only when
-  every peer lists `wildcard_host` in its version features; until then the route's status says it is left
-  out. Through loxilb-ingress, such a rule is installed but matches no request until loxilb-ingress runs
-  on a gateway build with that feature.
+- **Upgrade requests (WebSocket), before v0.9.9.2.** A request that asks to upgrade its connection is not
+  routed by its host and path: it reaches the backend of one rule of its port, whichever route that rule is
+  from, also when no rule has its host. Only on a port with a single rule does it reach the right backend.
+  The first request on a connection whose body has the text `Connection: Upgrade` may not reach its
+  backend at all. v0.9.9.2 routes and forwards upgrade requests like any other.
+- **Wildcard hostnames, before v0.9.9.2.** A route hostname such as `*.example.com` is served by a direct
+  rule only when every peer lists `wildcard_host` in its version features, as v0.9.9.2 does; otherwise the
+  route's status says it is left out. Through loxilb-ingress, such a rule is installed but matches no
+  request until loxilb-ingress runs on v0.9.9.2.
 - **Chunked uploads.** On HTTP/1.1, a request body without `Content-Length` that is not JSON is held in a
   1 MiB buffer, and the connection is reset once it reaches about 972 KB. Bodies with `Content-Length`
   stream.
@@ -341,8 +342,8 @@ run. These are its limits as of v0.9.9.1 and main (2026-11-24):
   of 2026-11-24 it gave none, and the gateway took 240 seconds. kube-loxilb carries an HTTPRoute's
   `loxilb.io/timeout` to the route's Ingress, but the value times the connections of the whole port, and
   only while the route's rules are the oldest there: changing it makes them the newest.
-- **Host case.** Hosts compare case-sensitively on the gateway: a request whose `Host` has upper-case
-  letters gets 503 on direct rules. kube-loxilb writes rule hosts in lower case.
+- **Host case, before v0.9.9.2.** Hosts compare case-sensitively: a request whose `Host` has upper-case
+  letters gets 503. v0.9.9.2 compares them without case. kube-loxilb writes rule hosts in lower case.
 
 Two routes that ask for one host and path get it in Gateway API's order: an Exact match first, then the
 oldest route, then namespace and name. The other route leaves the pair out, and its status names the
